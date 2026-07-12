@@ -1,0 +1,5 @@
+/* TEXT-INPUT styles. Extends theme tokens. */
+.ap-textfield { display: flex; flex-direction: column; }
+.ap-textfield textarea.ap-input { resize: vertical; min-height: 3em; font: inherit; }
+.ap-textfield-submit { align-self: flex-start; margin-top: 0.85rem; }
+.ap-textfield-submit.is-selected { --ap-border: var(--ap-ok); background: var(--ap-surface); color: var(--ap-ok); }

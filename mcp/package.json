@@ -1,0 +1,13 @@
+{
+  "name": "argus-presenter-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "MCP server exposing the Argus Presenter tool surface (how an AI drives the presenter).",
+  "bin": { "argus-presenter-mcp": "server.mjs" },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.23.0",
+    "ws": "^8.18.0"
+  }
+}

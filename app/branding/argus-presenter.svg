@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" preserveAspectRatio="xMidYMid meet">
+  <style>
+    @keyframes starTwinkle { 0%,100% { opacity: 0.3; } 50% { opacity: 1; } }
+    @keyframes ringPulse  { 0%,100% { opacity: 0.08; } 50% { opacity: 0.2; } }
+    @keyframes scanSweep  { 0% { stroke-dashoffset: 1200; } 100% { stroke-dashoffset: 0; } }
+    @keyframes gentleFloat { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
+    @media (prefers-reduced-motion: reduce) {
+      * { animation: none !important; }
+    }
+  </style>
+  <defs>
+    <radialGradient id="bgGlow" cx="50%" cy="45%" r="60%">
+      <stop offset="0%" stop-color="#0f1a3d"/>
+      <stop offset="100%" stop-color="#050510"/>
+    </radialGradient>
+    <radialGradient id="coreGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#00e5ff" stop-opacity="0.15"/>
+      <stop offset="100%" stop-color="#00e5ff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="800" height="600" fill="#0a0a1a"/>
+  <rect width="800" height="600" fill="url(#bgGlow)"/>
+
+  <circle cx="120" cy="80" r="1.2" fill="#fff" style="animation:starTwinkle 3.2s infinite"/>
+  <circle cx="340" cy="45" r="0.8" fill="#aaccff" style="animation:starTwinkle 4.1s infinite .5s"/>
+  <circle cx="560" cy="92" r="1.0" fill="#fff" style="animation:starTwinkle 2.8s infinite 1s"/>
+  <circle cx="720" cy="58" r="0.9" fill="#ffddaa" style="animation:starTwinkle 3.6s infinite .3s"/>
+  <circle cx="88" cy="180" r="0.7" fill="#fff" style="animation:starTwinkle 5s infinite 1.2s"/>
+  <circle cx="650" cy="170" r="1.1" fill="#aaccff" style="animation:starTwinkle 3.9s infinite .8s"/>
+  <circle cx="200" cy="520" r="0.8" fill="#fff" style="animation:starTwinkle 4.5s infinite"/>
+  <circle cx="480" cy="540" r="1.0" fill="#ffddaa" style="animation:starTwinkle 3.3s infinite 1.5s"/>
+  <circle cx="700" cy="480" r="0.7" fill="#fff" style="animation:starTwinkle 4.8s infinite .6s"/>
+  <circle cx="50" cy="400" r="0.9" fill="#aaccff" style="animation:starTwinkle 3.1s infinite 2s"/>
+  <circle cx="390" cy="150" r="0.6" fill="#fff" style="animation:starTwinkle 5.2s infinite .9s"/>
+  <circle cx="160" cy="320" r="1.0" fill="#fff" style="animation:starTwinkle 4.4s infinite 1.8s"/>
+  <circle cx="600" cy="350" r="0.8" fill="#ffddaa" style="animation:starTwinkle 3.7s infinite 1.1s"/>
+  <circle cx="440" cy="470" r="0.9" fill="#aaccff" style="animation:starTwinkle 4.2s infinite .4s"/>
+  <circle cx="750" cy="280" r="1.1" fill="#fff" style="animation:starTwinkle 3.5s infinite 2.2s"/>
+
+  <circle cx="400" cy="260" r="180" fill="url(#coreGlow)"/>
+
+  <circle cx="400" cy="260" r="160" fill="none" stroke="#00e5ff" stroke-width="0.5"
+    stroke-dasharray="15,10" style="animation:ringPulse 4s infinite"/>
+
+  <circle cx="400" cy="260" r="110" fill="none" stroke="#00e5ff" stroke-width="0.3"
+    stroke-dasharray="8,6" style="animation:ringPulse 3s infinite 1s"/>
+
+  <circle cx="400" cy="260" r="135" fill="none" stroke="#00e5ff" stroke-width="1.5"
+    stroke-dasharray="80,1120" stroke-linecap="round"
+    style="animation:scanSweep 8s linear infinite" opacity="0.4"/>
+
+  <g transform="translate(400,250)">
+   <g style="animation:gentleFloat 6s ease-in-out infinite">
+    <path d="M-55,0 Q0,-40 55,0 Q0,40 -55,0Z" fill="none" stroke="#00e5ff" stroke-width="2" opacity="0.8"/>
+    <circle cx="0" cy="0" r="18" fill="none" stroke="#00e5ff" stroke-width="1.5" opacity="0.6"/>
+    <circle cx="0" cy="0" r="8" fill="#00e5ff" opacity="0.3">
+      <animate attributeName="r" values="8;10;8" dur="3s" repeatCount="indefinite"/>
+      <animate attributeName="opacity" values="0.3;0.5;0.3" dur="3s" repeatCount="indefinite"/>
+    </circle>
+    <circle cx="0" cy="0" r="3" fill="#00e5ff" opacity="0.8"/>
+    <circle cx="5" cy="-5" r="2" fill="#fff" opacity="0.6"/>
+   </g>
+  </g>
+
+  <text x="400" y="340" text-anchor="middle" font-family="'Courier New',monospace"
+    font-size="42" fill="#00e5ff" letter-spacing="12" opacity="0.9">ARGUS</text>
+
+  <text x="400" y="368" text-anchor="middle" font-family="'Courier New',monospace"
+    font-size="13" fill="#00e5ff" letter-spacing="4" opacity="0.5">PRESENTER SYSTEM</text>
+
+  <line x1="300" y1="385" x2="500" y2="385" stroke="#00e5ff" stroke-width="0.5" opacity="0.3"/>
+
+  <text x="400" y="410" text-anchor="middle" font-family="'Courier New',monospace"
+    font-size="11" fill="#00e5ff" opacity="0.35">INTERACTIVE PRESENTATION ENGINE</text>
+
+  <rect x="200" y="545" width="400" height="30" rx="4" fill="rgba(0,229,255,0.05)" stroke="#00e5ff" stroke-width="0.5" opacity="0.3"/>
+  <text x="400" y="564" text-anchor="middle" font-family="'Courier New',monospace"
+    font-size="10" fill="#00e5ff" opacity="0.4">AWAITING PRESENTATION — SYSTEM READY</text>
+
+  <path d="M20,20 L20,50 M20,20 L50,20" stroke="#00e5ff" stroke-width="1" opacity="0.2"/>
+  <path d="M780,20 L780,50 M780,20 L750,20" stroke="#00e5ff" stroke-width="1" opacity="0.2"/>
+  <path d="M20,580 L20,550 M20,580 L50,580" stroke="#00e5ff" stroke-width="1" opacity="0.2"/>
+  <path d="M780,580 L780,550 M780,580 L750,580" stroke="#00e5ff" stroke-width="1" opacity="0.2"/>
+</svg>

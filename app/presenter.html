@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en" data-theme="argus">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Argus Presenter</title>
+<style>
+  html,body{margin:0;height:100%;background:#0a0a1a;color:#cfe9ff;font-family:'Courier New',monospace;overflow:hidden;}
+  #stage{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;}
+  #frame{border:0;width:100%;height:100%;background:transparent;}
+  #idle{opacity:.55;letter-spacing:.2em;font-size:.8rem;text-transform:uppercase;display:flex;align-items:center;justify-content:center;width:100%;height:100%;}
+  #idle .ap-idle-brand{max-width:min(90vw,900px);max-height:90vh;width:auto;height:auto;}
+  #led{position:fixed;top:10px;right:12px;width:10px;height:10px;border-radius:50%;background:#cc3333;box-shadow:0 0 8px #cc3333;}
+  #led.on{background:#22e5a0;box-shadow:0 0 8px #22e5a0;}
+  #who{position:fixed;bottom:8px;left:12px;font-size:.65rem;opacity:.4;letter-spacing:.1em;}
+  #ap-chat{position:fixed;bottom:0;left:0;right:0;display:flex;gap:6px;padding:6px 10px 6px 130px;background:rgba(6,10,24,.85);border-top:1px solid #1c2a44;z-index:40;}
+  #ap-chat input{flex:1 1 auto;background:#0d1633;color:#cfe9ff;border:1px solid #2a3a5a;border-radius:6px;padding:5px 8px;font:inherit;}
+  #ap-chat input:disabled{opacity:.5;}
+  #ap-chat button{background:#12234a;color:#cfe9ff;border:1px solid #2a3a5a;border-radius:6px;padding:5px 10px;font:inherit;cursor:pointer;}
+  #ap-chat button:disabled{opacity:.5;cursor:default;}
+  #ap-debug{position:fixed;top:26px;right:12px;width:340px;max-height:70vh;overflow:auto;background:rgba(6,10,24,.92);
+    border:1px solid #2a3a5a;border-radius:6px;padding:8px 10px;font:11px/1.35 'Courier New',monospace;color:#9fd;z-index:50;}
+  #ap-debug h4{margin:0 0 4px;font-size:11px;letter-spacing:.12em;color:#6cf;text-transform:uppercase;}
+  #ap-debug .k{color:#8ab;}
+  #ap-debug pre{margin:4px 0;white-space:pre-wrap;word-break:break-word;color:#cfe9ff;}
+  #ap-debug .msg{border-top:1px solid #1c2a44;opacity:.85;}
+</style>
+</head>
+<body>
+<div id="led"></div>
+<div id="stage"><div id="idle"><img class="ap-idle-brand" src="/branding/argus-presenter.svg" alt="Argus Presenter — awaiting content"></div></div>
+<div id="who"></div>
+<div id="ap-chat"><input id="ap-chat-input" disabled placeholder="chat (disabled until a listener is attached)"><button id="ap-chat-send" disabled>Send</button></div>
+<script>
+(function(){
+  var NS = 'argus-presenter';
+  var q = new URLSearchParams(location.search);
+  var identity = {
+    userId: q.get('userId') || q.get('u') || ('anon-' + Math.random().toString(36).slice(2,8)),
+    userName: q.get('name') || q.get('n') || 'Guest',
+    role: q.get('role') || 'participant'
+  };
+  document.getElementById('who').textContent = identity.role + ' · ' + identity.userName + ' (' + identity.userId + ')';
+
+  var stage = document.getElementById('stage');
+  var led = document.getElementById('led');
+  var frame = null;
+
+  // ---- Debug overlay (?debug=1): connection, socketId, last N ops/messages, state inspector.
+  var DEBUG = q.get('debug') === '1' || q.get('debug') === 'true';
+  var dbg = { open: false, socketId: null, msgs: [], state: {} };
+  var dbgEl = null;
+  function dbgGet(path) { var o = dbg.state; (path || '').split('/').filter(Boolean).forEach(function (k) { o = (o && typeof o === 'object') ? o[k] : undefined; }); return o; }
+  function dbgMerge(diff) { if (!diff || typeof diff !== 'object') return; for (var p in diff) { if (!diff.hasOwnProperty(p)) continue; var parts = p.split('/').filter(Boolean), o = dbg.state; for (var i = 0; i < parts.length - 1; i++) { if (typeof o[parts[i]] !== 'object' || o[parts[i]] === null) o[parts[i]] = {}; o = o[parts[i]]; } if (parts.length) o[parts[parts.length - 1]] = diff[p]; } }
+  function dbgRender() {
+    if (!DEBUG) return;
+    if (!dbgEl) { dbgEl = document.createElement('div'); dbgEl.id = 'ap-debug'; document.body.appendChild(dbgEl); }
+    var last = dbg.msgs.slice(-8).map(function (m) { return '<div class="msg"><span class="k">' + m.t + '</span> ' + (m.brief || '') + '</div>'; }).join('');
+    dbgEl.innerHTML =
+      '<h4>Argus Debug</h4>' +
+      '<div><span class="k">conn</span> ' + (dbg.open ? 'open' : 'closed') + ' · <span class="k">socket</span> ' + (dbg.socketId || '—') + '</div>' +
+      '<div><span class="k">role</span> ' + identity.role + ' · <span class="k">user</span> ' + identity.userId + '</div>' +
+      '<h4 style="margin-top:6px">state</h4><pre>' + JSON.stringify(dbg.state, null, 1).slice(0, 1200) + '</pre>' +
+      '<h4>last messages</h4>' + last;
+  }
+  function dbgLog(m) {
+    if (!DEBUG) return;
+    var brief = '';
+    if (m.t === 'op' || m.t === 'diff') brief = JSON.stringify(m.diff || m.value || {}).slice(0, 80);
+    else if (m.t === 'content') brief = (m.contentId || '') + '';
+    else if (m.t === 'host') brief = (m.msg && m.msg.type) || '';
+    dbg.msgs.push({ t: m.t, brief: brief });
+    if (dbg.msgs.length > 40) dbg.msgs.shift();
+    if (m.t === 'diff' && m.diff) dbgMerge(m.diff);
+    if (m.t === 'host' && m.msg && m.msg.type === 'diff' && m.msg.diff) dbgMerge(m.msg.diff);
+    if (m.t === 'snapshot' && m.state) dbg.state = m.state;
+    dbgRender();
+  }
+  // Expose for tests / manual poking.
+  window.__apDebug = { get: dbgGet, dump: function () { return dbg; } };
+
+  var proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  var ws = null;
+  var lastVersion = 0;            // highest state version this client has applied (X1 resync)
+  var reconnectDelay = 300, reconnectTimer = null;
+  function scheduleReconnect(){
+    if (reconnectTimer) return;
+    reconnectTimer = setTimeout(function(){ reconnectTimer = null; connect(); }, reconnectDelay);
+    reconnectDelay = Math.min(reconnectDelay * 2, 5000);   // backoff (X6 storm debounce)
+  }
+  function connect(){
+    ws = new WebSocket(proto + '://' + location.host);
+    ws.onopen = function(){ led.classList.add('on'); dbg.open = true; dbgRender(); reconnectDelay = 300;
+      ws.send(JSON.stringify(Object.assign({ t:'hello', lastVersion:lastVersion }, identity))); };
+    ws.onclose = function(){ led.classList.remove('on'); dbg.open = false; dbgRender(); scheduleReconnect(); };
+    ws.onerror = function(){ /* onclose handles reconnect */ };
+    ws.onmessage = onMessage;
+  }
+
+  var lastSnapshot = null;   // most recent server snapshot (relayed into new content frames)
+  // F1: keep lastSnapshot CURRENT by merging live diffs into it, so a late-mounted
+  // component seeds from present state (e.g. poll-results pushed AFTER votes arrived
+  // shows the real tally, not 0). Path-keyed diff -> nested state; null deletes.
+  function mergeDiffInto(state, diff){
+    if (!state || !diff) return;
+    for (var pth in diff){ if (!diff.hasOwnProperty(pth)) continue;
+      var parts = pth.split('/').filter(Boolean), o = state, i;
+      for (i = 0; i < parts.length - 1; i++){ if (typeof o[parts[i]] !== 'object' || o[parts[i]] === null) o[parts[i]] = {}; o = o[parts[i]]; }
+      if (parts.length){ var leaf = parts[parts.length - 1]; if (diff[pth] === null){ try { delete o[leaf]; } catch(e){} } else o[leaf] = diff[pth]; }
+    }
+  }
+  function showContent(html){
+    stage.innerHTML = '';
+    frame = document.createElement('iframe');
+    frame.id = 'frame';
+    // Sandbox: scripts run, opaque origin (no same-origin) — can postMessage out, can't touch us.
+    frame.setAttribute('sandbox', 'allow-scripts');
+    frame.srcdoc = html;
+    // On load, replay the current state snapshot into the new component so it
+    // initialises from live state (Memento), then future diffs keep it in sync.
+    frame.addEventListener('load', function(){
+      if (lastSnapshot && frame && frame.contentWindow)
+        frame.contentWindow.postMessage({ source:'argus-host', type:'snapshot', state:lastSnapshot.state, version:lastSnapshot.version }, '*');
+    });
+    stage.appendChild(frame);
+  }
+  function showIdle(){ stage.innerHTML = '<div id="idle"><img class="ap-idle-brand" src="/branding/argus-presenter.svg" alt="Argus Presenter — awaiting content"></div>'; frame = null; }
+
+  function onMessage(ev){
+    var m; try { m = JSON.parse(ev.data); } catch(e){ return; }
+    dbgLog(m);
+    if (m.t === 'ping') { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t:'pong', ts:m.ts })); return; }   // X3 RTT
+    if (m.t === 'chat_listeners') { updateChat(m.n); return; }   // P3
+    if (m.t === 'welcome') { dbg.socketId = m.socketId || null; dbgRender(); }
+    else if (m.t === 'snapshot') { lastSnapshot = m; if (typeof m.version === 'number') lastVersion = m.version; if (frame && frame.contentWindow) frame.contentWindow.postMessage({ source:'argus-host', type:'snapshot', state:m.state, version:m.version }, '*'); }
+    else if (m.t === 'content') showContent(m.html);
+    else if (m.t === 'clear') showIdle();
+    else if (m.t === 'reload') setTimeout(function(){ location.reload(); }, m.delay || 0);
+    else if (m.t === 'host') {
+      if (m.msg && m.msg.type === 'diff') {
+        if (typeof m.msg.version === 'number') lastVersion = Math.max(lastVersion, m.msg.version);
+        if (m.msg.diff) {   // F1: fold the diff into the retained snapshot so late mounts seed from current state
+          if (!lastSnapshot) lastSnapshot = { state: {}, version: (typeof m.msg.version === 'number' ? m.msg.version : lastVersion) };
+          mergeDiffInto(lastSnapshot.state, m.msg.diff);
+          if (typeof m.msg.version === 'number') lastSnapshot.version = m.msg.version;
+        }
+      }
+      if (frame && frame.contentWindow) frame.contentWindow.postMessage(m.msg, '*');
+    }
+  }
+  connect();
+
+  // P3: bottom chat input — always present, enabled only when a listener is attached.
+  function sendOp(path, verb, value){ if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t:'op', path:path, verb:verb, value:value, opId: identity.userId + ':' + Date.now() })); }
+  function updateChat(n){ var en = (n|0) > 0; var i = document.getElementById('ap-chat-input'), b = document.getElementById('ap-chat-send'); if (i){ i.disabled = !en; i.placeholder = en ? 'type a message…' : 'chat (disabled until a listener is attached)'; } if (b) b.disabled = !en; }
+  (function(){ var b = document.getElementById('ap-chat-send'), i = document.getElementById('ap-chat-input');
+    function go(){ var v = i.value; if (!v || i.disabled) return; sendOp('chat', 'add', { id: identity.userId + '-' + Date.now(), text: v, name: identity.userName }); i.value = ''; }
+    b.addEventListener('click', go);
+    i.addEventListener('keydown', function(e){ if (e.key === 'Enter') go(); });
+  })();
+  window.__apChat = { enabled: function(){ return !document.getElementById('ap-chat-input').disabled; } };
+
+  // X3: report client render errors to the telemetry sink.
+  window.addEventListener('error', function(){ try { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t:'telemetry', kind:'render-error' })); } catch(e){} });
+
+  // Relay bridge messages from the sandboxed component up to the server.
+  // Ops (op protocol) go up as {t:'op'}; everything else as {t:'result'}.
+  // (Diffs/snapshots flow DOWN via the m.t==='host'/'snapshot' handlers above.)
+  window.addEventListener('message', function(e){
+    var d = e.data;
+    if (!d || d.source !== NS) return;
+    if (frame && e.source !== frame.contentWindow) return;   // only our iframe
+    if (ws.readyState !== 1) return;
+    if (d.type === 'op') ws.send(JSON.stringify({ t:'op', path:d.path, verb:d.verb, value:d.value, opId:d.opId }));
+    else ws.send(JSON.stringify({ t:'result', msg: d }));
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+{
+  "name": "ai-train-the-trainer",
+  "description": "Teaching domain bundle — pure content (scene templates over core components); adds no new components.",
+  "requires": [],
+  "components": [],
+  "presets": {},
+  "fieldSchemas": {}
+}

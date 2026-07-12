@@ -1,0 +1,27 @@
+/* MAP (interactive, shared). Extends theme tokens. */
+.ap-map { display: flex; flex-direction: column; gap: 0.6rem; }
+.ap-map-viewport {
+  position: relative; width: 100%; height: min(58vh, 520px);
+  background: radial-gradient(circle at 50% 45%, #0d1330, #05060f);
+  border: 1px solid var(--ap-border); border-radius: var(--ap-radius);
+  overflow: hidden; cursor: grab;
+}
+.ap-map-viewport:active { cursor: grabbing; }
+.ap-map-content { position: absolute; left: 50%; top: 50%; transform-origin: 0 0; will-change: transform; }
+.ap-map-svg { width: 800px; height: 800px; transform: translate(-400px, -400px); display: block; }
+.ap-map-img { display: block; }
+/* Neutral default grid (domain-agnostic; domain art lives in plugins) */
+.ap-map-grid-line { stroke: rgba(120,150,200,0.14); stroke-width: 1; }
+.ap-map-grid-dot { fill: var(--ap-accent); }
+/* Presenter laser pointer */
+.ap-map-pointer {
+  position: absolute; width: 16px; height: 16px; margin: -8px 0 0 -8px; border-radius: 50%;
+  background: radial-gradient(circle, #ff4d4d 30%, rgba(255,77,77,0)); pointer-events: none; z-index: 5;
+}
+/* Peer click marker (any user -> all, named) */
+.ap-map-click { position: absolute; transform: translate(-50%, -50%); pointer-events: none; z-index: 6; transition: opacity 1.2s ease; }
+.ap-map-click.is-fading { opacity: 0; }
+.ap-map-click-dot { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--ap-accent); background: rgba(0,229,255,0.22); margin: 0 auto; animation: apClickPing 0.6s ease-out; }
+.ap-map-click-name { margin-top: 3px; font-size: 0.75rem; color: var(--ap-accent); text-align: center; white-space: nowrap; background: rgba(0,0,0,0.55); padding: 0 5px; border-radius: 3px; }
+@keyframes apClickPing { from { transform: scale(0.4); opacity: 0.4; } to { transform: scale(1); opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .ap-map-click-dot { animation: none; } }

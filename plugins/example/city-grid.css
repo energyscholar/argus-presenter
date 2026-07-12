@@ -1,0 +1,5 @@
+/* example — city-grid map preset styling (domain art; lives in the plugin, not core map.css). */
+.ap-map-plaza { fill: #ffcc44; filter: drop-shadow(0 0 10px #ffaa00); }
+.ap-map-ring { stroke: rgba(0,229,255,0.18); stroke-width: 1; }
+.ap-map-block { fill: var(--ap-accent); }
+.ap-map-block-label { fill: var(--ap-fg-dim); font: 12px var(--ap-font); }

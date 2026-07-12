@@ -1,0 +1,29 @@
+/* CHOICE component styles. Extends lib/theme.css tokens only. */
+.ap-choice-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ap-gap);
+}
+.ap-choice-opt {
+  flex: 1 1 auto;
+  min-width: 8ch;
+  text-align: center;
+  animation: apChoiceIn var(--ap-speed) both;
+  animation-delay: calc(var(--i, 0) * 60ms);
+}
+.ap-choice-status {
+  margin-top: var(--ap-gap);
+  color: var(--ap-fg-dim);
+  min-height: 1.4em;
+  font-size: 0.95rem;
+}
+@keyframes apChoiceIn {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to   { opacity: 1; transform: none; }
+}
+@media (max-width: 520px) {
+  .ap-choice-options { flex-direction: column; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ap-choice-opt { animation: none; }
+}

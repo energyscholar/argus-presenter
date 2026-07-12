@@ -1,0 +1,24 @@
+/* CARD component. Extends theme tokens. */
+.ap-card {
+  background: var(--ap-surface);
+  border: 1px solid var(--ap-border);
+  border-radius: var(--ap-radius);
+  overflow: hidden;
+  max-width: 420px;
+  animation: apCardIn var(--ap-speed) both;
+}
+@keyframes apCardIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+.ap-card-img { display: block; width: 100%; height: auto; max-height: 320px; object-fit: cover; }
+.ap-card-body { padding: 1.1rem 1.25rem; }
+.ap-card-badges { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.5rem; }
+.ap-card-badge {
+  font-size: 0.72rem; letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--ap-accent); border: 1px solid var(--ap-border); border-radius: 999px; padding: 0.15em 0.7em;
+}
+.ap-card-title { font-size: 1.25rem; color: var(--ap-fg); font-weight: 700; }
+.ap-card-subtitle { color: var(--ap-fg-dim); font-size: 0.95rem; margin-top: 0.15rem; }
+.ap-card-text { margin-top: 0.6rem; color: var(--ap-fg); line-height: 1.6; }
+.ap-card-revealbtn { margin-top: 0.8rem; }
+.ap-card-reveal { margin-top: 0.7rem; padding: 0.7rem 0.9rem; border-left: 3px solid var(--ap-accent); background: var(--ap-surface-2); border-radius: 6px; color: var(--ap-fg); }
+.ap-card-footer { margin-top: 0.8rem; color: var(--ap-fg-dim); font-size: 0.85rem; }
+@media (prefers-reduced-motion: reduce) { .ap-card { animation: none; } }

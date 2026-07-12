@@ -1,0 +1,18 @@
+/* CRUD (shared collection). Extends theme tokens. */
+.ap-crud { display: flex; flex-direction: column; gap: 0.5rem; }
+.ap-crud-title { font: 600 0.95rem/1.2 var(--ap-font-ui, sans-serif); color: var(--ap-fg); letter-spacing: .02em; }
+.ap-crud-list { display: flex; flex-direction: column; gap: 0.35rem; }
+.ap-crud-item {
+  display: flex; align-items: center; gap: 0.5rem;
+  padding: 0.45rem 0.6rem; border: 1px solid var(--ap-border); border-radius: var(--ap-radius);
+  background: color-mix(in srgb, var(--ap-bg) 88%, var(--ap-fg) 4%);
+}
+.ap-crud-item[data-locked] { opacity: 0.85; border-color: color-mix(in srgb, var(--ap-accent) 45%, var(--ap-border)); }
+.ap-crud-field { flex: 1 1 auto; color: var(--ap-fg); }
+.ap-crud-field.ap-crud-input { background: transparent; border: 0; border-bottom: 1px dashed var(--ap-border); color: var(--ap-fg); font: inherit; padding: 2px 0; }
+.ap-crud-field.ap-crud-input:focus { outline: none; border-bottom-color: var(--ap-accent); }
+.ap-crud-lock { font-size: 0.75rem; color: var(--ap-accent); white-space: nowrap; }
+.ap-crud-btn { background: transparent; border: 1px solid var(--ap-border); border-radius: 6px; color: var(--ap-fg-dim); cursor: pointer; padding: 2px 8px; font: inherit; }
+.ap-crud-btn:hover { color: var(--ap-fg); border-color: var(--ap-accent); }
+.ap-crud-add { display: flex; gap: 0.5rem; align-items: center; margin-top: 0.25rem; }
+.ap-crud-add .ap-crud-input { flex: 1 1 auto; border: 1px solid var(--ap-border); border-radius: 6px; padding: 4px 8px; background: transparent; color: var(--ap-fg); }

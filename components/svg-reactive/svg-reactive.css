@@ -1,0 +1,12 @@
+/* SVG-REACTIVE — colors via classes (var() doesn't work in SVG attributes). */
+.ap-svgreactive { display: flex; flex-direction: column; align-items: center; }
+.ap-svgr-svg { width: 100%; max-width: 300px; height: auto; }
+.ap-svgr-bg   { fill: none; stroke: var(--ap-surface-2); stroke-width: 10; stroke-linecap: round; }
+.ap-svgr-arc  { fill: none; stroke: var(--ap-accent); stroke-width: 10; stroke-linecap: round;
+  transition: stroke-dashoffset 0.35s cubic-bezier(.2,.7,.2,1); }
+.ap-svgr-core { fill: var(--ap-accent); transition: r 0.35s ease; }
+.ap-svgr-glow { fill: var(--ap-accent); filter: blur(7px); transition: r 0.35s ease, opacity 0.35s ease; }
+.ap-svgr-text { fill: var(--ap-fg); font: 30px var(--ap-font); }
+@media (prefers-reduced-motion: reduce) {
+  .ap-svgr-arc, .ap-svgr-core, .ap-svgr-glow { transition: none; }
+}

@@ -1,0 +1,9 @@
+/* example: WEATHER panel. */
+.ap-weather { display: flex; flex-direction: column; gap: 0.6rem; }
+.ap-wx-row { display: grid; grid-template-columns: 8ch 1fr auto; align-items: center; gap: 0.7rem; }
+.ap-wx-label { color: var(--ap-fg-dim); font-size: 0.9rem; }
+.ap-wx-track { height: 1.2rem; background: var(--ap-surface); border: 1px solid var(--ap-border); border-radius: 5px; overflow: hidden; }
+.ap-wx-fill { height: 100%; background: var(--ap-ok); transition: width 0.5s cubic-bezier(.2,.7,.2,1), background 0.3s; }
+.ap-wx-fill.is-mid { background: var(--ap-accent); }
+.ap-wx-fill.is-low { background: var(--ap-danger); }
+.ap-wx-val { color: var(--ap-fg); font-variant-numeric: tabular-nums; min-width: 4ch; text-align: right; }

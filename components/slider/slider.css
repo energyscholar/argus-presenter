@@ -1,0 +1,24 @@
+/* SLIDER styles. Extends theme tokens. */
+.ap-slider-row { display: flex; align-items: center; gap: 1rem; }
+.ap-slider-track {
+  position: relative;
+  flex: 1;
+  height: 8px;
+  background: var(--ap-surface);
+  border: 1px solid var(--ap-border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+.ap-slider-fill {
+  position: absolute; left: 0; top: 0; bottom: 0;
+  background: var(--ap-accent); opacity: 0.7; border-radius: 999px;
+}
+.ap-slider-thumb {
+  position: absolute; top: 50%; left: 0;
+  width: 22px; height: 22px; transform: translate(-50%, -50%);
+  background: var(--ap-accent); border-radius: 50%;
+  box-shadow: 0 0 12px -2px var(--ap-accent); cursor: grab;
+}
+.ap-slider-thumb:active { cursor: grabbing; }
+.ap-slider-thumb:focus-visible { outline: 3px solid var(--ap-focus); outline-offset: 3px; }
+.ap-slider-value { min-width: 5ch; text-align: right; color: var(--ap-fg); font-variant-numeric: tabular-nums; }

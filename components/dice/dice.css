@@ -1,0 +1,11 @@
+/* DICE / CHECK component. Extends theme tokens. */
+.ap-dice { display: flex; flex-direction: column; gap: 0.8rem; align-items: flex-start; }
+.ap-dice-row { display: flex; gap: 0.6rem; }
+.ap-die {
+  width: 3rem; height: 3rem; display: grid; place-items: center;
+  background: var(--ap-surface); border: 1.5px solid var(--ap-border); border-radius: 8px;
+  font-size: 1.5rem; color: var(--ap-fg); font-variant-numeric: tabular-nums;
+}
+.ap-dice-result { font-size: 1.1rem; color: var(--ap-fg); min-height: 1.4em; }
+.ap-dice-result.is-success { color: var(--ap-ok); }
+.ap-dice-result.is-failure { color: var(--ap-danger); }

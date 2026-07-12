@@ -1,0 +1,28 @@
+/* POLL-RESULTS — animated live tally bars. Extends theme tokens. */
+.ap-pollresults { display: flex; flex-direction: column; gap: 0.6rem; }
+.ap-pr-row {
+  display: grid;
+  grid-template-columns: minmax(4ch, 10ch) 1fr auto;
+  align-items: center;
+  gap: 0.75rem;
+}
+.ap-pr-label { color: var(--ap-fg); font-size: 1rem; }
+.ap-pr-track {
+  height: 1.7rem;
+  background: var(--ap-surface);
+  border: 1px solid var(--ap-border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.ap-pr-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--ap-accent);
+  opacity: 0.85;
+  transition: width 0.6s cubic-bezier(.2,.7,.2,1);
+}
+.ap-pr-fill--ok     { background: var(--ap-ok); }
+.ap-pr-fill--danger { background: var(--ap-danger); }
+.ap-pr-count { color: var(--ap-fg); font-variant-numeric: tabular-nums; min-width: 2ch; text-align: right; }
+.ap-pr-total { margin-top: 0.4rem; color: var(--ap-fg-dim); font-size: 0.9rem; }
+@media (prefers-reduced-motion: reduce) { .ap-pr-fill { transition: none; } }

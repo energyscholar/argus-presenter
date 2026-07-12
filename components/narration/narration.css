@@ -1,0 +1,21 @@
+/* NARRATION component. Extends theme tokens. */
+.ap-narration {
+  border-left: 3px solid var(--ap-accent);
+  background: var(--ap-surface);
+  border-radius: 0 var(--ap-radius) var(--ap-radius) 0;
+  padding: 1.1rem 1.4rem;
+}
+.ap-narration-speaker {
+  color: var(--ap-accent); font-size: 0.8rem; letter-spacing: 0.1em;
+  text-transform: uppercase; margin-bottom: 0.5rem;
+}
+.ap-narration-text {
+  color: var(--ap-fg); font-size: clamp(1.05rem, 2vw, 1.35rem); line-height: 1.7;
+  font-style: italic; white-space: pre-wrap;
+}
+.ap-narration.is-typing .ap-narration-text::after {
+  content: '▍'; color: var(--ap-accent); font-style: normal;
+  animation: apCaret 0.8s steps(1) infinite;
+}
+@keyframes apCaret { 50% { opacity: 0; } }
+.ap-narration-cta { margin-top: 0.9rem; }

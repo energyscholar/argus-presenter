@@ -1,0 +1,20 @@
+/* SCENE layout styles. Extends theme tokens. */
+.ap-scene { --ap-scene-gap: 1.5rem; display: flex; }
+.ap-scene-title {
+  font-size: clamp(1.2rem, 2.6vw, 1.9rem);
+  color: var(--ap-accent);
+  letter-spacing: 0.04em;
+  margin: 0 0 1rem;
+}
+.ap-scene--stack { flex-direction: column; gap: var(--ap-scene-gap); }
+.ap-scene--rows  { flex-direction: column; gap: var(--ap-scene-gap); }
+.ap-scene--grid  {
+  display: grid;
+  gap: var(--ap-scene-gap);
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  align-items: start;
+}
+.ap-scene-cell { min-width: 0; }        /* prevent grid blowout */
+@media (max-width: 560px) {
+  .ap-scene--grid { grid-template-columns: 1fr; }
+}

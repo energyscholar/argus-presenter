@@ -1,0 +1,5 @@
+/* FORM (multi-field). Extends theme tokens. */
+.ap-form { display: flex; flex-direction: column; gap: 0.35rem; max-width: 560px; }
+.ap-form select.ap-input { font: inherit; }
+.ap-form-submit { align-self: flex-start; margin-top: 0.7rem; }
+.ap-form-submit.is-selected { --ap-border: var(--ap-ok); color: var(--ap-ok); background: var(--ap-surface); }

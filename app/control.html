@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en" data-theme="argus">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Argus Presenter — Control</title>
+<style>
+  html,body{margin:0;background:#0a0a1a;color:#cfe9ff;font-family:'Courier New',monospace;}
+  body{padding:14px;max-width:820px;margin:0 auto;}
+  h1{font-size:1rem;letter-spacing:.15em;text-transform:uppercase;opacity:.8;}
+  section{border:1px solid #21314f;border-radius:8px;padding:10px 12px;margin:10px 0;background:rgba(10,16,32,.6);}
+  h2{font-size:.75rem;letter-spacing:.12em;text-transform:uppercase;color:#6cf;margin:.1rem 0 .5rem;}
+  input,textarea,select,button{font:inherit;background:#0d1633;color:#cfe9ff;border:1px solid #2a3a5a;border-radius:6px;padding:5px 8px;margin:2px 0;}
+  textarea{width:100%;min-height:44px;}
+  button{cursor:pointer;background:#12234a;}
+  button:hover{border-color:#22e5a0;color:#fff;}
+  #status{font-size:.75rem;opacity:.7;}
+  #led{display:inline-block;width:9px;height:9px;border-radius:50%;background:#c33;margin-right:6px;}
+  #led.on{background:#22e5a0;}
+  .row{display:flex;gap:6px;flex-wrap:wrap;align-items:center;}
+  #copresent-view{font-size:.75rem;color:#9fd;margin-top:6px;white-space:pre-wrap;}
+  #chatbar{position:sticky;bottom:0;display:flex;gap:6px;padding-top:8px;background:#0a0a1a;}
+  #chatbar input{flex:1 1 auto;}
+</style>
+</head>
+<body>
+<h1>Presenter Control</h1>
+<div id="status"><span id="led"></span><span id="statustext">connecting…</span></div>
+
+<section>
+  <h2>Push component</h2>
+  <div class="row">
+    <input id="pc-component" placeholder="component" value="card">
+    <input id="pc-target" value="all" title="target">
+    <button id="pc-push">Push</button>
+  </div>
+  <textarea id="pc-opts">{"title":"Hello"}</textarea>
+</section>
+
+<section>
+  <h2>Open poll</h2>
+  <div class="row">
+    <input id="op-id" value="p1" title="promptId">
+    <input id="op-prompt" value="Ship it?" title="prompt">
+    <input id="op-options" value="yes,no" title="comma options">
+    <button id="op-open">Open poll</button>
+    <button id="op-close">Close</button>
+  </div>
+</section>
+
+<section>
+  <h2>Co-presenter signals</h2>
+  <div class="row">
+    <button class="cp" data-signal="primary">I'm primary</button>
+    <button class="cp" data-signal="I've got this">I've got this</button>
+    <button class="cp" data-signal="you prep next">You prep next</button>
+  </div>
+  <div id="copresent-view"></div>
+</section>
+
+<section>
+  <h2>Session</h2>
+  <div class="row">
+    <button id="reload">Reload clients</button>
+    <button id="clear">Clear</button>
+  </div>
+</section>
+
+<div id="chatbar">
+  <input id="chat-input" placeholder="chat (disabled until a listener is attached)" disabled>
+  <button id="chat-send" disabled>Send</button>
+</div>
+
+<script>
+(function(){
+  var q = new URLSearchParams(location.search);
+  var identity = { userId: q.get('userId') || ('pres-'+Math.random().toString(36).slice(2,7)), userName: q.get('name') || 'Presenter', role: 'presenter' };
+  var proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  var ws = new WebSocket(proto + '://' + location.host);
+  var copresent = {};
+  ws.onopen = function(){ document.getElementById('led').classList.add('on'); document.getElementById('statustext').textContent = 'connected · ' + identity.userName; ws.send(JSON.stringify(Object.assign({ t:'hello' }, identity))); };
+  ws.onclose = function(){ document.getElementById('led').classList.remove('on'); document.getElementById('statustext').textContent = 'disconnected'; };
+
+  function control(action, args){ if (ws.readyState === 1) ws.send(JSON.stringify({ t:'control', action:action, args:args||{} })); }
+  function op(path, verb, value){ if (ws.readyState === 1) ws.send(JSON.stringify({ t:'op', path:path, verb:verb, value:value, opId: identity.userId+':'+Date.now() })); }
+  window.__control = control; window.__op = op;   // test hooks
+
+  ws.onmessage = function(ev){
+    var m; try { m = JSON.parse(ev.data); } catch(e){ return; }
+    if (m.t === 'ping'){ ws.send(JSON.stringify({ t:'pong', ts:m.ts })); return; }
+    if (m.t === 'chat_listeners'){ updateChatEnabled(m.n); return; }
+    if (m.t === 'snapshot' && m.state){ if (m.state.copresent) { copresent = m.state.copresent; renderCopresent(); } }
+    if (m.t === 'host' && m.msg && m.msg.type === 'diff'){ applyDiff(m.msg.diff); }
+  };
+  function applyDiff(diff){
+    for (var p in diff){ if (!diff.hasOwnProperty(p)) continue;
+      if (p.indexOf('copresent/') === 0){ var uid = p.split('/')[1]; if (diff[p]==null) delete copresent[uid]; else copresent[uid]=diff[p]; renderCopresent(); }
+    }
+  }
+  function renderCopresent(){
+    var lines = Object.keys(copresent).map(function(uid){ var v=copresent[uid]||{}; return (v.name||uid)+': '+(v.signal||''); });
+    document.getElementById('copresent-view').textContent = lines.join('\n');
+  }
+  function updateChatEnabled(listeners){
+    var enabled = (listeners|0) > 0;
+    document.getElementById('chat-input').disabled = !enabled;
+    document.getElementById('chat-send').disabled = !enabled;
+    document.getElementById('chat-input').placeholder = enabled ? 'chat…' : 'chat (disabled until a listener is attached)';
+  }
+
+  document.getElementById('pc-push').onclick = function(){ var opts={}; try { opts = JSON.parse(document.getElementById('pc-opts').value || '{}'); } catch(e){} control('push_component', { component: document.getElementById('pc-component').value, opts: opts, target: document.getElementById('pc-target').value }); };
+  document.getElementById('op-open').onclick = function(){ var opts = document.getElementById('op-options').value.split(',').map(function(s){ s=s.trim(); return { label:s, value:s }; }); control('open_poll', { promptId: document.getElementById('op-id').value, prompt: document.getElementById('op-prompt').value, options: opts, target:'participant', resultsTarget:'presenter' }); };
+  document.getElementById('op-close').onclick = function(){ control('close_poll', { promptId: document.getElementById('op-id').value }); };
+  [].forEach.call(document.querySelectorAll('.cp'), function(b){ b.onclick = function(){ op('copresent/'+identity.userId, 'set', { signal: b.getAttribute('data-signal'), name: identity.userName }); }; });
+  document.getElementById('reload').onclick = function(){ control('reload_clients', { target:'all', delay:0 }); };
+  document.getElementById('clear').onclick = function(){ control('clear', { target:'all' }); };
+  document.getElementById('chat-send').onclick = function(){ var v = document.getElementById('chat-input').value; if (!v) return; op('chat', 'add', { id: identity.userId + '-' + Date.now(), text: v, name: identity.userName }); document.getElementById('chat-input').value=''; };
+})();
+</script>
+</body>
+</html>

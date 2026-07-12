@@ -1,0 +1,14 @@
+/* STEPPER / FLOW. Extends theme tokens. */
+.ap-stepper { display: flex; flex-direction: column; gap: 1.2rem; }
+.ap-stepper-progress { display: flex; gap: 0.5rem; }
+.ap-stepper-dot {
+  width: 11px; height: 11px; border-radius: 50%;
+  background: var(--ap-surface-2); border: 1px solid var(--ap-border);
+  transition: background var(--ap-speed), box-shadow var(--ap-speed);
+}
+.ap-stepper-dot.is-active { background: var(--ap-accent); box-shadow: 0 0 8px var(--ap-accent); }
+.ap-stepper-dot.is-done { background: var(--ap-ok); }
+.ap-stepper-stage { min-height: 5rem; }
+.ap-stepper-controls { display: flex; }
+.ap-stepper-next { align-self: flex-start; }
+@media (prefers-reduced-motion: reduce) { .ap-stepper-dot { transition: none; } }
