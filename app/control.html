@@ -85,7 +85,7 @@
     <h2>Ad-hoc push</h2>
     <div class="row"><input id="pc-component" value="card" style="width:110px"><input id="pc-target" value="all" style="width:80px" title="target"><button id="pc-push">Push</button></div>
     <textarea id="pc-opts">{"title":"Hello"}</textarea>
-    <div class="row"><button id="op-open" class="mini">Open poll</button><input id="op-id" value="p1" style="width:50px"><input id="op-prompt" value="Ready?" style="width:110px"><input id="op-options" value="yes,no" style="width:90px"><button id="op-close" class="mini">Close</button></div>
+    <div class="row"><button id="op-open" class="mini">Open poll</button><input id="op-id" value="p1" style="width:50px"><input id="op-prompt" value="Ship it?" style="width:110px"><input id="op-options" value="yes,no" style="width:90px"><button id="op-close" class="mini">Close</button></div>
   </section>
 </div>
 
@@ -100,7 +100,7 @@
 <script>
 (function(){
   var q = new URLSearchParams(location.search);
-  var identity = { userId: q.get('userId')||'gm', userName: q.get('name')||'GM', role: q.get('role')||'gm' };
+  var identity = { userId: q.get('userId')||'gm', userName: q.get('name')||'GM', role: q.get('role')||'presenter' };
   var ws=null, module=null, curBeat=-1, users=[], viewingAs=null;
   var $=function(id){return document.getElementById(id);};
 
@@ -194,6 +194,7 @@
   $('op-close').onclick=function(){ control('close_poll',{promptId:$('op-id').value}); };
 
   connect(); refreshModules();
+  window.__control = control;   // test/automation hook (P1) — drive control ops programmatically
   window.__gm={ users:function(){return users;}, module:function(){return module;}, cur:function(){return curBeat;} };
 })();
 </script>
