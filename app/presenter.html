@@ -6,12 +6,24 @@
 <title>Argus Presenter</title>
 <style>
   html,body{margin:0;height:100%;background:#0a0a1a;color:#cfe9ff;font-family:'Courier New',monospace;overflow:hidden;}
-  #stage{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;}
+  #stage{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;transform:scale(var(--ap-scale,1));transform-origin:center center;filter:var(--ap-filter,none);transition:transform .12s ease;}
   #frame{border:0;width:100%;height:100%;background:transparent;}
   #idle{opacity:.55;letter-spacing:.2em;font-size:.8rem;text-transform:uppercase;display:flex;align-items:center;justify-content:center;width:100%;height:100%;}
   #idle .ap-idle-brand{max-width:min(90vw,900px);max-height:90vh;width:auto;height:auto;}
-  #led{position:fixed;top:10px;right:12px;width:10px;height:10px;border-radius:50%;background:#cc3333;box-shadow:0 0 8px #cc3333;}
+  /* green connectivity dot is now a Settings button (larger hit target wraps the small dot) */
+  #led-btn{position:fixed;top:4px;right:6px;z-index:60;background:none;border:0;padding:8px;cursor:pointer;line-height:0;border-radius:8px;}
+  #led-btn:hover{background:rgba(255,255,255,.06);}
+  #led{display:block;width:10px;height:10px;border-radius:50%;background:#cc3333;box-shadow:0 0 8px #cc3333;}
   #led.on{background:#22e5a0;box-shadow:0 0 8px #22e5a0;}
+  #ap-config{position:fixed;top:34px;right:8px;z-index:61;width:236px;background:rgba(6,10,24,.96);border:1px solid #2a3a5a;border-radius:8px;padding:10px 12px;font:12px/1.4 'Courier New',monospace;color:#cfe9ff;display:none;box-shadow:0 6px 24px rgba(0,0,0,.5);}
+  #ap-config.open{display:block;}
+  #ap-config h4{margin:0 0 6px;font-size:11px;letter-spacing:.12em;color:#6cf;text-transform:uppercase;}
+  #ap-config .row{display:flex;gap:4px;align-items:center;margin:5px 0;flex-wrap:wrap;}
+  #ap-config button{background:#12234a;color:#cfe9ff;border:1px solid #2a3a5a;border-radius:5px;padding:3px 7px;font:inherit;cursor:pointer;}
+  #ap-config button:hover{border-color:#22e5a0;}
+  #ap-config button.sel{border-color:#22e5a0;color:#fff;}
+  #ap-config .k{color:#8ab;}
+  #ap-config .rd{font-size:11px;opacity:.85;margin-top:8px;border-top:1px solid #1c2a44;padding-top:6px;}
   #who{position:fixed;bottom:8px;left:12px;font-size:.65rem;opacity:.4;letter-spacing:.1em;}
   #ap-chat{position:fixed;bottom:0;left:0;right:0;display:flex;gap:6px;padding:6px 10px 6px 130px;background:rgba(6,10,24,.85);border-top:1px solid #1c2a44;z-index:40;}
   #ap-chat input{flex:1 1 auto;background:#0d1633;color:#cfe9ff;border:1px solid #2a3a5a;border-radius:6px;padding:5px 8px;font:inherit;}
@@ -27,7 +39,14 @@
 </style>
 </head>
 <body>
-<div id="led"></div>
+<button id="led-btn" title="Settings" aria-haspopup="true" aria-label="Connection and settings"><span id="led"></span></button>
+<div id="ap-config" role="dialog" aria-label="Settings">
+  <h4>Display</h4>
+  <div class="row"><span class="k">Zoom</span> <button data-scale="0.9">90%</button><button data-scale="1">100%</button><button data-scale="1.25">125%</button><button data-scale="1.5">150%</button></div>
+  <div class="row"><span class="k">Contrast</span> <button id="cfg-contrast">High-contrast: off</button></div>
+  <div class="rd" id="cfg-readout"></div>
+  <div class="row" style="margin-top:8px"><button id="cfg-close">Close</button></div>
+</div>
 <div id="stage"><div id="idle"><img class="ap-idle-brand" src="/branding/argus-presenter.svg" alt="Argus Presenter — awaiting content"></div></div>
 <div id="who"></div>
 <div id="ap-chat"><input id="ap-chat-input" disabled placeholder="chat (disabled until a listener is attached)"><button id="ap-chat-send" disabled>Send</button></div>
@@ -174,6 +193,39 @@
     if (d.type === 'op') ws.send(JSON.stringify({ t:'op', path:d.path, verb:d.verb, value:d.value, opId:d.opId }));
     else ws.send(JSON.stringify({ t:'result', msg: d }));
   });
+
+  // ---- Config Panel (Plan 0438 Group B, POC): click the green connectivity dot → settings overlay.
+  // Two working controls (zoom + high-contrast, both transform the live display) + a connection readout.
+  (function(){
+    var STORE = NS + ':cfg';
+    var cfg = { scale: 1, contrast: false };
+    try { cfg = Object.assign(cfg, JSON.parse(localStorage.getItem(STORE) || '{}')); } catch(e){}
+    var panel = document.getElementById('ap-config');
+    var btn = document.getElementById('led-btn');
+    function apply(){
+      stage.style.setProperty('--ap-scale', cfg.scale);
+      stage.style.setProperty('--ap-filter', cfg.contrast ? 'contrast(1.25) brightness(1.08)' : 'none');
+      [].forEach.call(panel.querySelectorAll('[data-scale]'), function(b){ b.classList.toggle('sel', parseFloat(b.getAttribute('data-scale')) === cfg.scale); });
+      var cb = document.getElementById('cfg-contrast'); cb.textContent = 'High-contrast: ' + (cfg.contrast ? 'on' : 'off'); cb.classList.toggle('sel', cfg.contrast);
+      try { localStorage.setItem(STORE, JSON.stringify(cfg)); } catch(e){}
+    }
+    function readout(){
+      document.getElementById('cfg-readout').innerHTML =
+        '<span class="k">server</span> ' + location.host + '<br>' +
+        '<span class="k">you</span> ' + identity.userName + ' (' + identity.userId + ')<br>' +
+        '<span class="k">role</span> ' + identity.role + ' · <span class="k">link</span> ' + (ws && ws.readyState === 1 ? 'connected' : 'offline');
+    }
+    function toggle(open){ var show = (open === undefined) ? !panel.classList.contains('open') : open; panel.classList.toggle('open', show); if (show) readout(); }
+    btn.addEventListener('click', function(e){ e.stopPropagation(); toggle(); });
+    panel.addEventListener('click', function(e){ e.stopPropagation(); });
+    document.addEventListener('click', function(){ toggle(false); });
+    document.addEventListener('keydown', function(e){ if (e.key === 'Escape') toggle(false); });
+    [].forEach.call(panel.querySelectorAll('[data-scale]'), function(b){ b.addEventListener('click', function(){ cfg.scale = parseFloat(b.getAttribute('data-scale')); apply(); }); });
+    document.getElementById('cfg-contrast').addEventListener('click', function(){ cfg.contrast = !cfg.contrast; apply(); });
+    document.getElementById('cfg-close').addEventListener('click', function(){ toggle(false); });
+    apply();
+    window.__apConfig = { get: function(){ return cfg; }, open: function(){ toggle(true); } };
+  })();
 })();
 </script>
 </body>

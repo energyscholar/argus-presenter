@@ -22,6 +22,7 @@ import { WebSocketServer } from 'ws';
 import { assemble } from '../harness/assemble.mjs';
 import * as log from './log.mjs';
 import { createStore, isEphemeral, validOp } from './state.mjs';
+import { validate, summarize } from './validate.mjs';
 
 // X6 resilience caps.
 const MAX_CONNS = 200;              // connection cap
@@ -394,6 +395,8 @@ export function createServer({ port = 0 } = {}) {
     setModule(module) {
       contentModule = { title: (module && module.title) || 'Module', beats: (module && module.beats) || [] };
       currentBeat = -1;
+      // Plan 0438 D: validate on load — observability only, NEVER blocks (warn-never-block).
+      try { const v = summarize(validate({ title: contentModule.title, beats: contentModule.beats, manifest: module && module.manifest })); if (v.warn || v.info) log.info('module', 'validate', { warn: v.warn, info: v.info, codes: v.warnings.concat(v.infos).map((x) => x.code) }); } catch (e) { log.warn('module', 'validate-error', { err: String(e).slice(0, 120) }); }
       serverApply({ path: 'module/len', verb: 'set', value: contentModule.beats.length });
       serverApply({ path: 'module/current', verb: 'set', value: -1 });
       return { title: contentModule.title, beats: contentModule.beats.length };
