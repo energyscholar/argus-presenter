@@ -1,0 +1,31 @@
+{
+  "manifest": {
+    "title": "Welcome to Argus Presenter",
+    "version": "1.0",
+    "kind": "demo",
+    "summary": "A tiny domain-neutral module that demonstrates sections, beats, and the discover→validate→load flow.",
+    "requirements": { "terminalClear": true, "gateTimeoutMs": 180000 }
+  },
+  "sections": [
+    {
+      "id": "intro",
+      "title": "Opening",
+      "kind": "section",
+      "summary": "Sets the scene.",
+      "beatIds": ["b-welcome", "b-what"]
+    },
+    {
+      "id": "interact",
+      "title": "A quick check",
+      "kind": "section",
+      "summary": "One decision + a wrap.",
+      "beatIds": ["b-pick", "b-wrap"]
+    }
+  ],
+  "beats": [
+    { "id": "b-welcome", "component": "narration", "promptId": "b-welcome", "opts": { "speaker": "Argus", "text": "Welcome. This deck is a content module: a portable set of beats you deliver one at a time.", "cta": "Continue" } },
+    { "id": "b-what", "component": "card", "promptId": "b-what", "opts": { "title": "What is a beat?", "body": "A beat is one screen the audience sees — narration, a card, a choice, a roll. Sections group beats for the outline.", "badges": ["module", "section", "beat"] } },
+    { "id": "b-pick", "component": "choice", "promptId": "b-pick", "opts": { "prompt": "Ready to build your own?", "options": [ { "label": "Yes", "value": "yes" }, { "label": "Show me more", "value": "more" } ] }, "branch": { "yes": "b-wrap", "more": "b-wrap" } },
+    { "id": "b-wrap", "component": "card", "promptId": "b-wrap", "opts": { "title": "That's the loop", "body": "Discover a module → validate → load → deliver beat by beat → end returns to branding.", "footer": "Argus Presenter" } }
+  ]
+}

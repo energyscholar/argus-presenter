@@ -5,116 +5,196 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Argus Presenter — Control</title>
 <style>
-  html,body{margin:0;background:#0a0a1a;color:#cfe9ff;font-family:'Courier New',monospace;}
-  body{padding:14px;max-width:820px;margin:0 auto;}
-  h1{font-size:1rem;letter-spacing:.15em;text-transform:uppercase;opacity:.8;}
-  section{border:1px solid #21314f;border-radius:8px;padding:10px 12px;margin:10px 0;background:rgba(10,16,32,.6);}
-  h2{font-size:.75rem;letter-spacing:.12em;text-transform:uppercase;color:#6cf;margin:.1rem 0 .5rem;}
-  input,textarea,select,button{font:inherit;background:#0d1633;color:#cfe9ff;border:1px solid #2a3a5a;border-radius:6px;padding:5px 8px;margin:2px 0;}
-  textarea{width:100%;min-height:44px;}
-  button{cursor:pointer;background:#12234a;}
-  button:hover{border-color:#22e5a0;color:#fff;}
-  #status{font-size:.75rem;opacity:.7;}
-  #led{display:inline-block;width:9px;height:9px;border-radius:50%;background:#c33;margin-right:6px;}
-  #led.on{background:#22e5a0;}
-  .row{display:flex;gap:6px;flex-wrap:wrap;align-items:center;}
-  #copresent-view{font-size:.75rem;color:#9fd;margin-top:6px;white-space:pre-wrap;}
-  #chatbar{position:sticky;bottom:0;display:flex;gap:6px;padding-top:8px;background:#0a0a1a;}
-  #chatbar input{flex:1 1 auto;}
+  :root{--bg:#0a0e1c;--panel:rgba(10,16,32,.6);--line:#21314f;--ink:#cfe9ff;--dim:#8ab;--ok:#22e5a0;--warn:#ffb454;--danger:#ff6b6b;}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font:13px/1.45 'Segoe UI',system-ui,sans-serif;}
+  body{display:grid;grid-template-columns:1fr 320px;grid-template-rows:auto 1fr;gap:10px;padding:10px;box-sizing:border-box;height:100vh;}
+  h1{grid-column:1/3;margin:0;font-size:15px;letter-spacing:.04em;display:flex;align-items:center;gap:10px;}
+  #status{font-size:.72rem;color:var(--dim);display:flex;align-items:center;gap:5px;}
+  #led{display:inline-block;width:9px;height:9px;border-radius:50%;background:#c33;}#led.on{background:var(--ok);}
+  .col{min-height:0;overflow:auto;display:flex;flex-direction:column;gap:10px;}
+  section{border:1px solid var(--line);border-radius:8px;padding:10px 12px;background:var(--panel);}
+  section h2{margin:0 0 8px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);}
+  input,select,textarea,button{font:inherit;background:#0d1633;color:var(--ink);border:1px solid #2a3a5a;border-radius:6px;padding:5px 8px;}
+  button{cursor:pointer;background:#12234a;}button:hover{border-color:var(--ok);color:#fff;}
+  button.primary{background:#173a2e;border-color:var(--ok);}
+  button:disabled{opacity:.4;cursor:default;}
+  .row{display:flex;gap:6px;align-items:center;flex-wrap:wrap;}
+  .badge{font-size:10px;padding:1px 6px;border-radius:10px;border:1px solid #2a3a5a;color:var(--dim);}
+  .badge.ok{color:var(--ok);border-color:var(--ok);}.badge.warn{color:var(--warn);border-color:var(--warn);}
+  #nowplaying{display:flex;gap:10px;align-items:center;}
+  #preview{width:150px;height:98px;border:1px solid #2a3a5a;border-radius:6px;overflow:hidden;background:#050510;flex:0 0 auto;position:relative;}
+  #preview iframe{border:0;width:600px;height:392px;transform:scale(.25);transform-origin:top left;pointer-events:none;}
+  #preview .pvlabel{position:absolute;left:0;right:0;bottom:0;font-size:9px;text-align:center;background:rgba(0,0,0,.6);color:var(--dim);padding:1px;}
+  #np-meta{font-size:12px;}#np-meta b{color:#fff;}
+  #viewingas{font-size:11px;color:var(--warn);}
+  .sec{border:1px solid #1c2a44;border-radius:6px;margin:5px 0;}
+  .sec>summary{cursor:pointer;padding:5px 8px;font-weight:600;list-style:none;display:flex;justify-content:space-between;gap:8px;}
+  .sec>summary::-webkit-details-marker{display:none;}
+  .sec .cnt{font-size:10px;color:var(--dim);font-weight:400;}
+  .beat{padding:3px 8px 3px 20px;font-size:12px;cursor:pointer;border-left:2px solid transparent;color:var(--dim);}
+  .beat:hover{color:#fff;}
+  .beat.cur{border-left-color:var(--ok);color:#fff;background:rgba(34,229,160,.08);}
+  .beat .comp{font-size:9px;opacity:.6;}
+  #users{max-height:290px;overflow:auto;}
+  .user{display:flex;gap:6px;align-items:center;padding:4px 6px;border-radius:5px;cursor:pointer;border:1px solid transparent;}
+  .user:hover{border-color:#2a3a5a;}
+  .user.sel{border-color:var(--warn);background:rgba(255,180,84,.08);}
+  .user .u-role{font-size:9px;padding:0 5px;border-radius:8px;border:1px solid #2a3a5a;color:var(--dim);}
+  .user .u-meta{font-size:10px;color:var(--dim);margin-left:auto;text-align:right;}
+  .mini{font-size:11px;padding:3px 6px;}
+  textarea{width:100%;box-sizing:border-box;min-height:40px;}
 </style>
 </head>
 <body>
-<h1>Presenter Control</h1>
-<div id="status"><span id="led"></span><span id="statustext">connecting…</span></div>
+<h1>◉ Argus Presenter — Control
+  <span id="status"><span id="led"></span><span id="statustext">connecting…</span></span></h1>
 
-<section>
-  <h2>Push component</h2>
-  <div class="row">
-    <input id="pc-component" placeholder="component" value="card">
-    <input id="pc-target" value="all" title="target">
-    <button id="pc-push">Push</button>
-  </div>
-  <textarea id="pc-opts">{"title":"Hello"}</textarea>
-</section>
+<div class="col">
+  <section>
+    <h2>Now playing</h2>
+    <div id="nowplaying">
+      <div id="preview"><iframe id="pvframe" sandbox="allow-scripts"></iframe><div class="pvlabel" id="pvlabel">idle</div></div>
+      <div>
+        <div id="np-meta">Showing: <b id="np-what">idle (branding)</b></div>
+        <div id="viewingas"></div>
+        <div class="row" style="margin-top:6px">
+          <button class="mini" id="btn-start" disabled>▶ Start</button>
+          <button class="mini" id="btn-prev" disabled>◀ Prev</button>
+          <button class="mini" id="btn-next" disabled>Next ▶</button>
+          <button class="mini" id="btn-end">■ End → branding</button>
+        </div>
+      </div>
+    </div>
+  </section>
 
-<section>
-  <h2>Open poll</h2>
-  <div class="row">
-    <input id="op-id" value="p1" title="promptId">
-    <input id="op-prompt" value="Ship it?" title="prompt">
-    <input id="op-options" value="yes,no" title="comma options">
-    <button id="op-open">Open poll</button>
-    <button id="op-close">Close</button>
-  </div>
-</section>
+  <section>
+    <h2>Module</h2>
+    <div class="row">
+      <select id="mod-select" style="flex:1 1 auto"><option value="">— select a module —</option></select>
+      <button id="mod-refresh" class="mini" title="rescan">⟳</button>
+    </div>
+    <div id="mod-info" style="margin-top:6px;font-size:12px;color:var(--dim)"></div>
+    <div class="row" style="margin-top:6px">
+      <button id="mod-load" class="primary" disabled>Validate &amp; Load</button>
+      <span id="mod-valid"></span>
+    </div>
+    <div id="outline" style="margin-top:8px"></div>
+  </section>
 
-<section>
-  <h2>Co-presenter signals</h2>
-  <div class="row">
-    <button class="cp" data-signal="primary">I'm primary</button>
-    <button class="cp" data-signal="I've got this">I've got this</button>
-    <button class="cp" data-signal="you prep next">You prep next</button>
-  </div>
-  <div id="copresent-view"></div>
-</section>
+  <section>
+    <h2>Ad-hoc push</h2>
+    <div class="row"><input id="pc-component" value="card" style="width:110px"><input id="pc-target" value="all" style="width:80px" title="target"><button id="pc-push">Push</button></div>
+    <textarea id="pc-opts">{"title":"Hello"}</textarea>
+    <div class="row"><button id="op-open" class="mini">Open poll</button><input id="op-id" value="p1" style="width:50px"><input id="op-prompt" value="Ready?" style="width:110px"><input id="op-options" value="yes,no" style="width:90px"><button id="op-close" class="mini">Close</button></div>
+  </section>
+</div>
 
-<section>
-  <h2>Session</h2>
-  <div class="row">
-    <button id="reload">Reload clients</button>
-    <button id="clear">Clear</button>
-  </div>
-</section>
-
-<div id="chatbar">
-  <input id="chat-input" placeholder="chat (disabled until a listener is attached)" disabled>
-  <button id="chat-send" disabled>Send</button>
+<div class="col">
+  <section>
+    <h2>Users <span class="badge" id="user-count">0</span></h2>
+    <div class="row" style="margin-bottom:6px"><button class="mini sel" id="view-all">View: ALL (default)</button></div>
+    <div id="users"></div>
+  </section>
 </div>
 
 <script>
 (function(){
   var q = new URLSearchParams(location.search);
-  var identity = { userId: q.get('userId') || ('pres-'+Math.random().toString(36).slice(2,7)), userName: q.get('name') || 'Presenter', role: 'presenter' };
-  var proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  var ws = new WebSocket(proto + '://' + location.host);
-  var copresent = {};
-  ws.onopen = function(){ document.getElementById('led').classList.add('on'); document.getElementById('statustext').textContent = 'connected · ' + identity.userName; ws.send(JSON.stringify(Object.assign({ t:'hello' }, identity))); };
-  ws.onclose = function(){ document.getElementById('led').classList.remove('on'); document.getElementById('statustext').textContent = 'disconnected'; };
+  var identity = { userId: q.get('userId')||'gm', userName: q.get('name')||'GM', role: q.get('role')||'gm' };
+  var ws=null, module=null, curBeat=-1, users=[], viewingAs=null;
+  var $=function(id){return document.getElementById(id);};
 
-  function control(action, args){ if (ws.readyState === 1) ws.send(JSON.stringify({ t:'control', action:action, args:args||{} })); }
-  function op(path, verb, value){ if (ws.readyState === 1) ws.send(JSON.stringify({ t:'op', path:path, verb:verb, value:value, opId: identity.userId+':'+Date.now() })); }
-  window.__control = control; window.__op = op;   // test hooks
+  function control(action,args){ if(ws&&ws.readyState===1) ws.send(JSON.stringify({t:'control',action:action,args:args||{}})); }
+  function connect(){
+    ws=new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host);
+    ws.onopen=function(){ $('led').classList.add('on'); $('statustext').textContent='connected · '+identity.userName; ws.send(JSON.stringify(Object.assign({t:'hello'},identity))); };
+    ws.onclose=function(){ $('led').classList.remove('on'); $('statustext').textContent='disconnected'; setTimeout(connect,800); };
+    ws.onmessage=onMsg;
+  }
+  function onMsg(ev){ var m; try{m=JSON.parse(ev.data);}catch(e){return;}
+    if(m.t==='ping'){ ws.send(JSON.stringify({t:'pong',ts:m.ts})); return; }
+    if(m.t==='presence'){ users=m.users||[]; renderUsers(); return; }
+    if(m.t==='content'){ renderPreview(m.html, m.contentId); return; }
+    if(m.t==='clear'){ renderPreview(null,'idle'); return; }
+    if(m.t==='host'&&m.msg&&m.msg.type==='diff'&&m.msg.diff&&('module/current' in m.msg.diff)){ curBeat=m.msg.diff['module/current']; renderOutline(); renderNav(); }
+  }
 
-  ws.onmessage = function(ev){
-    var m; try { m = JSON.parse(ev.data); } catch(e){ return; }
-    if (m.t === 'ping'){ ws.send(JSON.stringify({ t:'pong', ts:m.ts })); return; }
-    if (m.t === 'chat_listeners'){ updateChatEnabled(m.n); return; }
-    if (m.t === 'snapshot' && m.state){ if (m.state.copresent) { copresent = m.state.copresent; renderCopresent(); } }
-    if (m.t === 'host' && m.msg && m.msg.type === 'diff'){ applyDiff(m.msg.diff); }
+  function renderPreview(html, label){
+    var f=$('pvframe');
+    if(html==null){ f.srcdoc='<body style="margin:0;background:#050510"></body>'; }
+    else if(html!==undefined){ f.srcdoc=html; }
+    if(label!==undefined) $('pvlabel').textContent=label||'—';
+    var who = viewingAs ? ('as '+viewingAs) : 'default (ALL)';
+    $('np-what').textContent = ($('pvlabel').textContent||'idle') + ' · ' + who;
+  }
+
+  function refreshModules(){
+    fetch('/api/modules').then(function(r){return r.json();}).then(function(list){
+      var sel=$('mod-select'); sel.innerHTML='<option value="">— select a module —</option>';
+      list.forEach(function(m){ var o=document.createElement('option'); o.value=m.id;
+        o.textContent=m.title+' — '+m.beats+' beats/'+m.sections+' sec'+(m.warn?(' ⚠'+m.warn):'')+(m.error?' (ERR)':''); sel.appendChild(o); });
+    }).catch(function(){ $('mod-info').textContent='(module list unavailable)'; });
+  }
+  $('mod-select').onchange=function(){ var id=this.value; module=null; curBeat=-1; $('mod-valid').innerHTML=''; $('outline').innerHTML=''; renderNav();
+    if(!id){ $('mod-info').textContent=''; $('mod-load').disabled=true; return; }
+    fetch('/api/modules/'+encodeURIComponent(id)).then(function(r){return r.json();}).then(function(d){
+      module=d.module; var v=d.validation;
+      $('mod-info').textContent=(module.manifest&&module.manifest.summary)||'';
+      $('mod-valid').innerHTML = v.warn? '<span class="badge warn">⚠ '+v.warn+' warnings</span>' : '<span class="badge ok">✓ valid</span>';
+      $('mod-load').disabled=false; renderOutline();
+    });
   };
-  function applyDiff(diff){
-    for (var p in diff){ if (!diff.hasOwnProperty(p)) continue;
-      if (p.indexOf('copresent/') === 0){ var uid = p.split('/')[1]; if (diff[p]==null) delete copresent[uid]; else copresent[uid]=diff[p]; renderCopresent(); }
-    }
-  }
-  function renderCopresent(){
-    var lines = Object.keys(copresent).map(function(uid){ var v=copresent[uid]||{}; return (v.name||uid)+': '+(v.signal||''); });
-    document.getElementById('copresent-view').textContent = lines.join('\n');
-  }
-  function updateChatEnabled(listeners){
-    var enabled = (listeners|0) > 0;
-    document.getElementById('chat-input').disabled = !enabled;
-    document.getElementById('chat-send').disabled = !enabled;
-    document.getElementById('chat-input').placeholder = enabled ? 'chat…' : 'chat (disabled until a listener is attached)';
-  }
+  $('mod-load').onclick=function(){ if(!module) return; control('load_module',{module:module}); curBeat=-1; renderNav(); $('btn-start').disabled=false; };
+  $('mod-refresh').onclick=refreshModules;
 
-  document.getElementById('pc-push').onclick = function(){ var opts={}; try { opts = JSON.parse(document.getElementById('pc-opts').value || '{}'); } catch(e){} control('push_component', { component: document.getElementById('pc-component').value, opts: opts, target: document.getElementById('pc-target').value }); };
-  document.getElementById('op-open').onclick = function(){ var opts = document.getElementById('op-options').value.split(',').map(function(s){ s=s.trim(); return { label:s, value:s }; }); control('open_poll', { promptId: document.getElementById('op-id').value, prompt: document.getElementById('op-prompt').value, options: opts, target:'participant', resultsTarget:'presenter' }); };
-  document.getElementById('op-close').onclick = function(){ control('close_poll', { promptId: document.getElementById('op-id').value }); };
-  [].forEach.call(document.querySelectorAll('.cp'), function(b){ b.onclick = function(){ op('copresent/'+identity.userId, 'set', { signal: b.getAttribute('data-signal'), name: identity.userName }); }; });
-  document.getElementById('reload').onclick = function(){ control('reload_clients', { target:'all', delay:0 }); };
-  document.getElementById('clear').onclick = function(){ control('clear', { target:'all' }); };
-  document.getElementById('chat-send').onclick = function(){ var v = document.getElementById('chat-input').value; if (!v) return; op('chat', 'add', { id: identity.userId + '-' + Date.now(), text: v, name: identity.userName }); document.getElementById('chat-input').value=''; };
+  function beatById(id){ return (module.beats||[]).find(function(b){return b.id===id;}); }
+  function beatIndex(id){ return (module.beats||[]).findIndex(function(b){return b.id===id;}); }
+  function renderOutline(){
+    if(!module){ $('outline').innerHTML=''; return; }
+    var secs = module.sections && module.sections.length ? module.sections : [{title:'(all beats)',beatIds:(module.beats||[]).map(function(b){return b.id;})}];
+    $('outline').innerHTML='';
+    secs.forEach(function(s){
+      var det=document.createElement('details'); det.className='sec'; det.open=true;
+      var sum=document.createElement('summary'); sum.innerHTML='<span>'+(s.title||'section')+'</span><span class="cnt">'+(s.beatIds||[]).length+' beats</span>';
+      det.appendChild(sum);
+      (s.beatIds||[]).forEach(function(bid){ var b=beatById(bid); if(!b) return; var i=beatIndex(bid);
+        var el=document.createElement('div'); el.className='beat'+(i===curBeat?' cur':''); el.dataset.i=i;
+        el.innerHTML=(((b.opts&&(b.opts.title||b.opts.prompt||b.opts.text))||b.id)+'').slice(0,42)+' <span class="comp">'+b.component+(b.target?(' →'+b.target):'')+'</span>';
+        el.onclick=function(){ control('show_beat',{index:i}); };
+        det.appendChild(el); });
+      $('outline').appendChild(det);
+    });
+  }
+  function renderNav(){ var on=!!module; $('btn-prev').disabled=!on||curBeat<=0; $('btn-next').disabled=!on; }
+  $('btn-start').onclick=function(){ control('show_beat',{index:0}); };
+  $('btn-prev').onclick=function(){ control('prev_beat',{}); };
+  $('btn-next').onclick=function(){ control('next_beat',{}); };
+  $('btn-end').onclick=function(){ control('clear',{target:'all'}); };
+
+  function renderUsers(){
+    $('user-count').textContent=users.length;
+    var box=$('users'); box.innerHTML='';
+    users.forEach(function(u){
+      var el=document.createElement('div'); el.className='user'+(viewingAs===u.userId?' sel':'');
+      el.innerHTML='<span class="u-role">'+u.role+'</span><b>'+(u.userName||u.userId)+'</b>'
+        +'<span class="u-meta">'+(u.ip||'')+'<br>sees: '+(u.display||'—')+'</span>';
+      el.onclick=function(){ selectView(u.userId); };
+      box.appendChild(el);
+    });
+  }
+  function selectView(uid){ viewingAs=uid; $('view-all').classList.remove('sel'); renderUsers();
+    var u=users.find(function(x){return x.userId===uid;});
+    renderPreview(undefined,(u&&u.display)||'—');
+    $('viewingas').textContent='▶ viewing as '+uid+' — they see: '+((u&&u.display)||'—')+'  (click ALL to return)';
+  }
+  $('view-all').onclick=function(){ viewingAs=null; this.classList.add('sel'); renderUsers(); $('viewingas').textContent=''; };
+
+  $('pc-push').onclick=function(){ var o={}; try{o=JSON.parse($('pc-opts').value||'{}');}catch(e){} control('push_component',{component:$('pc-component').value,opts:o,target:$('pc-target').value}); };
+  $('op-open').onclick=function(){ var opts=$('op-options').value.split(',').map(function(s){s=s.trim();return{label:s,value:s};}); control('open_poll',{promptId:$('op-id').value,prompt:$('op-prompt').value,options:opts,target:'participant',resultsTarget:'presenter'}); };
+  $('op-close').onclick=function(){ control('close_poll',{promptId:$('op-id').value}); };
+
+  connect(); refreshModules();
+  window.__gm={ users:function(){return users;}, module:function(){return module;}, cur:function(){return curBeat;} };
 })();
 </script>
 </body>

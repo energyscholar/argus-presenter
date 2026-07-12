@@ -15,7 +15,7 @@
  *   on(event, cb)  events: 'presence','result','poll'
  */
 import http from 'http';
-import { readFileSync } from 'fs';
+import { readFileSync, readdirSync, statSync, existsSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { WebSocketServer } from 'ws';
@@ -67,6 +67,34 @@ export function createServer({ port = 0 } = {}) {
 
   const CONTROL = join(__dirname, 'control.html');
   const BRANDING = join(__dirname, 'branding', 'argus-presenter.svg');
+  // --- Content-module registry. Modules are LOCAL JSON files (NOT the web) in MODULES_DIR
+  // (default ./modules; set PRESENTER_MODULES_DIR to point at your content, e.g. a campaign's
+  // adventures/). Read + validated on demand, cached by file mtime so repeat loads are snappy.
+  const MODULES_DIR = process.env.PRESENTER_MODULES_DIR || join(__dirname, '..', 'modules');
+  const moduleCache = new Map();   // id -> { mtimeMs, module }
+  function readModuleFile(id) {
+    if (!/^[\w.-]+$/.test(id)) return null;          // no path traversal
+    const file = join(MODULES_DIR, id + '.json');
+    if (!existsSync(file)) return null;
+    const mtimeMs = statSync(file).mtimeMs;
+    const hit = moduleCache.get(id);
+    if (hit && hit.mtimeMs === mtimeMs) return hit.module;   // cache hit
+    const module = JSON.parse(readFileSync(file, 'utf8'));
+    moduleCache.set(id, { mtimeMs, module });
+    return module;
+  }
+  function listModules() {
+    if (!existsSync(MODULES_DIR)) return [];
+    return readdirSync(MODULES_DIR).filter((f) => f.endsWith('.json')).map((f) => {
+      const id = f.slice(0, -5);
+      let module; try { module = readModuleFile(id); } catch (e) { return { id, error: String(e.message || e).slice(0, 80) }; }
+      if (!module) return { id, error: 'unreadable' };
+      const man = module.manifest || {};
+      const v = summarize(validate(module));
+      return { id, title: man.title || module.title || id, version: man.version || null,
+        beats: (module.beats || []).length, sections: (module.sections || []).length, warn: v.warn, info: v.info };
+    });
+  }
   const httpServer = http.createServer((req, res) => {
     if (req.url === '/' || req.url.startsWith('/?')) {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
@@ -78,12 +106,36 @@ export function createServer({ port = 0 } = {}) {
       // Default idle branding art (self-contained animated SVG; no external dep).
       try { res.writeHead(200, { 'content-type': 'image/svg+xml; charset=utf-8', 'cache-control': 'no-cache' }); res.end(readFileSync(BRANDING, 'utf8')); }
       catch (e) { res.writeHead(404); res.end('not found'); }
+    } else if (req.url === '/api/modules') {
+      // Discover available modules (id, title, counts, validation summary) — for the GM panel's SELECT list.
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-cache' });
+      res.end(JSON.stringify(listModules()));
+    } else if (req.url.startsWith('/api/modules/')) {
+      // Fetch ONE module (full JSON + validation) so the panel can validate-then-load.
+      const id = decodeURIComponent(req.url.slice(13).split('?')[0]);
+      let module = null; try { module = readModuleFile(id); } catch (e) { res.writeHead(400); res.end(JSON.stringify({ error: String(e.message || e) })); return; }
+      if (!module) { res.writeHead(404); res.end(JSON.stringify({ error: 'not found' })); return; }
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ id, module, validation: summarize(validate(module)) }));
     } else { res.writeHead(404); res.end('not found'); }
   });
   const wss = new WebSocketServer({ server: httpServer, maxPayload: MAX_PAYLOAD });
 
   function send(ws, msg) { try { ws.send(JSON.stringify(msg)); } catch (e) {} }
   function presence() { return [...conns.values()].map((c) => ({ userId: c.userId, userName: c.userName, role: c.role })); }
+  // Full presence (incl. IP + socketId + current display id) pushed to CONTROL roles only, for the GM user list.
+  function pushPresence() {
+    const users = [...conns.values()].map((c) => ({ userId: c.userId, userName: c.userName, role: c.role, ip: c.ip, socketId: c.id, display: displayIdFor(c) }));
+    for (const [ws, c] of conns.entries()) if (c.role === 'presenter' || c.role === 'ai' || c.role === 'gm') send(ws, { t: 'presence', users });
+  }
+  // A short label for what a given connection is currently showing (for the user list / tiny preview).
+  function displayIdFor(c) {
+    const d = displayByUser.get(c.userId) || displayByRole[c.role];
+    if (!d) return 'idle';
+    if (d.kind === 'content') return d.contentId || 'content';
+    if (d.kind === 'component') return (d.opts && d.opts.promptId) || d.component || 'component';
+    return d.kind || 'display';
+  }
   function targets(target) {
     if (target === 'all' || target == null) return [...conns.keys()];
     if (['participant', 'presenter', 'ai'].includes(target))
@@ -91,9 +143,12 @@ export function createServer({ port = 0 } = {}) {
     const ws = byUser.get(target); return ws ? [ws] : [];   // by userId
   }
 
-  wss.on('connection', (ws) => {
+  wss.on('connection', (ws, req) => {
     if (conns.size >= MAX_CONNS) { log.warn('conn', 'cap-reached', { conns: conns.size }); try { ws.close(1013, 'server busy'); } catch {} return; }
-    conns.set(ws, { id: 'c' + (++connSeq), userId: null, userName: null, role: 'participant', lastSeen: Date.now() });
+    // Capture client IP (x-forwarded-for through a proxy, else the socket peer). Shown ONLY to
+    // presenter/ai/gm in the user list — never broadcast to participants.
+    const ip = ((req && (req.headers['x-forwarded-for'] || (req.socket && req.socket.remoteAddress))) || '').toString().split(',')[0].trim() || null;
+    conns.set(ws, { id: 'c' + (++connSeq), userId: null, userName: null, role: 'participant', lastSeen: Date.now(), ip });
     ws.on('message', (buf) => {
       let m; try { m = JSON.parse(buf.toString()); } catch (e) { return; }
       const c = conns.get(ws);
@@ -113,7 +168,7 @@ export function createServer({ port = 0 } = {}) {
         send(ws, { t: 'ping', ts: Date.now() });   // X3 RTT probe
         log.info('conn', 'hello', { socketId: c.id, userId: c.userId, role: c.role, lastVersion: m.lastVersion || 0 });
         updateChatListeners();   // P3
-        emit('presence', presence());
+        emit('presence', presence()); pushPresence();
       } else if (m.t === 'result') {
         // Authoritative identity from the connection, NOT the client payload.
         const r = Object.assign({}, m.msg, { userId: c.userId, userName: c.userName, channel: c.userId });
@@ -266,6 +321,7 @@ export function createServer({ port = 0 } = {}) {
     if (target === 'all' || target == null) { for (const r of ROLES) displayByRole[r] = desc; displayByUser.clear(); }
     else if (ROLES.includes(target)) displayByRole[target] = desc;
     else displayByUser.set(target, desc);   // by userId
+    pushPresence();   // keep the GM user-list "currently sees" column live as displays change
   }
   // Stamp identity + apply the OPSEC scene strip via the PERMISSION MODEL (G2):
   // an item is included only if this role may READ its visibility. The scene
