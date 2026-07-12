@@ -218,7 +218,7 @@ export function createServer({ port = 0 } = {}) {
       case 'open_poll': api.openPoll(a); break;
       case 'close_poll': api.closePoll(a.promptId); break;
       case 'reload_clients': api.reloadClients(a.target || 'all', a.delay || 0); break;
-      case 'clear': for (const ws of targets(a.target || 'all')) send(ws, { t: 'clear' }); break;
+      case 'clear': api.clear(a.target || 'all'); break;   // route through api.clear so display descriptor is also reset (reconnect → branding)
       case 'op': handleOp(c, { path: a.path, verb: a.verb, value: a.value, opId: a.opId }); break;   // drive an op as the presenter
       case 'set_module': api.setModule(a.module || { beats: a.beats || [] }); break;   // Group I
       case 'show_beat': api.showBeat(a.index | 0); break;
@@ -370,6 +370,10 @@ export function createServer({ port = 0 } = {}) {
     getPoll: (promptId) => { const votes = store.get('polls/' + promptId + '/votes') || {}; return { promptId, ...tally(promptId), votes: Object.keys(votes).map((userId) => ({ userId, value: votes[userId] })) }; },
     // Hot-reload clients in place (swap client/server code without dropping them).
     reloadClients: (target = 'all', delay = 0) => targets(target).map((ws) => send(ws, { t: 'reload', delay })).length,
+    // Clear the display back to idle/branding. Sends {t:'clear'} to live clients AND drops the stored
+    // display descriptor so a RECONNECTING client converges to idle branding, not the stale last content
+    // (fixes "stuck on the end card, never reverts to branding"). Use as the standard session-end primitive.
+    clear: (target = 'all') => { setDisplay(target, null); return targets(target).map((ws) => send(ws, { t: 'clear' })).length; },
     closePoll: (promptId) => { const p = polls.get(promptId); if (p) p.open = false; serverApply({ path: 'polls/' + promptId + '/open', verb: 'set', value: false }); return { promptId, ...tally(promptId) }; },
     // Debug snapshot for the ?debug overlay + the presenter_debug MCP tool.
     // state = current authoritative view (proto: polls; the core store extends this
