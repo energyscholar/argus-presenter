@@ -24,6 +24,13 @@
   #ap-config button.sel{border-color:#22e5a0;color:#fff;}
   #ap-config .k{color:#8ab;}
   #ap-config .rd{font-size:11px;opacity:.85;margin-top:8px;border-top:1px solid #1c2a44;padding-top:6px;}
+  /* Presenter-control expand/collapse overlay (P5): full-screen iframe host for /control */
+  #ap-control-overlay{position:fixed;inset:0;z-index:70;display:none;flex-direction:column;background:#040814;}
+  #ap-control-overlay.open{display:flex;}
+  #ap-control-bar{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 12px;background:rgba(6,10,24,.96);border-bottom:1px solid #2a3a5a;font:12px/1.4 'Courier New',monospace;color:#6cf;letter-spacing:.1em;text-transform:uppercase;}
+  #ap-control-bar button{background:#12234a;color:#cfe9ff;border:1px solid #2a3a5a;border-radius:5px;padding:3px 9px;font:12px/1.4 'Courier New',monospace;cursor:pointer;}
+  #ap-control-bar button:hover{border-color:#22e5a0;}
+  #ap-control-frame{flex:1;width:100%;border:0;background:#040814;}
   #who{position:fixed;bottom:8px;left:12px;font-size:.65rem;opacity:.4;letter-spacing:.1em;}
   #ap-chat{position:fixed;bottom:0;left:0;right:0;display:flex;gap:6px;padding:6px 10px 6px 130px;background:rgba(6,10,24,.85);border-top:1px solid #1c2a44;z-index:40;}
   #ap-chat input{flex:1 1 auto;background:#0d1633;color:#cfe9ff;border:1px solid #2a3a5a;border-radius:6px;padding:5px 8px;font:inherit;}
@@ -45,8 +52,15 @@
   <div class="row"><span class="k">Zoom</span> <button data-scale="0.9">90%</button><button data-scale="1">100%</button><button data-scale="1.25">125%</button><button data-scale="1.5">150%</button></div>
   <div class="row"><span class="k">Contrast</span> <button id="cfg-contrast">High-contrast: off</button></div>
   <div class="row"><span class="k">Role</span> <button id="cfg-role-user" class="sel">User</button> <button id="cfg-role-presenter">Presenter</button></div>
+  <div class="row" id="cfg-control-row" style="display:none"><button id="cfg-open-control">▮ Show Presenter Control</button></div>
   <div class="rd" id="cfg-readout"></div>
   <div class="row" style="margin-top:8px"><button id="cfg-close">Close</button></div>
+</div>
+<div id="ap-control-overlay" role="dialog" aria-label="Presenter Control">
+  <div id="ap-control-bar"><span>Presenter Control</span><button id="ap-control-close">✕ Close</button></div>
+  <!-- #ap-control-frame is created lazily on expand and removed on collapse, so the
+       display page carries NO extra child browsing context while idle (a persistent
+       iframe would pollute the "does this page have a content frame?" invariant). -->
 </div>
 <div id="stage"><div id="idle"><img class="ap-idle-brand" src="/branding/argus-presenter.svg" alt="Argus Presenter — awaiting content"></div></div>
 <div id="who"></div>
@@ -240,9 +254,14 @@
     // which satisfies the AUTH-1 gate when a control token is configured server-side).
     var roleUserBtn = document.getElementById('cfg-role-user');
     var rolePresBtn = document.getElementById('cfg-role-presenter');
+    var controlRow = document.getElementById('cfg-control-row');
     function reflectRole(){
       roleUserBtn.classList.toggle('sel', identity.role !== 'presenter');
       rolePresBtn.classList.toggle('sel', identity.role === 'presenter');
+      // Only a presenter has a control panel; participants get no button.
+      var isPres = identity.role === 'presenter';
+      controlRow.style.display = isPres ? '' : 'none';
+      var ocb = document.getElementById('cfg-open-control'); if (ocb) ocb.disabled = !isPres;
     }
     function setRole(role){
       if (role === identity.role) return;
@@ -257,11 +276,45 @@
     rolePresBtn.addEventListener('click', function(){ setRole('presenter'); });
     reflectRole();
 
+    // ---- Presenter-control expand/collapse (P5). The control overlay hosts the
+    // SAME-ORIGIN /control page in a NON-sandboxed iframe (its ws/fetch resolve to
+    // 'self' → allowed by CSP frame-src/connect-src 'self'). Expanding "grows" from
+    // the Config panel; closing SHRINKS BACK to it. The base display socket is never
+    // touched. The iframe is created on open and REMOVED on close, so control.html's
+    // ws + rAF stop and no phantom child browsing context lingers (cf. MON-2).
+    var controlOverlay = document.getElementById('ap-control-overlay');
+    function openControl(){
+      var url = '/control?role=presenter';
+      if (identity.token) url += '&token=' + encodeURIComponent(identity.token);
+      // Create the iframe lazily (NO sandbox → same-origin → its ws/fetch resolve to
+      // 'self' and pass CSP). Existing only while expanded means the idle display page
+      // has no phantom child frame.
+      var f = document.getElementById('ap-control-frame');
+      if (!f) { f = document.createElement('iframe'); f.id = 'ap-control-frame'; f.setAttribute('name', 'ap-control-frame'); f.setAttribute('title', 'Presenter Control'); controlOverlay.appendChild(f); }
+      f.setAttribute('src', url);
+      controlOverlay.classList.add('open');
+      toggle(false);   // close Config so the overlay visually expands from it
+    }
+    function closeControl(){
+      controlOverlay.classList.remove('open');
+      // Remove the iframe entirely: tears down control.html's ws + rAF AND drops the
+      // child browsing context (cf. MON-2 — no hidden-but-live leak).
+      var f = document.getElementById('ap-control-frame');
+      if (f) f.remove();
+      toggle(true);    // shrink back to the Config panel
+    }
+    document.getElementById('cfg-open-control').addEventListener('click', function(e){ e.stopPropagation(); openControl(); });
+    document.getElementById('ap-control-close').addEventListener('click', function(e){ e.stopPropagation(); closeControl(); });
+
     apply();
     window.__apConfig = {
       role: function(){ return identity.role; },
       open: function(){ return panel.classList.contains('open'); },
       get: function(){ return cfg; }
+    };
+    window.__apControl = {
+      open: function(){ return controlOverlay.classList.contains('open'); },
+      frameSrc: function(){ var f = document.getElementById('ap-control-frame'); return (f && f.getAttribute('src')) || ''; }
     };
   })();
 })();
