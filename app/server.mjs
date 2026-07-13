@@ -212,7 +212,7 @@ export function createServer({ port = 0, controlToken = null } = {}) {
       } else if (m.t === 'op') {
         handleOp(c, m);
       } else if (m.t === 'control') {
-        handleControl(c, m);
+        handleControl(c, m, ws);
       } else if (m.t === 'pong') {
         if (typeof m.ts === 'number') { const rtt = Date.now() - m.ts; telem.rtt.last = rtt; telem.rtt.sum += rtt; telem.rtt.count++; }
       } else if (m.t === 'telemetry') {
@@ -301,10 +301,22 @@ export function createServer({ port = 0, controlToken = null } = {}) {
 
   // P1: presenter control-message handler — the SAME server API the AI/MCP drives.
   // Presenter/ai only (server-authoritative role, S1/S2); others are ignored.
-  function handleControl(c, m) {
+  function handleControl(c, m, ws) {
     if (c.role !== 'presenter' && c.role !== 'ai' && c.role !== 'gm') { log.warn('control', 'denied', { socketId: c.id, role: c.role }); return; }
     const a = m.args || {};
     switch (m.action) {
+      // PRIM-mirror (MON-2): render the TARGET user's current display in the target's
+      // OWN context, then PUSH it back to THIS requesting control client (fire-and-forget,
+      // not a reply). Lets the GM thumbnail "what that user sees". OPSEC: role-gated above.
+      case 'mirror': {
+        const uid = a.userId;
+        const tws = byUser.get(uid);
+        const tc = tws ? conns.get(tws) : null;
+        const desc = displayByUser.get(uid) || (tc && displayByRole[tc.role]) || null;
+        const html = (desc && tc) ? descToHtml(tc, desc) : null;
+        send(ws, { t: 'mirror', userId: uid, html });
+        break;
+      }
       case 'push_component': api.pushComponent(a.target || 'all', a.component, a.opts || {}, a.theme || 'argus', a.requires || []); break;
       case 'open_poll': api.openPoll(a); break;
       case 'close_poll': api.closePoll(a.promptId); break;
@@ -369,6 +381,23 @@ export function createServer({ port = 0, controlToken = null } = {}) {
   function sendComponentTo(ws, c, desc) {
     const o = stampFor(c, desc.component, desc.opts || {});
     send(ws, { t: 'content', contentId: o.promptId || null, html: assemble({ component: desc.component, opts: o, theme: desc.theme || 'argus', requires: desc.requires || [] }) });
+  }
+  // Produce the HTML STRING for `desc` rendered in viewer `c`'s context — the html-
+  // producing half of renderDisplay, factored out for PRIM-mirror (server push of a
+  // target's current display back to a control client). Mirrors renderDisplay's branches.
+  function descToHtml(c, desc) {
+    if (!desc) return '';
+    if (desc.kind === 'content') return desc.html || '';
+    if (desc.kind === 'component') return assemble({ component: desc.component, opts: stampFor(c, desc.component, desc.opts || {}), theme: desc.theme || 'argus', requires: desc.requires || [] });
+    if (desc.kind === 'poll-choice') {
+      const poll = polls.get(desc.promptId); if (!poll) return '';
+      return assemble({ component: 'choice', opts: { ...poll.spec, promptId: desc.promptId, userId: c.userId, userName: c.userName, channel: c.userId } });
+    }
+    if (desc.kind === 'poll-results') {
+      const poll = polls.get(desc.promptId); if (!poll) return ''; const t = tally(desc.promptId);
+      return assemble({ component: 'poll-results', opts: { ...poll.spec, promptId: desc.promptId, tally: t.tally, count: t.count } });
+    }
+    return '';
   }
   function renderDisplay(ws, c, desc) {
     if (!desc) return;
