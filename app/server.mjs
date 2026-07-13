@@ -87,17 +87,44 @@ export function createServer({ port = 0, controlToken = null } = {}) {
     moduleCache.set(id, { mtimeMs, module });
     return module;
   }
+  // Summarize ONE module id into the shape the GM <select> uses. Shared by listModules
+  // and series resolution (/api/series/:id) so a series' modules describe identically to
+  // the flat list. `missing` = the error string when the id resolves to no file.
+  function moduleSummary(id, missing = 'unreadable') {
+    let module; try { module = readModuleFile(id); } catch (e) { return { id, error: String(e.message || e).slice(0, 80) }; }
+    if (!module) return { id, error: missing };
+    const man = module.manifest || {};
+    const v = summarize(validate(module));
+    return { id, title: man.title || module.title || id, version: man.version || null,
+      beats: (module.beats || []).length, sections: (module.sections || []).length, warn: v.warn, info: v.info };
+  }
   function listModules() {
     if (!existsSync(MODULES_DIR)) return [];
-    return readdirSync(MODULES_DIR).filter((f) => f.endsWith('.json')).map((f) => {
-      const id = f.slice(0, -5);
-      let module; try { module = readModuleFile(id); } catch (e) { return { id, error: String(e.message || e).slice(0, 80) }; }
-      if (!module) return { id, error: 'unreadable' };
-      const man = module.manifest || {};
-      const v = summarize(validate(module));
-      return { id, title: man.title || module.title || id, version: man.version || null,
-        beats: (module.beats || []).length, sections: (module.sections || []).length, warn: v.warn, info: v.info };
-    });
+    // SKIP *.series.json — those are SERIES manifests (an ordered list of module ids), not modules.
+    return readdirSync(MODULES_DIR)
+      .filter((f) => f.endsWith('.json') && !f.endsWith('.series.json'))
+      .map((f) => moduleSummary(f.slice(0, -5)));
+  }
+  // --- Series registry. A SERIES is the level above Module: a file `<id>.series.json` =
+  // { manifest:{title,summary?}, moduleIds:[...] } listing modules to walk in order.
+  function readSeriesFile(id) {
+    if (!/^[\w.-]+$/.test(id)) return null;               // reuse the module path-guard
+    const file = join(MODULES_DIR, id + '.series.json');
+    if (!existsSync(file)) return null;
+    return JSON.parse(readFileSync(file, 'utf8'));
+  }
+  function listSeries() {
+    if (!existsSync(MODULES_DIR)) return [];
+    return readdirSync(MODULES_DIR)
+      .filter((f) => f.endsWith('.series.json'))
+      .map((f) => {
+        const id = f.slice(0, -('.series.json'.length));
+        let s; try { s = readSeriesFile(id); } catch (e) { return null; }   // skip unreadable
+        if (!s) return null;
+        const man = s.manifest || {};
+        return { id, title: man.title || id, count: (s.moduleIds || []).length };
+      })
+      .filter(Boolean);
   }
   // AUT-2: hot-reload. Watch MODULES_DIR; when a *.json module file changes on disk,
   // invalidate its cache and notify the control roles (presenter/ai/gm) so a just-
@@ -193,6 +220,20 @@ export function createServer({ port = 0, controlToken = null } = {}) {
       if (!module) { res.writeHead(404); res.end(JSON.stringify({ error: 'not found' })); return; }
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ id, module, validation: summarize(validate(module)) }));
+    } else if (req.url === '/api/series') {
+      // Discover available series (id, title, module count) — for the GM panel's series SELECT.
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-cache' });
+      res.end(JSON.stringify(listSeries()));
+    } else if (req.url.startsWith('/api/series/')) {
+      // Fetch ONE series: its manifest + moduleIds, plus each module resolved to the SAME
+      // summary shape as listModules (missing ids → { id, error:'missing' }).
+      const id = decodeURIComponent(req.url.slice(12).split('?')[0]);
+      if (!/^[\w.-]+$/.test(id)) { res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'bad id' })); return; }
+      let series = null; try { series = readSeriesFile(id); } catch (e) { res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: String(e.message || e) })); return; }
+      if (!series) { res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'not found' })); return; }
+      const modules = (series.moduleIds || []).map((mid) => moduleSummary(mid, 'missing'));
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-cache' });
+      res.end(JSON.stringify({ id, series, modules }));
     } else { res.writeHead(404); res.end('not found'); }
   });
   const wss = new WebSocketServer({ server: httpServer, maxPayload: MAX_PAYLOAD });

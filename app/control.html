@@ -90,6 +90,10 @@
   <section>
     <h2>Module</h2>
     <div class="row">
+      <select id="series-select" style="flex:1 1 auto"><option value="">— series —</option></select>
+      <button id="series-next" class="mini" disabled title="queue the next module in the series">Next in series ▶</button>
+    </div>
+    <div class="row" style="margin-top:6px">
       <select id="mod-select" style="flex:1 1 auto"><option value="">— select a module —</option></select>
       <button id="mod-refresh" class="mini" title="rescan">⟳</button>
     </div>
@@ -124,6 +128,7 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   var identity = { userId: q.get('userId')||'gm', userName: q.get('name')||'GM', role: q.get('role')||'presenter' };
   if(q.get('token')) identity.token = q.get('token');   // AUTH-1: forward control secret to gate the role
   var ws=null, module=null, curBeat=-1, recBeat=-1, users=[], viewingAs=null, results={};
+  var seriesModules=[], seriesPos=-1;   // SCH-2: active series (ordered module ids) + walk position
   // MON-2: live "view-as" thumbnail — luxury feature, first thing sacrificed under load.
   var livePreview=true, degraded=false, lastDisplay={}, monLastTick=0, monLate=0, monOnTime=0;
   var $=function(id){return document.getElementById(id);};
@@ -185,6 +190,31 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   };
   $('mod-load').onclick=function(){ if(!module) return; control('load_module',{module:module}); curBeat=-1; renderNav(); $('btn-start').disabled=false; };
   $('mod-refresh').onclick=refreshModules;
+
+  // SCH-2: Series picker — the level above Module. Choosing a series queues its first module
+  // into #mod-select (the GM still clicks Validate&Load per module); "Next in series ▶" advances.
+  function refreshSeries(){
+    var sel=$('series-select'); if(!sel) return; var keep=sel.value;
+    fetch('/api/series').then(function(r){return r.json();}).then(function(list){
+      sel.innerHTML='<option value="">— series —</option>';
+      (list||[]).forEach(function(s){ var o=document.createElement('option'); o.value=s.id; o.textContent=s.title+' ('+s.count+')'; sel.appendChild(o); });
+      if(keep){ try{ sel.value=keep; }catch(e){} }
+    }).catch(function(){});
+  }
+  function updateSeriesNav(){ var b=$('series-next'); if(b) b.disabled = !(seriesModules.length && seriesPos < seriesModules.length-1); }
+  // Point #mod-select at module id `mid` and trigger its onchange (fetch+validate), ready to Load.
+  function queueModule(mid){ var ms=$('mod-select'); if(!ms) return; ms.value=mid; if(ms.onchange) ms.onchange(); }
+  $('series-select').onchange=function(){ var id=this.value; seriesModules=[]; seriesPos=-1; updateSeriesNav();
+    if(!id) return;
+    fetch('/api/series/'+encodeURIComponent(id)).then(function(r){return r.json();}).then(function(d){
+      if(!d||d.error||!d.series){ return; }
+      seriesModules=(d.series.moduleIds||[]).slice(); seriesPos=seriesModules.length?0:-1; updateSeriesNav();
+      if(seriesModules.length) queueModule(seriesModules[0]);
+    }).catch(function(){});
+  };
+  $('series-next').onclick=function(){ if(!(seriesModules.length && seriesPos < seriesModules.length-1)) return;
+    seriesPos++; queueModule(seriesModules[seriesPos]); updateSeriesNav();
+  };
 
   function beatById(id){ return (module.beats||[]).find(function(b){return b.id===id;}); }
   function beatIndex(id){ return (module.beats||[]).findIndex(function(b){return b.id===id;}); }
@@ -327,10 +357,11 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   $('op-open').onclick=function(){ var opts=$('op-options').value.split(',').map(function(s){s=s.trim();return{label:s,value:s};}); control('open_poll',{promptId:$('op-id').value,prompt:$('op-prompt').value,options:opts,target:'participant',resultsTarget:'presenter'}); };
   $('op-close').onclick=function(){ control('close_poll',{promptId:$('op-id').value}); };
 
-  connect(); refreshModules();
+  connect(); refreshModules(); refreshSeries();
   window.__control = control;   // test/automation hook (P1) — drive control ops programmatically
   window.__gm={ users:function(){return users;}, module:function(){return module;}, cur:function(){return curBeat;}, rec:function(){return recBeat;},
     setModule:function(m){ module=m; curBeat=-1; recBeat=-1; renderOutline(); renderNav(); },   // DEL-2 test/automation hook: load a module into the panel directly
+    series:function(){return {mods:seriesModules.slice(),pos:seriesPos};},   // SCH-2 test hook
     degrade:function(b){ degraded=!!b; applyPreviewState(); } };   // MON-2 test hook: force the degraded state without real CPU load
 })();
 </script>
