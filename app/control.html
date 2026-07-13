@@ -143,6 +143,16 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     if(m.t==='clear'){ renderPreview(null,'idle'); return; }
     if(m.t==='result'){ results[m.promptId]=results[m.promptId]||{}; results[m.promptId][m.userId]={type:m.type,value:m.value}; maybeBranch(m); return; }
     if(m.t==='host'&&m.msg&&m.msg.type==='diff'&&m.msg.diff&&('module/current' in m.msg.diff)){ curBeat=m.msg.diff['module/current']; recBeat=-1; renderOutline(); renderNav(); }
+    if(m.t==='module-changed'){ onModuleChanged(m.id); return; }   // AUT-2: hot-reload notice
+  }
+
+  // AUT-2: a module file changed on disk. Always refresh the <select> list (reflect new/
+  // renamed/changed modules); if the CURRENTLY-selected module changed, show a subtle
+  // note rather than clobbering the loaded module (GM re-selects to reload).
+  function onModuleChanged(id){
+    var wasSelected = ($('mod-select').value===id);
+    refreshModules();   // rebuilds the option list; preserves the current selection
+    if(wasSelected){ $('mod-info').textContent='↻ this module changed on disk — re-select to reload'; }
   }
 
   function renderPreview(html, label){
@@ -155,10 +165,12 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   }
 
   function refreshModules(){
+    var sel=$('mod-select'); var keep=sel.value;   // preserve selection across the async rebuild
     fetch('/api/modules').then(function(r){return r.json();}).then(function(list){
-      var sel=$('mod-select'); sel.innerHTML='<option value="">— select a module —</option>';
+      sel.innerHTML='<option value="">— select a module —</option>';
       list.forEach(function(m){ var o=document.createElement('option'); o.value=m.id;
         o.textContent=m.title+' — '+m.beats+' beats/'+m.sections+' sec'+(m.warn?(' ⚠'+m.warn):'')+(m.error?' (ERR)':''); sel.appendChild(o); });
+      if(keep){ try{ sel.value=keep; }catch(e){} }
     }).catch(function(){ $('mod-info').textContent='(module list unavailable)'; });
   }
   $('mod-select').onchange=function(){ var id=this.value; module=null; curBeat=-1; $('mod-valid').innerHTML=''; $('outline').innerHTML=''; renderNav();
