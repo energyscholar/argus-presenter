@@ -114,6 +114,11 @@ export function validate(module, ctx = {}) {
   // V10 declared gate timeout too short for humans
   if (typeof req.gateTimeoutMs === 'number' && req.gateTimeoutMs < 60000) info('V10-gate-timeout-short', `manifest gateTimeoutMs=${req.gateTimeoutMs} < 60000 (human-latency risk)`);
 
+  // V19 (SCH-1) advisory-only, module-level (not per-beat, to avoid noise): a module with beats
+  // but zero numeric durationSec anywhere → no time estimate rolls up in the GM outline.
+  const anyDuration = beats.some((b) => b && Number.isFinite(b.durationSec));
+  if (!anyDuration) info('V19-no-duration', 'no beat carries a numeric durationSec — no time estimate in the outline');
+
   return { warnings };
 }
 
