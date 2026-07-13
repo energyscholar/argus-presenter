@@ -15,7 +15,7 @@
  *   on(event, cb)  events: 'presence','result','poll'
  */
 import http from 'http';
-import { readFileSync, readdirSync, statSync, existsSync, writeFileSync } from 'fs';
+import { readFileSync, readdirSync, statSync, existsSync, writeFileSync, watch } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { WebSocketServer } from 'ws';
@@ -99,6 +99,28 @@ export function createServer({ port = 0, controlToken = null } = {}) {
         beats: (module.beats || []).length, sections: (module.sections || []).length, warn: v.warn, info: v.info };
     });
   }
+  // AUT-2: hot-reload. Watch MODULES_DIR; when a *.json module file changes on disk,
+  // invalidate its cache and notify the control roles (presenter/ai/gm) so a just-
+  // edited/just-saved module is discoverable without a server restart. Debounced —
+  // fs.watch fires duplicate/rapid events; coalesce with a short trailing timer per id.
+  let watcher = null;
+  const hotTimers = new Map();   // id -> trailing debounce timer
+  function notifyModuleChanged(id) {
+    moduleCache.delete(id);
+    for (const [ws, c] of conns.entries())
+      if (c.role === 'presenter' || c.role === 'ai' || c.role === 'gm') send(ws, { t: 'module-changed', id });
+    log.info('module', 'changed', { id });
+  }
+  try {
+    if (existsSync(MODULES_DIR)) {
+      watcher = watch(MODULES_DIR, (evt, filename) => {
+        if (!filename || !filename.endsWith('.json')) return;
+        const id = filename.replace(/\.json$/, '');
+        if (hotTimers.has(id)) clearTimeout(hotTimers.get(id));
+        hotTimers.set(id, setTimeout(() => { hotTimers.delete(id); notifyModuleChanged(id); }, 150));
+      });
+    }
+  } catch (e) { log.warn('module', 'watch-failed', { err: String((e && e.message) || e).slice(0, 80) }); }
   const httpServer = http.createServer((req, res) => {
     if (req.url === '/' || req.url.startsWith('/?')) {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
@@ -646,7 +668,7 @@ export function createServer({ port = 0, controlToken = null } = {}) {
       };
     },
     store,
-    close: () => new Promise((res) => { if (ephTimer) clearTimeout(ephTimer); wss.clients.forEach((c) => c.close()); httpServer.close(() => res()); }),
+    close: () => new Promise((res) => { if (ephTimer) clearTimeout(ephTimer); for (const t of hotTimers.values()) clearTimeout(t); hotTimers.clear(); watcher && watcher.close(); wss.clients.forEach((c) => c.close()); httpServer.close(() => res()); }),
     _http: httpServer,
   };
 
