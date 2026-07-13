@@ -32,6 +32,32 @@ const DURABLE_OPS_PER_SEC = 50;     // per-conn durable-op rate (ephemeral is co
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PAGE = join(__dirname, 'presenter.html');
 
+// HAR: defense-in-depth HTTP hardening (see HARDENING.md).
+// CSP for the HTML pages. 'unsafe-inline' is REQUIRED today — presenter/control/creator
+// carry inline <script>/<style> and each srcdoc component runs an inline script; ws:/wss:
+// are REQUIRED for the live socket; frame-src blob:/data: admits the sandboxed srcdoc iframes.
+// (Future path: nonce the inline scripts and drop 'unsafe-inline' — noted in HARDENING.md.)
+const CSP = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
+  "img-src 'self' data:; font-src 'self' data:; connect-src 'self' ws: wss:; " +
+  "frame-src 'self' blob: data:; object-src 'none'; base-uri 'self'; form-action 'self'";
+// Shared header set for the three HTML routes (/, /control, /creator).
+const htmlHeaders = () => ({
+  'content-type': 'text/html; charset=utf-8',
+  'content-security-policy': CSP,
+  'x-content-type-options': 'nosniff',
+});
+// Serve a static-ish asset with a weak ETag (size + mtimeMs) + revalidation. On a
+// matching if-none-match → 304 (no body). Used for the branding SVG + shipped .mjs modules.
+function sendStatic(res, req, absPath, contentType) {
+  try {
+    const st = statSync(absPath);
+    const etag = 'W/"' + st.size + '-' + st.mtimeMs + '"';
+    if (req.headers['if-none-match'] === etag) { res.writeHead(304, { etag, 'cache-control': 'no-cache' }); res.end(); return; }
+    res.writeHead(200, { 'content-type': contentType, 'cache-control': 'no-cache', etag });
+    res.end(readFileSync(absPath));
+  } catch (e) { res.writeHead(404); res.end('not found'); }
+}
+
 export function createServer({ port = 0, controlToken = null } = {}) {
   // AUTH-1: a shared secret gates the control roles (presenter/ai/gm). When null,
   // behaviour is unchanged / LAN-open — any browser may claim a control role.
@@ -150,30 +176,27 @@ export function createServer({ port = 0, controlToken = null } = {}) {
   } catch (e) { log.warn('module', 'watch-failed', { err: String((e && e.message) || e).slice(0, 80) }); }
   const httpServer = http.createServer((req, res) => {
     if (req.url === '/' || req.url.startsWith('/?')) {
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.writeHead(200, htmlHeaders());
       res.end(readFileSync(PAGE, 'utf8'));
     } else if (req.url === '/control' || req.url.startsWith('/control?')) {
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.writeHead(200, htmlHeaders());
       res.end(readFileSync(CONTROL, 'utf8'));
     } else if (req.url === '/creator' || req.url.startsWith('/creator?')) {
       // AUT-3: the Content Creator authoring panel (beat-list editor + manifest + in-browser
       // validate + live preview). Served exactly like /control.
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.writeHead(200, htmlHeaders());
       res.end(readFileSync(join(__dirname, 'creator.html'), 'utf8'));
     } else if (req.url === '/branch.mjs') {
       // DEL-2: serve the SINGLE-SOURCE branch resolver to the browser panel so the
       // GM outline imports the SAME resolveNext the server/runner use (no duplication).
-      res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-cache' });
-      res.end(readFileSync(join(__dirname, 'branch.mjs'), 'utf8'));
+      sendStatic(res, req, join(__dirname, 'branch.mjs'), 'text/javascript; charset=utf-8');
     } else if (req.url === '/validate.mjs') {
       // AUT-3: serve the SINGLE-SOURCE validator so the Content Creator imports the SAME
       // validate()/summarize() the server uses (no duplication) for in-browser validation.
-      res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-cache' });
-      res.end(readFileSync(join(__dirname, 'validate.mjs'), 'utf8'));
+      sendStatic(res, req, join(__dirname, 'validate.mjs'), 'text/javascript; charset=utf-8');
     } else if (req.url === '/branding/argus-presenter.svg') {
       // Default idle branding art (self-contained animated SVG; no external dep).
-      try { res.writeHead(200, { 'content-type': 'image/svg+xml; charset=utf-8', 'cache-control': 'no-cache' }); res.end(readFileSync(BRANDING, 'utf8')); }
-      catch (e) { res.writeHead(404); res.end('not found'); }
+      sendStatic(res, req, BRANDING, 'image/svg+xml; charset=utf-8');
     } else if (req.url === '/api/modules') {
       // Discover available modules (id, title, counts, validation summary) — for the GM panel's SELECT list.
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-cache' });
