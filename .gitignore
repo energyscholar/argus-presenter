@@ -3,3 +3,7 @@ node_modules/
 .DS_Store
 /harness/_shots/
 *.tmp
+
+# Local content modules stay out of the public repo (content is not shipped here; core stays neutral)
+modules/*.json
+!modules/demo-welcome.json

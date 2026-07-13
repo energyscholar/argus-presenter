@@ -22,6 +22,23 @@ node app/server.mjs 4300   # run the presenter server, then open http://127.0.0.
 The test suite drives real headless-browser flows via Puppeteer (a dev dependency);
 the first run downloads a browser. `node harness/test.mjs --only <name>` runs a subset.
 
+## Run
+```bash
+npm start                  # runs app/server.mjs on the default port (4300)
+node app/server.mjs 4300   # or pick a port explicitly (0 = auto-assign)
+```
+No AI required — it runs standalone. On launch it prints all three entry URLs:
+- **display** `/` — the shared/per-user audience view
+- **control** `/control` — the presenter control panel
+- **creator** `/creator` — the content-authoring panel
+
+Environment variables (both optional):
+- `PRESENTER_MODULES_DIR` — where content modules are read from (default `./modules`).
+- `PRESENTER_CONTROL_TOKEN` — when set, gates control actions + module write-back.
+
+Local content modules go in `modules/` and are **gitignored** (this public repo ships
+only the neutral `demo-welcome` module — your own content is never committed here).
+
 ## Layout
 ```
 lib/         foundation: bridge (result protocol), theme (tokens), a11y helpers
