@@ -129,7 +129,11 @@ export function createServer({ port = 0, controlToken = null } = {}) {
     // SKIP *.series.json — those are SERIES manifests (an ordered list of module ids), not modules.
     return readdirSync(MODULES_DIR)
       .filter((f) => f.endsWith('.json') && !f.endsWith('.series.json'))
-      .map((f) => moduleSummary(f.slice(0, -5)));
+      .map((f) => moduleSummary(f.slice(0, -5)))
+      // Keep ONLY real content modules: drop unreadable/non-module files (error), and drop
+      // JSON that parses but is not a content module (no beats AND no sections — e.g. a stray
+      // *-responses.json log). Prevents bogus 0-beat entries in the GM <select>.
+      .filter((m) => !m.error && !(m.beats === 0 && m.sections === 0));
   }
   // --- Series registry. A SERIES is the level above Module: a file `<id>.series.json` =
   // { manifest:{title,summary?}, moduleIds:[...] } listing modules to walk in order.
@@ -752,5 +756,11 @@ export function createServer({ port = 0, controlToken = null } = {}) {
 // Runnable standalone: `node app/server.mjs [port]`
 if (import.meta.url === `file://${process.argv[1]}`) {
   const p = parseInt(process.argv[2] || '4300', 10);
-  createServer({ port: p }).then((s) => console.log('Argus Presenter server on', s.url()));
+  createServer({ port: p, controlToken: process.env.PRESENTER_CONTROL_TOKEN || null }).then((s) => {
+    const u = s.url();   // base like http://127.0.0.1:PORT (no trailing slash)
+    console.log('Argus Presenter running:');
+    console.log('  display :', u + '/');
+    console.log('  control :', u + '/control');
+    console.log('  creator :', u + '/creator');
+  });
 }
