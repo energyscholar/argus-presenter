@@ -104,6 +104,7 @@
 (function(){
   var q = new URLSearchParams(location.search);
   var identity = { userId: q.get('userId')||'gm', userName: q.get('name')||'GM', role: q.get('role')||'presenter' };
+  if(q.get('token')) identity.token = q.get('token');   // AUTH-1: forward control secret to gate the role
   var ws=null, module=null, curBeat=-1, users=[], viewingAs=null;
   var $=function(id){return document.getElementById(id);};
 

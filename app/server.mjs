@@ -32,7 +32,10 @@ const DURABLE_OPS_PER_SEC = 50;     // per-conn durable-op rate (ephemeral is co
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PAGE = join(__dirname, 'presenter.html');
 
-export function createServer({ port = 0 } = {}) {
+export function createServer({ port = 0, controlToken = null } = {}) {
+  // AUTH-1: a shared secret gates the control roles (presenter/ai/gm). When null,
+  // behaviour is unchanged / LAN-open — any browser may claim a control role.
+  const CONTROL_TOKEN = controlToken || process.env.PRESENTER_CONTROL_TOKEN || null;
   const conns = new Map();     // ws -> {id,userId,userName,role}
   const byUser = new Map();    // userId -> ws
   let connSeq = 0;             // per-server connection counter -> stable socketId (S5-ready)
@@ -160,7 +163,13 @@ export function createServer({ port = 0 } = {}) {
       if (m.t === 'hello') {
         c.userId = m.userId || ('anon-' + Math.random().toString(36).slice(2, 8));
         c.userName = m.userName || c.userId;
-        c.role = m.role || 'participant';
+        // AUTH-1: control roles require the configured secret; else force participant.
+        let reqRole = m.role || 'participant';
+        if (CONTROL_TOKEN && (reqRole === 'presenter' || reqRole === 'ai' || reqRole === 'gm') && m.token !== CONTROL_TOKEN) {
+          log.warn('auth', 'control-denied', { userId: c.userId, role: reqRole });
+          reqRole = 'participant';
+        }
+        c.role = reqRole;
         byUser.set(c.userId, ws);
         send(ws, { t: 'welcome', userId: c.userId, socketId: c.id });
         // C4/X1: converge the (re)connecting client. If it reports a lastVersion we
