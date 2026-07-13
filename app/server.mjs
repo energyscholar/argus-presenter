@@ -125,7 +125,11 @@ export function createServer({ port = 0 } = {}) {
   function presence() { return [...conns.values()].map((c) => ({ userId: c.userId, userName: c.userName, role: c.role })); }
   // Full presence (incl. IP + socketId + current display id) pushed to CONTROL roles only, for the GM user list.
   function pushPresence() {
-    const users = [...conns.values()].map((c) => ({ userId: c.userId, userName: c.userName, role: c.role, ip: c.ip, socketId: c.id, display: displayIdFor(c) }));
+    // No-op unless a control client (presenter/ai/gm) is actually listening — avoids building/sending
+    // the presence feed on every display change when nobody's watching.
+    const ctl = [...conns.values()].filter((c) => c.role === 'presenter' || c.role === 'ai' || c.role === 'gm');
+    if (!ctl.length) return;
+    const users = [...conns.values()].map((c) => ({ userId: c.userId, userName: c.userName, role: c.role, ip: c.ip, socketId: c.id, lastSeen: c.lastSeen, display: displayIdFor(c) }));
     for (const [ws, c] of conns.entries()) if (c.role === 'presenter' || c.role === 'ai' || c.role === 'gm') send(ws, { t: 'presence', users });
   }
   // A short label for what a given connection is currently showing (for the user list / tiny preview).
@@ -138,7 +142,7 @@ export function createServer({ port = 0 } = {}) {
   }
   function targets(target) {
     if (target === 'all' || target == null) return [...conns.keys()];
-    if (['participant', 'presenter', 'ai'].includes(target))
+    if (['participant', 'presenter', 'ai', 'gm'].includes(target))
       return [...conns.entries()].filter(([, c]) => c.role === target).map(([ws]) => ws);
     const ws = byUser.get(target); return ws ? [ws] : [];   // by userId
   }
@@ -277,7 +281,7 @@ export function createServer({ port = 0 } = {}) {
       case 'clear': api.clear(a.target || 'all'); break;   // route through api.clear so display descriptor is also reset (reconnect → branding)
       case 'op': handleOp(c, { path: a.path, verb: a.verb, value: a.value, opId: a.opId }); break;   // drive an op as the presenter
       case 'set_module': api.setModule(a.module || { beats: a.beats || [] }); break;   // Group I
-      case 'show_beat': api.showBeat(a.index | 0); break;
+      case 'show_beat': api.showBeat(a.id != null ? a.id : (a.index | 0)); break;   // by id (branch nav) or index
       case 'next_beat': api.nextBeat(); break;
       case 'prev_beat': api.prevBeat(); break;
       case 'append_beat': api.appendBeat(a.beat || { component: a.component, opts: a.opts, requires: a.requires }); break;   // compose (I2) + AI co-author (I3)
@@ -449,7 +453,9 @@ export function createServer({ port = 0 } = {}) {
     // A content module is a portable deck of beats; showing a beat pushes it to all
     // (viewers follow in lockstep). module/current + module/len are store slices.
     setModule(module) {
-      contentModule = { title: (module && module.title) || 'Module', beats: (module && module.beats) || [] };
+      contentModule = (module && typeof module === 'object')
+        ? Object.assign({}, module, { title: module.title || (module.manifest && module.manifest.title) || 'Module', beats: module.beats || [] })
+        : { title: 'Module', beats: [] };   // keep sections/manifest server-side (not just title+beats)
       currentBeat = -1;
       // Plan 0438 D: validate on load — observability only, NEVER blocks (warn-never-block).
       try { const v = summarize(validate({ title: contentModule.title, beats: contentModule.beats, manifest: module && module.manifest })); if (v.warn || v.info) log.info('module', 'validate', { warn: v.warn, info: v.info, codes: v.warnings.concat(v.infos).map((x) => x.code) }); } catch (e) { log.warn('module', 'validate-error', { err: String(e).slice(0, 120) }); }
@@ -457,13 +463,18 @@ export function createServer({ port = 0 } = {}) {
       serverApply({ path: 'module/current', verb: 'set', value: -1 });
       return { title: contentModule.title, beats: contentModule.beats.length };
     },
-    showBeat(i) {
-      if (!contentModule || i < 0 || i >= contentModule.beats.length) return null;
+    showBeat(ref) {
+      if (!contentModule) return null;
+      const i = typeof ref === 'number' ? ref : contentModule.beats.findIndex((b) => b.id === ref);   // by index OR beat id (branch nav)
+      if (i < 0 || i >= contentModule.beats.length) return null;
       const b = contentModule.beats[i];
-      api.pushComponent('all', b.component, b.opts || {}, b.theme || 'argus', b.requires || []);
+      // Route by the beat's target (per-user hooks broadcast to 'all' by default) and ensure promptId
+      // reaches opts so interactive beats can actually collect/gate answers.
+      const opts = (b.promptId != null) ? Object.assign({}, b.opts || {}, { promptId: b.promptId }) : (b.opts || {});
+      api.pushComponent(b.target || 'all', b.component, opts, b.theme || 'argus', b.requires || []);
       currentBeat = i;
       serverApply({ path: 'module/current', verb: 'set', value: i });
-      return { index: i, component: b.component };
+      return { index: i, component: b.component, target: b.target || 'all' };
     },
     nextBeat() { return api.showBeat(currentBeat + 1); },
     prevBeat() { return api.showBeat(Math.max(0, currentBeat - 1)); },
