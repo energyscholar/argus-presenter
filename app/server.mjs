@@ -15,7 +15,7 @@
  *   on(event, cb)  events: 'presence','result','poll'
  */
 import http from 'http';
-import { readFileSync, readdirSync, statSync, existsSync } from 'fs';
+import { readFileSync, readdirSync, statSync, existsSync, writeFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { WebSocketServer } from 'ws';
@@ -120,8 +120,43 @@ export function createServer({ port = 0, controlToken = null } = {}) {
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-cache' });
       res.end(JSON.stringify(listModules()));
     } else if (req.url.startsWith('/api/modules/')) {
+      const rawPath = req.url.slice(13);
+      const id = decodeURIComponent(rawPath.split('?')[0]);
+      if (req.method === 'POST') {
+        // AUT-1: module write-back. The Content Creator POSTs a module JSON; it lands in
+        // MODULES_DIR so listModules()/the GM <select> discovers it. MUTATION → guarded:
+        // AUTH-gated (when a control token is configured), path-safe id, hard size cap.
+        // AUTH: if a control token is set, require it (header or ?token=); else 403.
+        if (CONTROL_TOKEN) {
+          const q = rawPath.split('?')[1] || '';
+          const qtoken = new URLSearchParams(q).get('token');
+          const token = req.headers['x-control-token'] || qtoken;
+          if (token !== CONTROL_TOKEN) { res.writeHead(403, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'forbidden' })); return; }
+        }
+        // id guard: no path separators / traversal (reuse readModuleFile's rule).
+        if (!/^[\w.-]+$/.test(id)) { res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'bad id' })); return; }
+        // Body with a HARD size cap — accumulate, abort past the cap.
+        const CAP = 512 * 1024;
+        let body = ''; let aborted = false;
+        req.on('data', (chunk) => {
+          if (aborted) return;
+          body += chunk;
+          if (body.length > CAP) { aborted = true; res.writeHead(413, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'too large' })); req.destroy(); }
+        });
+        req.on('end', () => {
+          if (aborted) return;
+          let module;
+          try { module = JSON.parse(body); } catch (e) { res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'invalid json' })); return; }
+          try {
+            writeFileSync(join(MODULES_DIR, id + '.json'), JSON.stringify(module, null, 2));
+            moduleCache.delete(id);   // invalidate so the next read reflects the write
+          } catch (e) { res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: String(e.message || e) })); return; }
+          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: true, id, validation: summarize(validate(module)) }));
+        });
+        return;
+      }
       // Fetch ONE module (full JSON + validation) so the panel can validate-then-load.
-      const id = decodeURIComponent(req.url.slice(13).split('?')[0]);
       let module = null; try { module = readModuleFile(id); } catch (e) { res.writeHead(400); res.end(JSON.stringify({ error: String(e.message || e) })); return; }
       if (!module) { res.writeHead(404); res.end(JSON.stringify({ error: 'not found' })); return; }
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
