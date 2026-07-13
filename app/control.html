@@ -11,6 +11,20 @@
   h1{grid-column:1/3;margin:0;font-size:15px;letter-spacing:.04em;display:flex;align-items:center;gap:10px;}
   #status{font-size:.72rem;color:var(--dim);display:flex;align-items:center;gap:5px;}
   #led{display:inline-block;width:9px;height:9px;border-radius:50%;background:#c33;}#led.on{background:var(--ok);}
+  /* Top-right Settings button (green connectivity dot doubles as the settings entry — mirrors presenter.html) */
+  #led-btn{position:fixed;top:4px;right:6px;z-index:60;background:none;border:0;padding:8px;cursor:pointer;line-height:0;border-radius:8px;}
+  #led-btn:hover{background:rgba(255,255,255,.06);}
+  #led2{display:block;width:10px;height:10px;border-radius:50%;background:#cc3333;box-shadow:0 0 8px #cc3333;}
+  #led2.on{background:var(--ok);box-shadow:0 0 8px var(--ok);}
+  #ap-config{position:fixed;top:34px;right:8px;z-index:61;width:242px;background:rgba(6,10,24,.96);border:1px solid #2a3a5a;border-radius:8px;padding:10px 12px;color:var(--ink);display:none;box-shadow:0 6px 24px rgba(0,0,0,.5);}
+  #ap-config.open{display:block;}
+  #ap-config h4{margin:0 0 6px;font-size:11px;letter-spacing:.12em;color:#6cf;text-transform:uppercase;}
+  #ap-config .row{display:flex;gap:4px;align-items:center;margin:5px 0;flex-wrap:wrap;}
+  #ap-config .k{color:var(--dim);}
+  #ap-config .rd{font-size:11px;opacity:.85;margin:2px 0 6px;}
+  #ap-config input{flex:1 1 90px;min-width:80px;}
+  #cfg-hint{font-size:11px;color:var(--warn);flex-basis:100%;margin:0 0 2px;}
+  #cfg-msg{font-size:11px;color:var(--danger);flex-basis:100%;margin:0;min-height:13px;}
   .col{min-height:0;overflow:auto;display:flex;flex-direction:column;gap:10px;}
   section{border:1px solid var(--line);border-radius:8px;padding:10px 12px;background:var(--panel);}
   section h2{margin:0 0 8px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);}
@@ -62,6 +76,18 @@
 </style>
 </head>
 <body>
+<button id="led-btn" title="Settings" aria-haspopup="true" aria-label="Connection and settings"><span id="led2"></span></button>
+<div id="ap-config" role="dialog" aria-label="Settings">
+  <h4>Control · Settings</h4>
+  <div class="rd" id="cfg-readout"></div>
+  <div class="row" id="cfg-authgroup" style="display:none">
+    <div id="cfg-hint">🔒 enter presenter password to take control</div>
+    <input id="cfg-pw" type="password" placeholder="presenter password" autocomplete="off">
+    <button id="cfg-go" class="primary">Unlock</button>
+    <div id="cfg-msg"></div>
+  </div>
+  <div class="row" style="margin-top:8px"><button id="cfg-close">Close</button></div>
+</div>
 <h1>◉ Argus Presenter — Control
   <span id="status"><span id="led"></span><span id="statustext">connecting…</span></span></h1>
 
@@ -125,9 +151,16 @@
 <script type="module">
 import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch resolver (served by the server, not duplicated)
 (function(){
+  var NS='argus-presenter', TOKEN_KEY=NS+':token';
   var q = new URLSearchParams(location.search);
-  var identity = { userId: q.get('userId')||'gm', userName: q.get('name')||'GM', role: q.get('role')||'presenter' };
-  if(q.get('token')) identity.token = q.get('token');   // AUTH-1: forward control secret to gate the role
+  var identity = { userId: q.get('userId')||'ctl', userName: q.get('name')||'Control', role: q.get('role')||'presenter' };
+  // AUTH-1/P5.5 token precedence: URL ?token= wins (P5 overlay path); else a persisted
+  // unlock token from localStorage (so a refresh stays authed).
+  if(q.get('token')) identity.token = q.get('token');
+  else { try{ var _t=localStorage.getItem(TOKEN_KEY); if(_t) identity.token=_t; }catch(e){} }
+  // AUTH-ROLE (P5.5): is the presenter role gated, and what public salt do we hash with?
+  // Default UNGATED on fetch failure. effRole = the server's EFFECTIVE granted role (from welcome).
+  var authGated=false, authSeed=NS, effRole=null, attempting=false;
   var ws=null, module=null, curBeat=-1, recBeat=-1, users=[], viewingAs=null, results={};
   var seriesModules=[], seriesPos=-1;   // SCH-2: active series (ordered module ids) + walk position
   // MON-2: live "view-as" thumbnail — luxury feature, first thing sacrificed under load.
@@ -137,12 +170,13 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   function control(action,args){ if(ws&&ws.readyState===1) ws.send(JSON.stringify({t:'control',action:action,args:args||{}})); }
   function connect(){
     ws=new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host);
-    ws.onopen=function(){ $('led').classList.add('on'); $('statustext').textContent='connected · '+identity.userName; ws.send(JSON.stringify(Object.assign({t:'hello'},identity))); };
-    ws.onclose=function(){ $('led').classList.remove('on'); $('statustext').textContent='disconnected'; setTimeout(connect,800); };
+    ws.onopen=function(){ $('led').classList.add('on'); if($('led2'))$('led2').classList.add('on'); $('statustext').textContent='connected · '+identity.userName; ws.send(JSON.stringify(Object.assign({t:'hello'},identity))); };
+    ws.onclose=function(){ $('led').classList.remove('on'); if($('led2'))$('led2').classList.remove('on'); $('statustext').textContent='disconnected'; renderConfig(); setTimeout(connect,800); };
     ws.onmessage=onMsg;
   }
   function onMsg(ev){ var m; try{m=JSON.parse(ev.data);}catch(e){return;}
     if(m.t==='ping'){ ws.send(JSON.stringify({t:'pong',ts:m.ts})); return; }
+    if(m.t==='welcome'){ onWelcome(m); return; }   // P5.5: effective granted role (downgrade → unlock)
     if(m.t==='presence'){ users=m.users||[]; renderUsers(); onPresenceRefresh(); return; }
     if(m.t==='mirror'){ onMirror(m); return; }   // MON-2: target user's live display html
     if(m.t==='content'){ renderPreview(m.html, m.contentId); return; }
@@ -359,7 +393,64 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   $('op-open').onclick=function(){ var opts=$('op-options').value.split(',').map(function(s){s=s.trim();return{label:s,value:s};}); control('open_poll',{promptId:$('op-id').value,prompt:$('op-prompt').value,options:opts,target:'participant',resultsTarget:'presenter'}); };
   $('op-close').onclick=function(){ control('close_poll',{promptId:$('op-id').value}); };
 
+  // ---- Settings config panel + AUTH-ROLE (P5.5) ---------------------------------------
+  // control.html connects as role:'presenter', but opened as its own tab it carries no
+  // credential — a GATED server silently downgrades it to participant, so pushPresence
+  // never feeds it and it sees NO users. The green-dot settings panel exposes an inline
+  // password unlock: hash sha256(seed+pw) in the browser, send only the hash as the hello
+  // token, reconnect, and the presence feed arrives.
+  function renderConfig(){
+    var ro=$('cfg-readout'); if(!ro) return;
+    var linked=(ws&&ws.readyState===1);
+    ro.innerHTML='<span class="k">you</span> '+identity.userName+' ('+identity.userId+')<br>'
+      +'<span class="k">role</span> '+(effRole||identity.role)+' · <span class="k">link</span> '+(linked?'connected':'offline')
+      +(authGated?' · <span class="k">gated</span> yes':'');
+    // Show the unlock group only when the server is gated AND we were downgraded (not presenter).
+    var needUnlock = authGated && effRole && effRole!=='presenter';
+    $('cfg-authgroup').style.display = needUnlock ? '' : 'none';
+  }
+  function toggleConfig(open){ var p=$('ap-config'); var show=(open===undefined)?!p.classList.contains('open'):open; p.classList.toggle('open',show); if(show) renderConfig(); }
+  $('led-btn').addEventListener('click',function(e){ e.stopPropagation(); toggleConfig(); });
+  $('ap-config').addEventListener('click',function(e){ e.stopPropagation(); });
+  document.addEventListener('click',function(){ toggleConfig(false); });
+  document.addEventListener('keydown',function(e){ if(e.key==='Escape') toggleConfig(false); });
+  $('cfg-close').addEventListener('click',function(){ toggleConfig(false); });
+
+  // The server echoes the EFFECTIVE granted role in `welcome`; a silent downgrade surfaces
+  // as the unlock prompt (or, mid-unlock, as success/"wrong password").
+  function onWelcome(m){
+    effRole = (typeof m.role==='string') ? m.role : effRole;
+    if(attempting){
+      attempting=false;
+      if(effRole==='presenter'){ var mg=$('cfg-msg'); mg.textContent='✓ unlocked'; mg.style.color='var(--ok)'; if($('cfg-pw')) $('cfg-pw').value=''; }
+      else { var md=$('cfg-msg'); md.textContent='wrong password'; md.style.color='var(--danger)'; identity.token=null; try{localStorage.removeItem(TOKEN_KEY);}catch(e){} }
+    }
+    renderConfig();
+  }
+  async function computeHash(pw){
+    var buf=await crypto.subtle.digest('SHA-256', new TextEncoder().encode(authSeed+pw));
+    return [].map.call(new Uint8Array(buf),function(b){ return b.toString(16).padStart(2,'0'); }).join('');
+  }
+  async function unlock(){
+    var pw=($('cfg-pw').value)||'';
+    try{ identity.token=await computeHash(pw); }
+    catch(e){ var mg=$('cfg-msg'); mg.textContent='cannot hash (insecure context)'; mg.style.color='var(--danger)'; return; }
+    try{ localStorage.setItem(TOKEN_KEY, identity.token); }catch(e){}   // persist so a refresh stays authed
+    identity.role='presenter'; attempting=true;
+    var m2=$('cfg-msg'); m2.textContent='unlocking…'; m2.style.color='var(--dim)';
+    // Reconnect: close+reopen so a FRESH hello carries the token (onclose → setTimeout(connect)).
+    if(ws && (ws.readyState===0||ws.readyState===1)){ try{ws.close();}catch(e){} }
+    else connect();
+  }
+  $('cfg-go').addEventListener('click',function(e){ e.stopPropagation(); unlock(); });
+  $('cfg-pw').addEventListener('keydown',function(e){ if(e.key==='Enter') unlock(); });
+
+  fetch('/api/auth').then(function(r){return r.json();})
+    .then(function(d){ authGated=!!(d&&d.gated); if(d&&d.seed) authSeed=d.seed; renderConfig(); })
+    .catch(function(){ authGated=false; renderConfig(); });
+
   connect(); refreshModules(); refreshSeries();
+  window.__ctlAuth = { role:function(){return effRole;}, gated:function(){return authGated;}, open:function(){return $('ap-config').classList.contains('open');} };   // test hook
   window.__control = control;   // test/automation hook (P1) — drive control ops programmatically
   window.__gm={ users:function(){return users;}, module:function(){return module;}, cur:function(){return curBeat;}, rec:function(){return recBeat;},
     setModule:function(m){ module=m; curBeat=-1; recBeat=-1; renderOutline(); renderNav(); },   // DEL-2 test/automation hook: load a module into the panel directly
