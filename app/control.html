@@ -194,16 +194,28 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     el.innerHTML=(((b.opts&&(b.opts.title||b.opts.prompt||b.opts.text))||b.id)+'').slice(0,42)+' <span class="comp">'+b.component+(b.target?(' →'+b.target):'')+'</span>'+((i===recBeat&&i!==curBeat)?' <span class="recnote">→ recommended</span>':'');
     el.onclick=function(){ recBeat=-1; control('show_beat',{index:i}); };   // manual override always works + clears the recommendation
     return el; }
+  // SCH-1: format a duration estimate. <60s → "~Ns"; else round to nearest minute → "~N min".
+  function fmtDur(sec){ return sec<60 ? '~'+sec+'s' : '~'+Math.round(sec/60)+' min'; }
+  function beatDur(bid){ var b=beatById(bid); var d=b&&b.durationSec; return (typeof d==='number'&&isFinite(d))?d:0; }
+  function secDur(s){ var ids = (s.sequences&&s.sequences.length) ? s.sequences.reduce(function(a,q){return a.concat(q.beatIds||[]);},[]) : (s.beatIds||[]); return ids.reduce(function(n,bid){return n+beatDur(bid);},0); }
   function renderOutline(){
     if(!module){ $('outline').innerHTML=''; return; }
     var secs = module.sections && module.sections.length ? module.sections : [{title:'(all beats)',beatIds:(module.beats||[]).map(function(b){return b.id;})}];
     $('outline').innerHTML='';
+    // SCH-1: only roll up estimates when at least one beat carries a numeric durationSec.
+    var anyDur = (module.beats||[]).some(function(b){ return typeof b.durationSec==='number'&&isFinite(b.durationSec); });
+    if(anyDur){
+      var total = (module.beats||[]).reduce(function(n,b){ return n+((typeof b.durationSec==='number'&&isFinite(b.durationSec))?b.durationSec:0); },0);
+      var est=document.createElement('div'); est.className='outline-est'; est.style.cssText='font-size:11px;opacity:.7;margin-bottom:4px'; est.textContent='est. '+fmtDur(total);
+      $('outline').appendChild(est);
+    }
     secs.forEach(function(s){
       var det=document.createElement('details'); det.className='sec'; det.open=true;
       // DEL-3: a section with a non-empty sequences[] renders a nested Sequence tier; otherwise its beatIds render directly.
       var hasSeq = s.sequences && s.sequences.length;
       var secCount = hasSeq ? s.sequences.reduce(function(n,q){return n+(q.beatIds||[]).length;},0) : (s.beatIds||[]).length;
-      var sum=document.createElement('summary'); sum.innerHTML='<span>'+(s.title||'section')+'</span><span class="cnt">'+secCount+' beats</span>';
+      var estStr = ''; if(anyDur){ var sd=secDur(s); if(sd>0) estStr=' · '+fmtDur(sd); }
+      var sum=document.createElement('summary'); sum.innerHTML='<span>'+(s.title||'section')+'</span><span class="cnt">'+secCount+' beats'+estStr+'</span>';
       det.appendChild(sum);
       if(hasSeq){
         s.sequences.forEach(function(q){

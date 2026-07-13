@@ -123,6 +123,8 @@ import { validate, summarize } from '/validate.mjs';   // AUT-3: SINGLE-SOURCE v
     if(b.id) o.id=b.id;
     if(b.promptId) o.promptId=b.promptId;
     if(b.target) o.target=b.target;
+    // SCH-1: optional per-beat duration estimate (integer seconds). Blank → omitted.
+    if(b.durationSec!=null && String(b.durationSec).trim()!==''){ var d=parseInt(b.durationSec,10); if(!isNaN(d)) o.durationSec=d; }
     var opts = parseOpts(b.optsStr); if(opts && Object.keys(opts).length) o.opts=opts;
     return o;
   }
@@ -136,6 +138,7 @@ import { validate, summarize } from '/validate.mjs';   // AUT-3: SINGLE-SOURCE v
     $('mf-req').value = man.requirements ? JSON.stringify(man.requirements) : '';
     beats = (m.beats||[]).map(function(b){ return {
       component: b.component||'card', id: b.id||'', promptId: b.promptId||'', target: b.target||'',
+      durationSec: (b.durationSec!=null?b.durationSec:''),
       optsStr: (b.opts && Object.keys(b.opts).length) ? JSON.stringify(b.opts) : ''
     };});
     renderBeats();
@@ -159,6 +162,10 @@ import { validate, summarize } from '/validate.mjs';   // AUT-3: SINGLE-SOURCE v
       top.appendChild(txt('id','id'));
       top.appendChild(txt('promptId','promptId'));
       top.appendChild(txt('target','target'));
+      // SCH-1: optional per-beat duration estimate (integer seconds). Blank clears it.
+      var dur=el('input',{class:'b-txt',type:'number',min:'0',placeholder:'sec',title:'duration estimate (seconds)',style:'width:60px'});
+      dur.value=(b.durationSec!=null?b.durationSec:''); dur.oninput=function(){ b.durationSec=dur.value; };
+      top.appendChild(dur);
       var btns=el('div',{class:'btns'});
       function mk(label,title,fn,cls){ var bt=el('button',{title:title}); if(cls)bt.className=cls; bt.textContent=label; bt.onclick=fn; return bt; }
       btns.appendChild(mk('↑','move up',function(){ if(i>0){ var t=beats[i-1];beats[i-1]=beats[i];beats[i]=t; renderBeats(); } }));
@@ -190,7 +197,7 @@ import { validate, summarize } from '/validate.mjs';   // AUT-3: SINGLE-SOURCE v
       d.textContent=(w.level==='warn'?'⚠ ':'ℹ ')+w.code+(w.beatIndex!=null?(' [beat '+w.beatIndex+']'):'')+' — '+w.msg; host.appendChild(d); });
   }
 
-  $('btn-add').onclick=function(){ beats.push({component:'card',id:'',promptId:'',target:'',optsStr:''}); renderBeats(); };
+  $('btn-add').onclick=function(){ beats.push({component:'card',id:'',promptId:'',target:'',durationSec:'',optsStr:''}); renderBeats(); };
   $('btn-validate').onclick=function(){ renderValidation(summarize(validate(getModule()))); };   // warn-never-block: informs only
 
   // ── Save / Load ─────────────────────────────────────────────────────────────

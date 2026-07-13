@@ -8,7 +8,7 @@ test('V — a clean module yields zero warnings and zero info', () => {
   const clean = {
     manifest: { title: 'X', requirements: { terminalClear: true, gateTimeoutMs: 180000 } },
     beats: [
-      { component: 'narration', promptId: 'a-intro' },
+      { component: 'narration', promptId: 'a-intro', durationSec: 30 },
       { component: 'choice', promptId: 'a-pick' },
       { component: 'dice', promptId: 'a-roll' },
     ],
@@ -70,4 +70,16 @@ test('V — V14 flags a section beatId with no matching beat', () => {
   const m = { manifest: { requirements: { terminalClear: true } }, sections: [{ id: 's', beatIds: ['a', 'ghost'] }], beats: [{ id: 'a', component: 'card' }] };
   const codes = summarize(validate(m)).warnings.map((w) => w.code);
   expect(codes.includes('V14-section-beatid-missing'), 'V14 catches bad section ref', JSON.stringify(codes));
+});
+
+test('V19 — a module with beats but no durationSec gets the advisory info', () => {
+  const m = { beats: [{ component: 'narration', promptId: 'a' }, { component: 'card' }] };
+  const codes = summarize(validate(m)).infos.map((i) => i.code);
+  expect(codes.includes('V19-no-duration'), 'V19 fires when no beat has a duration', JSON.stringify(codes));
+});
+
+test('V19 — any beat carrying a numeric durationSec suppresses the advisory', () => {
+  const m = { beats: [{ component: 'narration', promptId: 'a', durationSec: 120 }, { component: 'card' }] };
+  const infos = summarize(validate(m)).infos.map((i) => i.code);
+  expect(!infos.includes('V19-no-duration'), 'V19 suppressed once a duration is present', JSON.stringify(infos));
 });
