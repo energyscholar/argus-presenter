@@ -56,6 +56,7 @@
   .cp{cursor:copy;border-bottom:1px dotted #456;}.cp:hover{color:#fff;}
   .cp.copied,.u-copy.copied{color:var(--ok);border-color:var(--ok);}
   .u-copy{cursor:copy;opacity:.5;margin-left:4px;}.u-copy:hover{opacity:1;color:var(--ok);}
+  .u-reset{cursor:pointer;opacity:.5;margin-left:4px;font-size:9px;}.u-reset:hover{opacity:1;color:var(--ok);}
   .mini{font-size:11px;padding:3px 6px;}
   textarea{width:100%;box-sizing:border-box;min-height:40px;}
 </style>
@@ -238,11 +239,13 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
         +'<span class="u-meta"><span class="cp" data-copy="'+esc(u.ip||'')+'" title="copy IP">'+esc(u.ip||'—')+'</span>'
         +' <span class="cp" data-copy="'+esc(u.socketId)+'" title="copy socketId">'+esc(u.socketId)+'</span>'
         +'<br>sees: '+esc(u.display||'—')+(seen?(' · '+seen):'')
-        +' <span class="u-copy" data-copy="'+esc(rowText)+'" title="copy row">⧉</span></span>';
+        +' <span class="u-copy" data-copy="'+esc(rowText)+'" title="copy row">⧉</span>'
+        +' <span class="u-reset" data-reset="'+esc(u.userId)+'" title="reset to default (follow role display)">↺ default</span></span>';
       el.onclick=function(){ selectView(u.userId); };
       box.appendChild(el);
     });
     [].forEach.call(box.querySelectorAll('[data-copy]'),function(c){ c.onclick=function(e){ e.stopPropagation(); copyText(c.getAttribute('data-copy'), c); }; });
+    [].forEach.call(box.querySelectorAll('[data-reset]'),function(c){ c.onclick=function(e){ e.stopPropagation(); control('reset_user',{userId:c.getAttribute('data-reset')}); }; });
   }
   function selectView(uid){ viewingAs=uid; $('view-all').classList.remove('sel'); renderUsers();
     var u=users.find(function(x){return x.userId===uid;});
