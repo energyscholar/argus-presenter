@@ -2,6 +2,7 @@ node_modules/
 *.log
 .DS_Store
 /harness/_shots/
+test/screenshots/
 *.tmp
 
 # Local content modules stay out of the public repo (content is not shipped here; core stays neutral)

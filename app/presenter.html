@@ -44,6 +44,7 @@
   <h4>Display</h4>
   <div class="row"><span class="k">Zoom</span> <button data-scale="0.9">90%</button><button data-scale="1">100%</button><button data-scale="1.25">125%</button><button data-scale="1.5">150%</button></div>
   <div class="row"><span class="k">Contrast</span> <button id="cfg-contrast">High-contrast: off</button></div>
+  <div class="row"><span class="k">Role</span> <button id="cfg-role-user" class="sel">User</button> <button id="cfg-role-presenter">Presenter</button></div>
   <div class="rd" id="cfg-readout"></div>
   <div class="row" style="margin-top:8px"><button id="cfg-close">Close</button></div>
 </div>
@@ -54,12 +55,21 @@
 (function(){
   var NS = 'argus-presenter';
   var q = new URLSearchParams(location.search);
+  // Role precedence: explicit URL ?role= wins; else a role the viewer chose earlier
+  // (persisted in localStorage via the Config overlay); else default participant.
+  var ROLE_KEY = NS + ':role';
+  var savedRole = null;
+  try { savedRole = localStorage.getItem(ROLE_KEY); } catch(e){}
   var identity = {
     userId: q.get('userId') || q.get('u') || ('anon-' + Math.random().toString(36).slice(2,8)),
     userName: q.get('name') || q.get('n') || 'Guest',
-    role: q.get('role') || 'participant'
+    role: q.get('role') || savedRole || 'participant',
+    // Token pass-through: when a PRESENTER_CONTROL_TOKEN is configured server-side,
+    // ?token=… in the URL satisfies the AUTH-1 gate for a control role. Default: none (open).
+    token: q.get('token') || null
   };
-  document.getElementById('who').textContent = identity.role + ' · ' + identity.userName + ' (' + identity.userId + ')';
+  function renderWho(){ document.getElementById('who').textContent = identity.role + ' · ' + identity.userName + ' (' + identity.userId + ')'; }
+  renderWho();
 
   var stage = document.getElementById('stage');
   var led = document.getElementById('led');
@@ -223,8 +233,36 @@
     [].forEach.call(panel.querySelectorAll('[data-scale]'), function(b){ b.addEventListener('click', function(){ cfg.scale = parseFloat(b.getAttribute('data-scale')); apply(); }); });
     document.getElementById('cfg-contrast').addEventListener('click', function(){ cfg.contrast = !cfg.contrast; apply(); });
     document.getElementById('cfg-close').addEventListener('click', function(){ toggle(false); });
+
+    // ---- Role picker (P4): become presenter/user without editing the URL.
+    // Reflects identity.role in the .sel classes; on change persists to localStorage
+    // and re-establishes the socket so a FRESH hello carries the new role (and token,
+    // which satisfies the AUTH-1 gate when a control token is configured server-side).
+    var roleUserBtn = document.getElementById('cfg-role-user');
+    var rolePresBtn = document.getElementById('cfg-role-presenter');
+    function reflectRole(){
+      roleUserBtn.classList.toggle('sel', identity.role !== 'presenter');
+      rolePresBtn.classList.toggle('sel', identity.role === 'presenter');
+    }
+    function setRole(role){
+      if (role === identity.role) return;
+      identity.role = role;
+      try { localStorage.setItem(ROLE_KEY, role); } catch(e){}
+      reflectRole(); renderWho(); readout();
+      // Reconnect: onclose -> scheduleReconnect -> connect() re-sends hello w/ new role.
+      if (ws && (ws.readyState === 0 || ws.readyState === 1)) { try { ws.close(); } catch(e){} }
+      else { connect(); }
+    }
+    roleUserBtn.addEventListener('click', function(){ setRole('participant'); });
+    rolePresBtn.addEventListener('click', function(){ setRole('presenter'); });
+    reflectRole();
+
     apply();
-    window.__apConfig = { get: function(){ return cfg; }, open: function(){ toggle(true); } };
+    window.__apConfig = {
+      role: function(){ return identity.role; },
+      open: function(){ return panel.classList.contains('open'); },
+      get: function(){ return cfg; }
+    };
   })();
 })();
 </script>
