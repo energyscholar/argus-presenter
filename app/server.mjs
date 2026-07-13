@@ -322,6 +322,19 @@ export function createServer({ port = 0, controlToken = null } = {}) {
       case 'close_poll': api.closePoll(a.promptId); break;
       case 'reload_clients': api.reloadClients(a.target || 'all', a.delay || 0); break;
       case 'clear': api.clear(a.target || 'all'); break;   // route through api.clear so display descriptor is also reset (reconnect → branding)
+      // MON-1: drop a user's per-user override so they follow their ROLE/default display
+      // again (or branding if the role has none). DISTINCT from clear(): clear BLANKS to
+      // branding; reset_user RETARGETS to the role display. Role-gated above.
+      case 'reset_user': {
+        const uid = a.userId;
+        displayByUser.delete(uid);
+        const tws = byUser.get(uid);
+        const tc = tws ? conns.get(tws) : null;
+        const desc = tc ? displayByRole[tc.role] : null;
+        if (tws && tc) { if (desc) renderDisplay(tws, tc, desc); else send(tws, { t: 'clear' }); }
+        pushPresence();
+        break;
+      }
       case 'op': handleOp(c, { path: a.path, verb: a.verb, value: a.value, opId: a.opId }); break;   // drive an op as the presenter
       case 'set_module': api.setModule(a.module || { beats: a.beats || [] }); break;   // Group I
       case 'show_beat': api.showBeat(a.id != null ? a.id : (a.index | 0)); break;   // by id (branch nav) or index
