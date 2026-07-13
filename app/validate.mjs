@@ -119,6 +119,11 @@ export function validate(module, ctx = {}) {
   const anyDuration = beats.some((b) => b && Number.isFinite(b.durationSec));
   if (!anyDuration) info('V19-no-duration', 'no beat carries a numeric durationSec — no time estimate in the outline');
 
+  // V20 (DEF-1) advisory-only, module-level: a module with beats but no manifest.defaultBeatId
+  // has no title/default page, so it shows branding on load until Start. Advisory (matches V19's
+  // tone) even though most existing modules trip it.
+  if (beats.length && !(m.manifest && m.manifest.defaultBeatId)) info('V20-no-default', 'no manifest.defaultBeatId — module shows branding on load until Start (no title page)');
+
   return { warnings };
 }
 

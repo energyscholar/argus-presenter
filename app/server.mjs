@@ -473,6 +473,7 @@ export function createServer({ port = 0, controlToken = null } = {}) {
       case 'op': handleOp(c, { path: a.path, verb: a.verb, value: a.value, opId: a.opId }); break;   // drive an op as the presenter
       case 'set_module': api.setModule(a.module || { beats: a.beats || [] }); break;   // Group I
       case 'show_beat': api.showBeat(a.id != null ? a.id : (a.index | 0)); break;   // by id (branch nav) or index
+      case 'show_default': api.showDefault(); break;   // DEF-1: Home → module title page (or branding fallback)
       case 'next_beat': api.nextBeat(); break;
       case 'prev_beat': api.prevBeat(); break;
       case 'append_beat': api.appendBeat(a.beat || { component: a.component, opts: a.opts, requires: a.requires }); break;   // compose (I2) + AI co-author (I3)
@@ -669,6 +670,10 @@ export function createServer({ port = 0, controlToken = null } = {}) {
       try { const v = summarize(validate({ title: contentModule.title, beats: contentModule.beats, manifest: module && module.manifest })); if (v.warn || v.info) log.info('module', 'validate', { warn: v.warn, info: v.info, codes: v.warnings.concat(v.infos).map((x) => x.code) }); } catch (e) { log.warn('module', 'validate-error', { err: String(e).slice(0, 120) }); }
       serverApply({ path: 'module/len', verb: 'set', value: contentModule.beats.length });
       serverApply({ path: 'module/current', verb: 'set', value: -1 });
+      // DEF-1: auto-show the module's default/title page on load if declared+resolvable; else
+      // leave branding (currentBeat stays -1, push nothing). The panel still drives Start via show_beat index:0.
+      const did = contentModule.manifest && contentModule.manifest.defaultBeatId;
+      if (did != null && contentModule.beats.findIndex((b) => b.id === did) >= 0) api.showBeat(did);
       return { title: contentModule.title, beats: contentModule.beats.length };
     },
     showBeat(ref) {
@@ -694,6 +699,15 @@ export function createServer({ port = 0, controlToken = null } = {}) {
     },
     nextBeat() { return api.showBeat(currentBeat + 1); },
     prevBeat() { return api.showBeat(Math.max(0, currentBeat - 1)); },
+    // DEF-1: cascading default. A module WITH a resolvable manifest.defaultBeatId shows that
+    // title/default beat; a module without one (or no module at all) falls back to branding
+    // (clear). This is the mechanism behind Home + the STOP/end→branding cascade.
+    showDefault() {
+      const did = contentModule && contentModule.manifest && contentModule.manifest.defaultBeatId;
+      if (did != null && contentModule.beats.findIndex((b) => b.id === did) >= 0) return api.showBeat(did);
+      api.clear('all');
+      return null;
+    },
     appendBeat(beat) {
       if (!contentModule) contentModule = { title: 'Module', beats: [] };
       contentModule.beats.push(beat);
