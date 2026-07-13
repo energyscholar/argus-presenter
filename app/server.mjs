@@ -532,6 +532,14 @@ export function createServer({ port = 0, controlToken = null } = {}) {
       // reaches opts so interactive beats can actually collect/gate answers.
       const opts = (b.promptId != null) ? Object.assign({}, b.opts || {}, { promptId: b.promptId }) : (b.opts || {});
       api.pushComponent(b.target || 'all', b.component, opts, b.theme || 'argus', b.requires || []);
+      // DEL-1: per-user layers. A layer with a `target` OVERRIDES the base opts for that
+      // user/role (layer opts win). `when`-only layers are runner-evaluated — out of scope here.
+      // Base goes to all; layered targets additionally receive the merged override (last-wins).
+      if (Array.isArray(b.layers)) for (const L of b.layers) {
+        if (!L || !L.target) continue;
+        const lopts = Object.assign({}, b.opts || {}, L.opts || {}, (b.promptId != null) ? { promptId: b.promptId } : {});
+        api.pushComponent(L.target, b.component, lopts, b.theme || 'argus', b.requires || []);
+      }
       currentBeat = i;
       serverApply({ path: 'module/current', verb: 'set', value: i });
       return { index: i, component: b.component, target: b.target || 'all' };
