@@ -59,7 +59,7 @@ function sendStatic(res, req, absPath, contentType) {
 }
 
 export function createServer({ port = 0, controlToken = null } = {}) {
-  // AUTH-1: a shared secret gates the control roles (presenter/ai/gm). When null,
+  // AUTH-1: a shared secret gates the control roles (presenter/ai). When null,
   // behaviour is unchanged / LAN-open — any browser may claim a control role.
   const CONTROL_TOKEN = controlToken || process.env.PRESENTER_CONTROL_TOKEN || null;
   const conns = new Map();     // ws -> {id,userId,userName,role}
@@ -153,7 +153,7 @@ export function createServer({ port = 0, controlToken = null } = {}) {
       .filter(Boolean);
   }
   // AUT-2: hot-reload. Watch MODULES_DIR; when a *.json module file changes on disk,
-  // invalidate its cache and notify the control roles (presenter/ai/gm) so a just-
+  // invalidate its cache and notify the control roles (presenter/ai) so a just-
   // edited/just-saved module is discoverable without a server restart. Debounced —
   // fs.watch fires duplicate/rapid events; coalesce with a short trailing timer per id.
   let watcher = null;
@@ -161,7 +161,7 @@ export function createServer({ port = 0, controlToken = null } = {}) {
   function notifyModuleChanged(id) {
     moduleCache.delete(id);
     for (const [ws, c] of conns.entries())
-      if (c.role === 'presenter' || c.role === 'ai' || c.role === 'gm') send(ws, { t: 'module-changed', id });
+      if (c.role === 'presenter' || c.role === 'ai') send(ws, { t: 'module-changed', id });
     log.info('module', 'changed', { id });
   }
   try {
@@ -265,18 +265,18 @@ export function createServer({ port = 0, controlToken = null } = {}) {
   function presence() { return [...conns.values()].map((c) => ({ userId: c.userId, userName: c.userName, role: c.role })); }
   // Full presence (incl. IP + socketId + current display id) pushed to CONTROL roles only, for the GM user list.
   function pushPresence() {
-    // No-op unless a control client (presenter/ai/gm) is actually listening — avoids building/sending
+    // No-op unless a control client (presenter/ai) is actually listening — avoids building/sending
     // the presence feed on every display change when nobody's watching.
-    const ctl = [...conns.values()].filter((c) => c.role === 'presenter' || c.role === 'ai' || c.role === 'gm');
+    const ctl = [...conns.values()].filter((c) => c.role === 'presenter' || c.role === 'ai');
     if (!ctl.length) return;
     const users = [...conns.values()].map((c) => ({ userId: c.userId, userName: c.userName, role: c.role, ip: c.ip, socketId: c.id, lastSeen: c.lastSeen, display: displayIdFor(c) }));
-    for (const [ws, c] of conns.entries()) if (c.role === 'presenter' || c.role === 'ai' || c.role === 'gm') send(ws, { t: 'presence', users });
+    for (const [ws, c] of conns.entries()) if (c.role === 'presenter' || c.role === 'ai') send(ws, { t: 'presence', users });
   }
-  // PRIM-results: forward a beat result (answer/continue) to CONTROL roles ONLY (presenter/ai/gm),
+  // PRIM-results: forward a beat result (answer/continue) to CONTROL roles ONLY (presenter/ai),
   // mirroring pushPresence's OPSEC filter — participants must never receive a `t:'result'` frame.
   function pushResult(r) {
     for (const [ws, c] of conns.entries())
-      if (c.role === 'presenter' || c.role === 'ai' || c.role === 'gm')
+      if (c.role === 'presenter' || c.role === 'ai')
         send(ws, { t: 'result', promptId: r.promptId, userId: r.userId, userName: r.userName, type: r.type, value: r.value });
   }
   // A short label for what a given connection is currently showing (for the user list / tiny preview).
@@ -289,7 +289,7 @@ export function createServer({ port = 0, controlToken = null } = {}) {
   }
   function targets(target) {
     if (target === 'all' || target == null) return [...conns.keys()];
-    if (['participant', 'presenter', 'ai', 'gm'].includes(target))
+    if (['participant', 'presenter', 'ai'].includes(target))
       return [...conns.entries()].filter(([, c]) => c.role === target).map(([ws]) => ws);
     const ws = byUser.get(target); return ws ? [ws] : [];   // by userId
   }
@@ -297,7 +297,7 @@ export function createServer({ port = 0, controlToken = null } = {}) {
   wss.on('connection', (ws, req) => {
     if (conns.size >= MAX_CONNS) { log.warn('conn', 'cap-reached', { conns: conns.size }); try { ws.close(1013, 'server busy'); } catch {} return; }
     // Capture client IP (x-forwarded-for through a proxy, else the socket peer). Shown ONLY to
-    // presenter/ai/gm in the user list — never broadcast to participants.
+    // presenter/ai in the user list — never broadcast to participants.
     const ip = ((req && (req.headers['x-forwarded-for'] || (req.socket && req.socket.remoteAddress))) || '').toString().split(',')[0].trim() || null;
     conns.set(ws, { id: 'c' + (++connSeq), userId: null, userName: null, role: 'participant', lastSeen: Date.now(), ip });
     ws.on('message', (buf) => {
@@ -309,7 +309,7 @@ export function createServer({ port = 0, controlToken = null } = {}) {
         c.userName = m.userName || c.userId;
         // AUTH-1: control roles require the configured secret; else force participant.
         let reqRole = m.role || 'participant';
-        if (CONTROL_TOKEN && (reqRole === 'presenter' || reqRole === 'ai' || reqRole === 'gm') && m.token !== CONTROL_TOKEN) {
+        if (CONTROL_TOKEN && (reqRole === 'presenter' || reqRole === 'ai') && m.token !== CONTROL_TOKEN) {
           log.warn('auth', 'control-denied', { userId: c.userId, role: reqRole });
           reqRole = 'participant';
         }
@@ -332,7 +332,7 @@ export function createServer({ port = 0, controlToken = null } = {}) {
         shimAnswer(c, r);      // D2: poll vote (and generic answer) -> store op
         emit('result', r);     // map view/click/pointer are store ops now (E1-E4) — no relay
         // PRIM-results: track last result per prompt and forward to CONTROL roles ONLY (OPSEC:
-        // presenter/ai/gm — participants must NEVER receive a peer's answer/continue).
+        // presenter/ai — participants must NEVER receive a peer's answer/continue).
         // Auditor: only meaningful results (answer/continue) — drop lifecycle events (ready/step/change/
         // flow-complete) that carry the SAME promptId and would false-trigger DEL-2 branch nav (S190 gotcha).
         if (r.promptId != null && (r.type === 'answer' || r.type === 'continue')) {
@@ -418,7 +418,7 @@ export function createServer({ port = 0, controlToken = null } = {}) {
   // P3: publish the count of attached LISTENERS (presenter/ai) so participant chat
   // inputs enable only when someone is listening. Sent as a transient control
   // message (NOT a store op) — presence-derived, must not grow the durable state.
-  function currentListeners() { return [...conns.values()].filter((c) => c.role === 'presenter' || c.role === 'ai' || c.role === 'gm').length; }
+  function currentListeners() { return [...conns.values()].filter((c) => c.role === 'presenter' || c.role === 'ai').length; }
   function updateChatListeners() {
     const count = currentListeners();
     for (const ws of conns.keys()) send(ws, { t: 'chat_listeners', n: count });
@@ -433,7 +433,7 @@ export function createServer({ port = 0, controlToken = null } = {}) {
   // P1: presenter control-message handler — the SAME server API the AI/MCP drives.
   // Presenter/ai only (server-authoritative role, S1/S2); others are ignored.
   function handleControl(c, m, ws) {
-    if (c.role !== 'presenter' && c.role !== 'ai' && c.role !== 'gm') { log.warn('control', 'denied', { socketId: c.id, role: c.role }); return; }
+    if (c.role !== 'presenter' && c.role !== 'ai') { log.warn('control', 'denied', { socketId: c.id, role: c.role }); return; }
     const a = m.args || {};
     switch (m.action) {
       // PRIM-mirror (MON-2): render the TARGET user's current display in the target's
@@ -507,7 +507,7 @@ export function createServer({ port = 0, controlToken = null } = {}) {
   }
 
   // ---- Current-display tracking + per-connection render (C6) ----
-  const ROLES = ['participant', 'presenter', 'ai', 'gm'];
+  const ROLES = ['participant', 'presenter', 'ai'];
   function setDisplay(target, desc) {
     if (target === 'all' || target == null) { for (const r of ROLES) displayByRole[r] = desc; displayByUser.clear(); }
     else if (ROLES.includes(target)) displayByRole[target] = desc;
@@ -720,7 +720,7 @@ export function createServer({ port = 0, controlToken = null } = {}) {
     raf: ({ windowMs = 5000 } = {}) => {
       const entries = store.oplogSince(0);
       const total = entries.length;
-      const CONTROLLERS = new Set(['ai', 'presenter', 'gm']);
+      const CONTROLLERS = new Set(['ai', 'presenter']);
       const peerVisible = entries.filter((e) => e.role === 'participant' && store.perms.canRead('participant', e.path)).length;
       const teacher = entries.filter((e) => CONTROLLERS.has(e.role)).length;
       // Peer->peer response edges: a participant op preceded (within windowMs) by a
