@@ -25,6 +25,10 @@
   #preview{width:150px;height:98px;border:1px solid #2a3a5a;border-radius:6px;overflow:hidden;background:#050510;flex:0 0 auto;position:relative;}
   #preview iframe{border:0;width:600px;height:392px;transform:scale(.25);transform-origin:top left;pointer-events:none;}
   #preview .pvlabel{position:absolute;left:0;right:0;bottom:0;font-size:9px;text-align:center;background:rgba(0,0,0,.6);color:var(--dim);padding:1px;}
+  #pvwarn{display:none;position:absolute;inset:0;flex-direction:column;align-items:center;justify-content:center;gap:2px;background:#160c05;text-align:center;}
+  #pvwarn .pvwarn-main{font-size:11px;color:var(--warn);}
+  #pvwarn .pvwarn-sub{font-size:9px;color:var(--dim);}
+  #livepreview-lbl{font-size:10px;color:var(--dim);display:inline-flex;align-items:center;gap:3px;cursor:pointer;}
   #np-meta{font-size:12px;}#np-meta b{color:#fff;}
   #viewingas{font-size:11px;color:var(--warn);}
   .sec{border:1px solid #1c2a44;border-radius:6px;margin:5px 0;}
@@ -59,7 +63,10 @@
   <section>
     <h2>Now playing</h2>
     <div id="nowplaying">
-      <div id="preview"><iframe id="pvframe" sandbox="allow-scripts"></iframe><div class="pvlabel" id="pvlabel">idle</div></div>
+      <div style="display:flex;flex-direction:column;gap:3px;flex:0 0 auto">
+        <div id="preview"><iframe id="pvframe" sandbox="allow-scripts"></iframe><div class="pvlabel" id="pvlabel">idle</div><div id="pvwarn"><div class="pvwarn-main">⚠ preview paused</div><div class="pvwarn-sub">system busy</div></div></div>
+        <label id="livepreview-lbl" title="live 'view-as' thumbnail — first thing dropped when the tab is busy"><input type="checkbox" id="livepreview" checked> live preview</label>
+      </div>
       <div>
         <div id="np-meta">Showing: <b id="np-what">idle (branding)</b></div>
         <div id="viewingas"></div>
@@ -111,6 +118,8 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   var identity = { userId: q.get('userId')||'gm', userName: q.get('name')||'GM', role: q.get('role')||'presenter' };
   if(q.get('token')) identity.token = q.get('token');   // AUTH-1: forward control secret to gate the role
   var ws=null, module=null, curBeat=-1, recBeat=-1, users=[], viewingAs=null, results={};
+  // MON-2: live "view-as" thumbnail — luxury feature, first thing sacrificed under load.
+  var livePreview=true, degraded=false, lastDisplay={}, monLastTick=0, monLate=0, monOnTime=0;
   var $=function(id){return document.getElementById(id);};
 
   function control(action,args){ if(ws&&ws.readyState===1) ws.send(JSON.stringify({t:'control',action:action,args:args||{}})); }
@@ -122,7 +131,8 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   }
   function onMsg(ev){ var m; try{m=JSON.parse(ev.data);}catch(e){return;}
     if(m.t==='ping'){ ws.send(JSON.stringify({t:'pong',ts:m.ts})); return; }
-    if(m.t==='presence'){ users=m.users||[]; renderUsers(); return; }
+    if(m.t==='presence'){ users=m.users||[]; renderUsers(); onPresenceRefresh(); return; }
+    if(m.t==='mirror'){ onMirror(m); return; }   // MON-2: target user's live display html
     if(m.t==='content'){ renderPreview(m.html, m.contentId); return; }
     if(m.t==='clear'){ renderPreview(null,'idle'); return; }
     if(m.t==='result'){ results[m.promptId]=results[m.promptId]||{}; results[m.promptId][m.userId]={type:m.type,value:m.value}; maybeBranch(m); return; }
@@ -218,8 +228,53 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     var u=users.find(function(x){return x.userId===uid;});
     renderPreview(undefined,(u&&u.display)||'—');
     $('viewingas').textContent='▶ viewing as '+uid+' — they see: '+((u&&u.display)||'—')+'  (click ALL to return)';
+    lastDisplay[uid]=(u&&u.display)||null;
+    requestMirror();   // MON-2: pull THEIR actual display into the thumbnail
   }
   $('view-all').onclick=function(){ viewingAs=null; this.classList.add('sel'); renderUsers(); $('viewingas').textContent=''; };
+
+  // ---- MON-2: live "view-as" thumbnail (lightweight, event-driven, gracefully degrading) ----
+  function requestMirror(){ if(viewingAs && livePreview && !degraded) control('mirror',{userId:viewingAs}); }
+  function onMirror(m){
+    if(m.userId!==viewingAs || !livePreview || degraded) return;   // stale / paused → drop
+    if(m.html==null){ renderPreview(null, m.userId+"'s view · idle"); }
+    else { renderPreview(m.html, m.userId+"'s view"); }
+    // keep the reverse-link note (set by selectView / presence)
+  }
+  // Refresh trigger #2: the watched user's display CHANGED (event-driven, never a timer).
+  function onPresenceRefresh(){
+    if(!viewingAs) return;
+    var u=users.find(function(x){return x.userId===viewingAs;});
+    var d=(u&&u.display)||null;
+    if(d!==lastDisplay[viewingAs]){ lastDisplay[viewingAs]=d; requestMirror(); }
+  }
+  // Swap the live iframe for a same-size warning box when paused/starved (nothing else changes).
+  function applyPreviewState(){
+    var off = degraded || !livePreview;
+    var warn=$('pvwarn'), f=$('pvframe'), lbl=$('pvlabel');
+    if(off){
+      // CLEAR the iframe content so any animation (requestAnimationFrame) actually STOPS and CPU is
+      // reclaimed — visibility:hidden alone keeps the iframe's rAF loop running (paints nothing, still burns CPU).
+      f.srcdoc='<body style="margin:0;background:#050510"></body>';
+      f.style.visibility='hidden'; lbl.style.visibility='hidden'; warn.style.display='flex';
+      warn.querySelector('.pvwarn-sub').textContent = degraded ? 'system busy' : 'off';
+    } else {
+      warn.style.display='none'; f.style.visibility=''; lbl.style.visibility='';
+      requestMirror();   // returning to live → re-pull the current view-as
+    }
+  }
+  $('livepreview').onchange=function(){ livePreview=this.checked; applyPreviewState(); };
+  // Cheap 1 Hz SELF-monitor: measures its own lateness (tab starvation), NOT a render loop.
+  setInterval(function(){
+    var now=performance.now();
+    if(monLastTick){
+      var gap=now-monLastTick;
+      if(gap>1800){ monLate++; monOnTime=0; if(monLate>=2 && !degraded){ degraded=true; applyPreviewState(); } }
+      else if(gap<1300){ monOnTime++; monLate=0; if(monOnTime>=3 && degraded){ degraded=false; applyPreviewState(); } }
+      else { monLate=0; }
+    }
+    monLastTick=now;
+  },1000);
 
   $('pc-push').onclick=function(){ var o={}; try{o=JSON.parse($('pc-opts').value||'{}');}catch(e){} control('push_component',{component:$('pc-component').value,opts:o,target:$('pc-target').value}); };
   $('op-open').onclick=function(){ var opts=$('op-options').value.split(',').map(function(s){s=s.trim();return{label:s,value:s};}); control('open_poll',{promptId:$('op-id').value,prompt:$('op-prompt').value,options:opts,target:'participant',resultsTarget:'presenter'}); };
@@ -228,7 +283,8 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   connect(); refreshModules();
   window.__control = control;   // test/automation hook (P1) — drive control ops programmatically
   window.__gm={ users:function(){return users;}, module:function(){return module;}, cur:function(){return curBeat;}, rec:function(){return recBeat;},
-    setModule:function(m){ module=m; curBeat=-1; recBeat=-1; renderOutline(); renderNav(); } };   // DEL-2 test/automation hook: load a module into the panel directly
+    setModule:function(m){ module=m; curBeat=-1; recBeat=-1; renderOutline(); renderNav(); },   // DEL-2 test/automation hook: load a module into the panel directly
+    degrade:function(b){ degraded=!!b; applyPreviewState(); } };   // MON-2 test hook: force the degraded state without real CPU load
 })();
 </script>
 </body>
