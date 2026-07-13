@@ -106,6 +106,11 @@ export function createServer({ port = 0, controlToken = null } = {}) {
     } else if (req.url === '/control' || req.url.startsWith('/control?')) {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       res.end(readFileSync(CONTROL, 'utf8'));
+    } else if (req.url === '/branch.mjs') {
+      // DEL-2: serve the SINGLE-SOURCE branch resolver to the browser panel so the
+      // GM outline imports the SAME resolveNext the server/runner use (no duplication).
+      res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-cache' });
+      res.end(readFileSync(join(__dirname, 'branch.mjs'), 'utf8'));
     } else if (req.url === '/branding/argus-presenter.svg') {
       // Default idle branding art (self-contained animated SVG; no external dep).
       try { res.writeHead(200, { 'content-type': 'image/svg+xml; charset=utf-8', 'cache-control': 'no-cache' }); res.end(readFileSync(BRANDING, 'utf8')); }

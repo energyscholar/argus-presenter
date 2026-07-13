@@ -34,7 +34,10 @@
   .beat{padding:3px 8px 3px 20px;font-size:12px;cursor:pointer;border-left:2px solid transparent;color:var(--dim);}
   .beat:hover{color:#fff;}
   .beat.cur{border-left-color:var(--ok);color:#fff;background:rgba(34,229,160,.08);}
+  .beat.rec{border-left-color:var(--warn);color:var(--warn);background:rgba(255,180,84,.06);}
+  .beat .recnote{font-size:9px;color:var(--warn);margin-left:4px;}
   .beat .comp{font-size:9px;opacity:.6;}
+  #autofollow-lbl{font-size:11px;color:var(--dim);display:inline-flex;align-items:center;gap:3px;margin-left:6px;cursor:pointer;}
   #users{max-height:290px;overflow:auto;}
   .user{display:flex;gap:6px;align-items:center;padding:4px 6px;border-radius:5px;cursor:pointer;border:1px solid transparent;}
   .user:hover{border-color:#2a3a5a;}
@@ -65,6 +68,7 @@
           <button class="mini" id="btn-prev" disabled>◀ Prev</button>
           <button class="mini" id="btn-next" disabled>Next ▶</button>
           <button class="mini" id="btn-end">■ End → branding</button>
+          <label id="autofollow-lbl" title="auto-advance to the branch-recommended next beat when a player answers"><input type="checkbox" id="autofollow"> ⛓ auto-follow branch</label>
         </div>
       </div>
     </div>
@@ -100,12 +104,13 @@
   </section>
 </div>
 
-<script>
+<script type="module">
+import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch resolver (served by the server, not duplicated)
 (function(){
   var q = new URLSearchParams(location.search);
   var identity = { userId: q.get('userId')||'gm', userName: q.get('name')||'GM', role: q.get('role')||'presenter' };
   if(q.get('token')) identity.token = q.get('token');   // AUTH-1: forward control secret to gate the role
-  var ws=null, module=null, curBeat=-1, users=[], viewingAs=null, results={};
+  var ws=null, module=null, curBeat=-1, recBeat=-1, users=[], viewingAs=null, results={};
   var $=function(id){return document.getElementById(id);};
 
   function control(action,args){ if(ws&&ws.readyState===1) ws.send(JSON.stringify({t:'control',action:action,args:args||{}})); }
@@ -120,8 +125,8 @@
     if(m.t==='presence'){ users=m.users||[]; renderUsers(); return; }
     if(m.t==='content'){ renderPreview(m.html, m.contentId); return; }
     if(m.t==='clear'){ renderPreview(null,'idle'); return; }
-    if(m.t==='result'){ results[m.promptId]=results[m.promptId]||{}; results[m.promptId][m.userId]={type:m.type,value:m.value}; return; }
-    if(m.t==='host'&&m.msg&&m.msg.type==='diff'&&m.msg.diff&&('module/current' in m.msg.diff)){ curBeat=m.msg.diff['module/current']; renderOutline(); renderNav(); }
+    if(m.t==='result'){ results[m.promptId]=results[m.promptId]||{}; results[m.promptId][m.userId]={type:m.type,value:m.value}; maybeBranch(m); return; }
+    if(m.t==='host'&&m.msg&&m.msg.type==='diff'&&m.msg.diff&&('module/current' in m.msg.diff)){ curBeat=m.msg.diff['module/current']; recBeat=-1; renderOutline(); renderNav(); }
   }
 
   function renderPreview(html, label){
@@ -164,17 +169,29 @@
       var sum=document.createElement('summary'); sum.innerHTML='<span>'+(s.title||'section')+'</span><span class="cnt">'+(s.beatIds||[]).length+' beats</span>';
       det.appendChild(sum);
       (s.beatIds||[]).forEach(function(bid){ var b=beatById(bid); if(!b) return; var i=beatIndex(bid);
-        var el=document.createElement('div'); el.className='beat'+(i===curBeat?' cur':''); el.dataset.i=i;
-        el.innerHTML=(((b.opts&&(b.opts.title||b.opts.prompt||b.opts.text))||b.id)+'').slice(0,42)+' <span class="comp">'+b.component+(b.target?(' →'+b.target):'')+'</span>';
-        el.onclick=function(){ control('show_beat',{index:i}); };
+        var el=document.createElement('div'); el.className='beat'+(i===curBeat?' cur':'')+(i===recBeat&&i!==curBeat?' rec':''); el.dataset.i=i;
+        el.innerHTML=(((b.opts&&(b.opts.title||b.opts.prompt||b.opts.text))||b.id)+'').slice(0,42)+' <span class="comp">'+b.component+(b.target?(' →'+b.target):'')+'</span>'+((i===recBeat&&i!==curBeat)?' <span class="recnote">→ recommended</span>':'');
+        el.onclick=function(){ recBeat=-1; control('show_beat',{index:i}); };   // manual override always works + clears the recommendation
         det.appendChild(el); });
       $('outline').appendChild(det);
     });
   }
   function renderNav(){ var on=!!module; $('btn-prev').disabled=!on||curBeat<=0; $('btn-next').disabled=!on; }
-  $('btn-start').onclick=function(){ control('show_beat',{index:0}); };
-  $('btn-prev').onclick=function(){ control('prev_beat',{}); };
-  $('btn-next').onclick=function(){ control('next_beat',{}); };
+  // DEL-2: branch-table navigation. When a player answers the CURRENT beat, use the
+  // shared resolveNext to recommend/auto-advance to the next beat. Recompute per result.
+  function maybeBranch(m){
+    if(!module||curBeat<0) return;
+    var cur=(module.beats||[])[curBeat];
+    if(!cur||m.type!=='answer'||m.promptId!==cur.promptId) return;   // only the CURRENT beat's answers
+    var nextId=resolveNext(cur,{value:m.value},{});                  // flags {} — ifFlag routing deferred
+    if(!nextId) return;                                              // linear/no-branch beat → no recommendation
+    var i=beatIndex(nextId); if(i<0) return;
+    if($('autofollow').checked){ recBeat=-1; control('show_beat',{id:nextId}); }   // auto-advance (server diff clears rec + re-renders)
+    else { recBeat=i; renderOutline(); }                             // else just highlight the recommended next
+  }
+  $('btn-start').onclick=function(){ recBeat=-1; control('show_beat',{index:0}); };
+  $('btn-prev').onclick=function(){ recBeat=-1; control('prev_beat',{}); };
+  $('btn-next').onclick=function(){ recBeat=-1; control('next_beat',{}); };
   $('btn-end').onclick=function(){ control('clear',{target:'all'}); };
 
   function copyText(t,el){ try{ if(navigator.clipboard) navigator.clipboard.writeText(t); }catch(e){} if(el){ el.classList.add('copied'); setTimeout(function(){el.classList.remove('copied');},700);} }
@@ -210,7 +227,8 @@
 
   connect(); refreshModules();
   window.__control = control;   // test/automation hook (P1) — drive control ops programmatically
-  window.__gm={ users:function(){return users;}, module:function(){return module;}, cur:function(){return curBeat;} };
+  window.__gm={ users:function(){return users;}, module:function(){return module;}, cur:function(){return curBeat;}, rec:function(){return recBeat;},
+    setModule:function(m){ module=m; curBeat=-1; recBeat=-1; renderOutline(); renderNav(); } };   // DEL-2 test/automation hook: load a module into the panel directly
 })();
 </script>
 </body>
