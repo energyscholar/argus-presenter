@@ -105,7 +105,7 @@
   var q = new URLSearchParams(location.search);
   var identity = { userId: q.get('userId')||'gm', userName: q.get('name')||'GM', role: q.get('role')||'presenter' };
   if(q.get('token')) identity.token = q.get('token');   // AUTH-1: forward control secret to gate the role
-  var ws=null, module=null, curBeat=-1, users=[], viewingAs=null;
+  var ws=null, module=null, curBeat=-1, users=[], viewingAs=null, results={};
   var $=function(id){return document.getElementById(id);};
 
   function control(action,args){ if(ws&&ws.readyState===1) ws.send(JSON.stringify({t:'control',action:action,args:args||{}})); }
@@ -120,6 +120,7 @@
     if(m.t==='presence'){ users=m.users||[]; renderUsers(); return; }
     if(m.t==='content'){ renderPreview(m.html, m.contentId); return; }
     if(m.t==='clear'){ renderPreview(null,'idle'); return; }
+    if(m.t==='result'){ results[m.promptId]=results[m.promptId]||{}; results[m.promptId][m.userId]={type:m.type,value:m.value}; return; }
     if(m.t==='host'&&m.msg&&m.msg.type==='diff'&&m.msg.diff&&('module/current' in m.msg.diff)){ curBeat=m.msg.diff['module/current']; renderOutline(); renderNav(); }
   }
 

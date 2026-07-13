@@ -65,6 +65,7 @@ export function createServer({ port = 0, controlToken = null } = {}) {
     rtt: { last: telem.rtt.last, avg: telem.rtt.count ? +(telem.rtt.sum / telem.rtt.count).toFixed(1) : null, samples: telem.rtt.count },
   });
   const polls = new Map();     // promptId -> {spec, votes:Map(userId->{value,userName,ts}), open}
+  const lastResults = {};      // PRIM-results: promptId -> { userId -> {type,value} } (last beat result per user)
   const listeners = { presence: [], result: [], poll: [] };
   const emit = (ev, data) => listeners[ev].forEach((cb) => { try { cb(data); } catch (e) {} });
 
@@ -135,6 +136,13 @@ export function createServer({ port = 0, controlToken = null } = {}) {
     const users = [...conns.values()].map((c) => ({ userId: c.userId, userName: c.userName, role: c.role, ip: c.ip, socketId: c.id, lastSeen: c.lastSeen, display: displayIdFor(c) }));
     for (const [ws, c] of conns.entries()) if (c.role === 'presenter' || c.role === 'ai' || c.role === 'gm') send(ws, { t: 'presence', users });
   }
+  // PRIM-results: forward a beat result (answer/continue) to CONTROL roles ONLY (presenter/ai/gm),
+  // mirroring pushPresence's OPSEC filter — participants must never receive a `t:'result'` frame.
+  function pushResult(r) {
+    for (const [ws, c] of conns.entries())
+      if (c.role === 'presenter' || c.role === 'ai' || c.role === 'gm')
+        send(ws, { t: 'result', promptId: r.promptId, userId: r.userId, userName: r.userName, type: r.type, value: r.value });
+  }
   // A short label for what a given connection is currently showing (for the user list / tiny preview).
   function displayIdFor(c) {
     const d = displayByUser.get(c.userId) || displayByRole[c.role];
@@ -187,6 +195,15 @@ export function createServer({ port = 0, controlToken = null } = {}) {
         const r = Object.assign({}, m.msg, { userId: c.userId, userName: c.userName, channel: c.userId });
         shimAnswer(c, r);      // D2: poll vote (and generic answer) -> store op
         emit('result', r);     // map view/click/pointer are store ops now (E1-E4) — no relay
+        // PRIM-results: track last result per prompt and forward to CONTROL roles ONLY (OPSEC:
+        // presenter/ai/gm — participants must NEVER receive a peer's answer/continue).
+        // Auditor: only meaningful results (answer/continue) — drop lifecycle events (ready/step/change/
+        // flow-complete) that carry the SAME promptId and would false-trigger DEL-2 branch nav (S190 gotcha).
+        if (r.promptId != null && (r.type === 'answer' || r.type === 'continue')) {
+          lastResults[r.promptId] = lastResults[r.promptId] || {};
+          lastResults[r.promptId][r.userId] = { type: r.type, value: r.value };
+          pushResult(r);
+        }
       } else if (m.t === 'op') {
         handleOp(c, m);
       } else if (m.t === 'control') {
