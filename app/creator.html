@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en" data-theme="argus">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Argus Presenter — Content Creator</title>
+<style>
+  :root{--bg:#0a0e1c;--panel:rgba(10,16,32,.6);--line:#21314f;--ink:#cfe9ff;--dim:#8ab;--ok:#22e5a0;--warn:#ffb454;--info:#7fb0ff;--danger:#ff6b6b;}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font:13px/1.45 'Segoe UI',system-ui,sans-serif;}
+  body{display:grid;grid-template-columns:1fr 340px;grid-template-rows:auto 1fr;gap:10px;padding:10px;box-sizing:border-box;height:100vh;}
+  h1{grid-column:1/3;margin:0;font-size:15px;letter-spacing:.04em;display:flex;align-items:center;gap:10px;}
+  #status{font-size:.72rem;color:var(--dim);display:flex;align-items:center;gap:5px;}
+  #led{display:inline-block;width:9px;height:9px;border-radius:50%;background:#c33;}#led.on{background:var(--ok);}
+  .col{min-height:0;overflow:auto;display:flex;flex-direction:column;gap:10px;}
+  section{border:1px solid var(--line);border-radius:8px;padding:10px 12px;background:var(--panel);}
+  section h2{margin:0 0 8px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);}
+  input,select,textarea,button{font:inherit;background:#0d1633;color:var(--ink);border:1px solid #2a3a5a;border-radius:6px;padding:5px 8px;}
+  button{cursor:pointer;background:#12234a;}button:hover{border-color:var(--ok);color:#fff;}
+  button.primary{background:#173a2e;border-color:var(--ok);}
+  .row{display:flex;gap:6px;align-items:center;flex-wrap:wrap;}
+  .badge{font-size:10px;padding:1px 6px;border-radius:10px;border:1px solid #2a3a5a;color:var(--dim);}
+  textarea{width:100%;box-sizing:border-box;min-height:38px;}
+  label.fld{display:flex;flex-direction:column;gap:2px;font-size:10px;color:var(--dim);flex:1 1 auto;}
+  .beatrow{border:1px solid #1c2a44;border-radius:6px;padding:6px 8px;margin:6px 0;background:#0b1226;}
+  .beatrow .toprow{display:flex;gap:5px;align-items:center;flex-wrap:wrap;}
+  .beatrow .idx{font-size:10px;color:var(--dim);width:16px;text-align:right;}
+  .beatrow .b-comp{width:120px;}
+  .beatrow input.b-txt{width:88px;}
+  .beatrow .btns{margin-left:auto;display:flex;gap:3px;}
+  .beatrow .btns button{padding:3px 7px;font-size:12px;}
+  .b-preview{border-color:var(--ok)!important;color:var(--ok);}
+  #vresults{margin-top:6px;display:flex;flex-direction:column;gap:3px;max-height:220px;overflow:auto;}
+  .vrow{font-size:11px;padding:3px 6px;border-radius:5px;border:1px solid transparent;}
+  .vrow.vwarn{color:var(--warn);border-color:rgba(255,180,84,.4);background:rgba(255,180,84,.06);}
+  .vrow.vinfo{color:var(--info);border-color:rgba(127,176,255,.3);background:rgba(127,176,255,.05);}
+  .vok{color:var(--ok);font-size:11px;}
+  #cpreview{width:100%;height:300px;border:1px solid #2a3a5a;border-radius:6px;background:#050510;}
+</style>
+</head>
+<body>
+<h1>◉ Argus Presenter — Content Creator
+  <span id="status"><span id="led"></span><span id="statustext">connecting…</span></span></h1>
+
+<div class="col">
+  <section>
+    <h2>Manifest</h2>
+    <div class="row">
+      <label class="fld">title<input id="mf-title"></label>
+      <label class="fld">version<input id="mf-version" style="max-width:80px"></label>
+      <label class="fld">kind<input id="mf-kind" style="max-width:110px"></label>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <label class="fld">summary<input id="mf-summary"></label>
+    </div>
+    <div style="margin-top:6px;font-size:10px;color:var(--dim)">requirements (JSON)</div>
+    <textarea id="mf-req" placeholder='{"terminalClear":true}'></textarea>
+  </section>
+
+  <section>
+    <h2>Beats <span class="badge" id="beat-count">0</span></h2>
+    <div id="beats"></div>
+    <div class="row" style="margin-top:6px"><button id="btn-add">+ add beat</button></div>
+  </section>
+
+  <section>
+    <h2>Validate</h2>
+    <div class="row"><button id="btn-validate" class="primary">Validate</button><span id="vsummary" class="badge"></span></div>
+    <div id="vresults"></div>
+  </section>
+</div>
+
+<div class="col">
+  <section>
+    <h2>Live preview</h2>
+    <div style="font-size:10px;color:var(--dim);margin-bottom:6px">rendered by the real server pipeline (embedded participant)</div>
+    <iframe id="cpreview" src="/?userId=__creator_preview&amp;name=preview&amp;role=participant" sandbox="allow-scripts allow-same-origin"></iframe>
+  </section>
+</div>
+
+<script type="module">
+import { validate, summarize } from '/validate.mjs';   // AUT-3: SINGLE-SOURCE validator (served by the server, not duplicated)
+(function(){
+  var q = new URLSearchParams(location.search);
+  var identity = { userId: q.get('userId')||'gm', userName: q.get('name')||'GM', role: q.get('role')||'presenter' };
+  if(q.get('token')) identity.token = q.get('token');   // AUTH-1: forward control secret to gate the role
+  var ws=null;
+  var beats = [];   // in-memory SOURCE OF TRUTH: [{component,id,promptId,target,optsStr}]
+  var COMPONENTS = ['card','choice','crud','dice','form','image','map','narration','poll-results','scene','slider','stepper','svg-reactive','text-input'];
+  var $=function(id){return document.getElementById(id);};
+
+  function control(action,args){ if(ws&&ws.readyState===1) ws.send(JSON.stringify({t:'control',action:action,args:args||{}})); }
+  function connect(){
+    ws=new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host);
+    ws.onopen=function(){ $('led').classList.add('on'); $('statustext').textContent='connected · '+identity.userName; ws.send(JSON.stringify(Object.assign({t:'hello'},identity))); };
+    ws.onclose=function(){ $('led').classList.remove('on'); $('statustext').textContent='disconnected'; setTimeout(connect,800); };
+    ws.onmessage=function(ev){ var m; try{m=JSON.parse(ev.data);}catch(e){return;} if(m.t==='ping'){ ws.send(JSON.stringify({t:'pong',ts:m.ts})); } };
+  }
+
+  // Lenient opts parse: {} on empty, null on malformed (so validate/preview can still proceed).
+  function parseOpts(str){ if(str==null||!String(str).trim()) return {}; try{ return JSON.parse(str); }catch(e){ return null; } }
+
+  function buildManifest(){
+    var m = { title:$('mf-title').value, version:$('mf-version').value, kind:$('mf-kind').value, summary:$('mf-summary').value };
+    if($('mf-req').value.trim()){ var r=parseOpts($('mf-req').value); m.requirements = r||{}; }
+    return m;
+  }
+  function cleanBeat(b){
+    var o = { component:b.component };
+    if(b.id) o.id=b.id;
+    if(b.promptId) o.promptId=b.promptId;
+    if(b.target) o.target=b.target;
+    var opts = parseOpts(b.optsStr); if(opts && Object.keys(opts).length) o.opts=opts;
+    return o;
+  }
+  function getModule(){ return { manifest: buildManifest(), beats: beats.map(cleanBeat) }; }
+
+  function setModule(m){
+    m = m || {};
+    var man = m.manifest || {};
+    $('mf-title').value = man.title||''; $('mf-version').value = man.version||'';
+    $('mf-kind').value = man.kind||''; $('mf-summary').value = man.summary||'';
+    $('mf-req').value = man.requirements ? JSON.stringify(man.requirements) : '';
+    beats = (m.beats||[]).map(function(b){ return {
+      component: b.component||'card', id: b.id||'', promptId: b.promptId||'', target: b.target||'',
+      optsStr: (b.opts && Object.keys(b.opts).length) ? JSON.stringify(b.opts) : ''
+    };});
+    renderBeats();
+  }
+
+  function el(tag,attrs){ var e=document.createElement(tag); if(attrs) for(var k in attrs) e.setAttribute(k,attrs[k]); return e; }
+
+  function renderBeats(){
+    var host=$('beats'); host.innerHTML=''; $('beat-count').textContent=beats.length;
+    beats.forEach(function(b,i){
+      var row=el('div',{class:'beatrow'}); row.dataset.i=i;
+      var top=el('div',{class:'toprow'});
+      var idx=el('span',{class:'idx'}); idx.textContent=i; top.appendChild(idx);
+      // component select (unknown values preserved as an extra option)
+      var sel=el('select',{class:'b-comp'});
+      var opts=COMPONENTS.slice(); if(COMPONENTS.indexOf(b.component)<0 && b.component) opts.push(b.component);
+      opts.forEach(function(c){ var o=el('option'); o.value=c; o.textContent=(COMPONENTS.indexOf(c)<0?c+' (?)':c); if(c===b.component)o.selected=true; sel.appendChild(o); });
+      sel.onchange=function(){ b.component=sel.value; };
+      top.appendChild(sel);
+      function txt(ph,key){ var inp=el('input',{class:'b-txt',placeholder:ph}); inp.value=b[key]||''; inp.oninput=function(){ b[key]=inp.value; }; return inp; }
+      top.appendChild(txt('id','id'));
+      top.appendChild(txt('promptId','promptId'));
+      top.appendChild(txt('target','target'));
+      var btns=el('div',{class:'btns'});
+      function mk(label,title,fn,cls){ var bt=el('button',{title:title}); if(cls)bt.className=cls; bt.textContent=label; bt.onclick=fn; return bt; }
+      btns.appendChild(mk('↑','move up',function(){ if(i>0){ var t=beats[i-1];beats[i-1]=beats[i];beats[i]=t; renderBeats(); } }));
+      btns.appendChild(mk('↓','move down',function(){ if(i<beats.length-1){ var t=beats[i+1];beats[i+1]=beats[i];beats[i]=t; renderBeats(); } }));
+      btns.appendChild(mk('⧉','duplicate',function(){ beats.splice(i+1,0,Object.assign({},b)); renderBeats(); }));
+      btns.appendChild(mk('✕','delete',function(){ beats.splice(i,1); renderBeats(); }));
+      var pv=mk('Preview','preview via server',function(){ previewBeat(b); },'b-preview'); pv.dataset.beatId=b.id||''; pv.dataset.i=i; btns.appendChild(pv);
+      top.appendChild(btns);
+      row.appendChild(top);
+      var ta=el('textarea',{placeholder:'opts (JSON)'}); ta.className='b-opts'; ta.value=b.optsStr||''; ta.oninput=function(){ b.optsStr=ta.value; };
+      row.appendChild(ta);
+      host.appendChild(row);
+    });
+  }
+
+  // Live preview: let the SERVER render the beat via the normal pipeline into the embedded participant.
+  function previewBeat(b){
+    var opts = parseOpts(b.optsStr) || {};
+    if(b.promptId) opts = Object.assign({}, opts, { promptId: b.promptId });
+    control('push_component', { target:'__creator_preview', component:b.component, opts:opts });
+  }
+
+  function renderValidation(s){
+    var host=$('vresults'); host.innerHTML='';
+    $('vsummary').textContent = s.warn+' warn · '+s.info+' info';
+    var all = (s.warnings||[]).concat(s.infos||[]);
+    if(!all.length){ host.innerHTML='<div class="vok">✓ no findings</div>'; return; }
+    all.forEach(function(w){ var d=el('div',{class:'vrow '+(w.level==='warn'?'vwarn':'vinfo')});
+      d.textContent=(w.level==='warn'?'⚠ ':'ℹ ')+w.code+(w.beatIndex!=null?(' [beat '+w.beatIndex+']'):'')+' — '+w.msg; host.appendChild(d); });
+  }
+
+  $('btn-add').onclick=function(){ beats.push({component:'card',id:'',promptId:'',target:'',optsStr:''}); renderBeats(); };
+  $('btn-validate').onclick=function(){ renderValidation(summarize(validate(getModule()))); };   // warn-never-block: informs only
+
+  // Test hooks + programmatic control.
+  window.__creator = {
+    getModule: getModule,
+    setModule: setModule,
+    validate: function(){ return summarize(validate(getModule())); },
+    previewBeat: previewBeat,
+  };
+
+  renderBeats();
+  connect();
+})();
+</script>
+</body>
+</html>
