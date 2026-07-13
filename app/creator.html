@@ -67,6 +67,20 @@
     <div class="row"><button id="btn-validate" class="primary">Validate</button><span id="vsummary" class="badge"></span></div>
     <div id="vresults"></div>
   </section>
+
+  <section>
+    <h2>Save / Load</h2>
+    <div class="row">
+      <input id="save-id" placeholder="module-id" style="flex:1 1 auto">
+      <button id="btn-save" class="primary">Save</button>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <select id="load-select" style="flex:1 1 auto"></select>
+      <button id="btn-load">Load</button>
+      <button id="btn-refresh" title="refresh module list">↻</button>
+    </div>
+    <div id="save-msg" class="vrow" style="margin-top:6px;display:none"></div>
+  </section>
 </div>
 
 <div class="col">
@@ -179,15 +193,61 @@ import { validate, summarize } from '/validate.mjs';   // AUT-3: SINGLE-SOURCE v
   $('btn-add').onclick=function(){ beats.push({component:'card',id:'',promptId:'',target:'',optsStr:''}); renderBeats(); };
   $('btn-validate').onclick=function(){ renderValidation(summarize(validate(getModule()))); };   // warn-never-block: informs only
 
+  // ── Save / Load ─────────────────────────────────────────────────────────────
+  var ID_RE = /^[\w.-]+$/;   // path-safe id, mirrors the server-side guard
+  function showMsg(txt,kind){ var d=$('save-msg'); d.style.display=''; d.className='vrow '+(kind==='ok'?'vinfo':(kind==='err'?'vwarn':'')); d.textContent=txt; }
+
+  // POST the authored module to the write-back endpoint. AUTH-1: forward the control token when present.
+  function saveModule(id){
+    if(!ID_RE.test(String(id||''))) return Promise.reject(new Error('bad id'));
+    var headers = Object.assign({'content-type':'application/json'}, identity.token?{'x-control-token':identity.token}:{});
+    return fetch('/api/modules/'+encodeURIComponent(id), { method:'POST', headers:headers, body:JSON.stringify(getModule()) })
+      .then(function(r){ return r.json().then(function(d){ return { status:r.status, ok:r.ok, data:d }; }); })
+      .then(function(res){
+        if(res.ok && res.data && res.data.ok){
+          var v=res.data.validation||{}; showMsg('✓ saved “'+id+'” · '+(v.warn||0)+' warn · '+(v.info||0)+' info','ok');
+          return refreshList().then(function(){ return res.data; });
+        }
+        var err=(res.data&&(res.data.error))||('HTTP '+res.status); showMsg('✗ save failed: '+err,'err');
+        return res.data||{ error:err };
+      });
+  }
+
+  // GET one module and populate the editor for further editing.
+  function loadModule(id){
+    return fetch('/api/modules/'+encodeURIComponent(id))
+      .then(function(r){ return r.json().then(function(d){ return { status:r.status, ok:r.ok, data:d }; }); })
+      .then(function(res){
+        if(res.ok && res.data && res.data.module){ setModule(res.data.module); $('save-id').value=id; showMsg('↺ loaded “'+id+'”','ok'); return res.data; }
+        var err=(res.data&&res.data.error)||('HTTP '+res.status); showMsg('✗ load failed: '+err,'err'); return res.data||{ error:err };
+      });
+  }
+
+  // Populate the Load <select> from the registry.
+  function refreshList(){
+    return fetch('/api/modules').then(function(r){ return r.json(); }).then(function(list){
+      var sel=$('load-select'); var prev=sel.value; sel.innerHTML='';
+      (list||[]).forEach(function(m){ var o=el('option'); o.value=m.id; o.textContent=m.id+(m.title?(' — '+m.title):''); sel.appendChild(o); });
+      if(prev){ for(var i=0;i<sel.options.length;i++){ if(sel.options[i].value===prev){ sel.value=prev; break; } } }
+    }).catch(function(){});
+  }
+
+  $('btn-save').onclick=function(){ saveModule($('save-id').value.trim()).catch(function(e){ showMsg('✗ '+e.message,'err'); }); };
+  $('btn-load').onclick=function(){ var id=$('load-select').value; if(id) loadModule(id); };
+  $('btn-refresh').onclick=function(){ refreshList(); };
+
   // Test hooks + programmatic control.
   window.__creator = {
     getModule: getModule,
     setModule: setModule,
     validate: function(){ return summarize(validate(getModule())); },
     previewBeat: previewBeat,
+    save: saveModule,
+    load: loadModule,
   };
 
   renderBeats();
+  refreshList();
   connect();
 })();
 </script>
