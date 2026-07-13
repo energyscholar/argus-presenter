@@ -6,9 +6,9 @@ import { validate, summarize } from '../../app/validate.mjs';
 
 test('V — a clean module yields zero warnings and zero info', () => {
   const clean = {
-    manifest: { title: 'X', requirements: { terminalClear: true, gateTimeoutMs: 180000 } },
+    manifest: { title: 'X', defaultBeatId: 'a-intro', requirements: { terminalClear: true, gateTimeoutMs: 180000 } },
     beats: [
-      { component: 'narration', promptId: 'a-intro', durationSec: 30 },
+      { id: 'a-intro', component: 'narration', promptId: 'a-intro', durationSec: 30 },
       { component: 'choice', promptId: 'a-pick' },
       { component: 'dice', promptId: 'a-roll' },
     ],

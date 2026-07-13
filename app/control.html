@@ -80,7 +80,8 @@
           <button class="mini" id="btn-start" disabled>▶ Start</button>
           <button class="mini" id="btn-prev" disabled>◀ Prev</button>
           <button class="mini" id="btn-next" disabled>Next ▶</button>
-          <button class="mini" id="btn-end">■ End → branding</button>
+          <button class="mini" id="btn-home">⌂ Home</button>
+          <button class="mini" id="btn-end">■ STOP</button>
           <label id="autofollow-lbl" title="auto-advance to the branch-recommended next beat when a player answers"><input type="checkbox" id="autofollow"> ⛓ auto-follow branch</label>
         </div>
       </div>
@@ -277,7 +278,8 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   $('btn-start').onclick=function(){ recBeat=-1; control('show_beat',{index:0}); };
   $('btn-prev').onclick=function(){ recBeat=-1; control('prev_beat',{}); };
   $('btn-next').onclick=function(){ recBeat=-1; control('next_beat',{}); };
-  $('btn-end').onclick=function(){ control('clear',{target:'all'}); };
+  $('btn-home').onclick=function(){ recBeat=-1; control('show_default',{}); };   // DEF-1: back to the module title page
+  $('btn-end').onclick=function(){ control('clear',{target:'all'}); };           // STOP → branding (reuses clear)
 
   function copyText(t,el){ try{ if(navigator.clipboard) navigator.clipboard.writeText(t); }catch(e){} if(el){ el.classList.add('copied'); setTimeout(function(){el.classList.remove('copied');},700);} }
   function esc(s){ return (s==null?'':(''+s)).replace(/"/g,'&quot;'); }

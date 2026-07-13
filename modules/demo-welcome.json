@@ -4,6 +4,7 @@
     "version": "1.0",
     "kind": "demo",
     "summary": "A tiny domain-neutral module that demonstrates sections, beats, and the discover→validate→load flow.",
+    "defaultBeatId": "b-title",
     "requirements": { "terminalClear": true, "gateTimeoutMs": 180000 }
   },
   "sections": [
@@ -26,6 +27,7 @@
     { "id": "b-welcome", "component": "narration", "promptId": "b-welcome", "opts": { "speaker": "Argus", "text": "Welcome. This deck is a content module: a portable set of beats you deliver one at a time.", "cta": "Continue" } },
     { "id": "b-what", "component": "card", "promptId": "b-what", "opts": { "title": "What is a beat?", "body": "A beat is one screen the audience sees — narration, a card, a choice, a roll. Sections group beats for the outline.", "badges": ["module", "section", "beat"] } },
     { "id": "b-pick", "component": "choice", "promptId": "b-pick", "opts": { "prompt": "Ready to build your own?", "options": [ { "label": "Yes", "value": "yes" }, { "label": "Show me more", "value": "more" } ] }, "branch": { "yes": "b-wrap", "more": "b-wrap" } },
-    { "id": "b-wrap", "component": "card", "promptId": "b-wrap", "opts": { "title": "That's the loop", "body": "Discover a module → validate → load → deliver beat by beat → end returns to branding.", "footer": "Argus Presenter" } }
+    { "id": "b-wrap", "component": "card", "promptId": "b-wrap", "opts": { "title": "That's the loop", "body": "Discover a module → validate → load → deliver beat by beat → end returns to branding.", "footer": "Argus Presenter" } },
+    { "id": "b-title", "component": "card", "opts": { "title": "Welcome to Argus Presenter", "body": "This is a module title page — shown on Load, before the presentation starts. Press Start to begin, or Home to return here.", "footer": "Argus Presenter · demo" } }
   ]
 }
