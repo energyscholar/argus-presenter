@@ -15,6 +15,7 @@
  *   on(event, cb)  events: 'presence','result','poll'
  */
 import http from 'http';
+import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync, statSync, existsSync, writeFileSync, watch } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
@@ -31,6 +32,10 @@ const DURABLE_OPS_PER_SEC = 50;     // per-conn durable-op rate (ephemeral is co
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PAGE = join(__dirname, 'presenter.html');
+
+// AUTH-ROLE (P5.5): standard seeded hash. The plaintext password NEVER travels —
+// the browser sends sha256(seed + password); the server compares against ROLE_HASH.
+function sha256hex(s) { return createHash('sha256').update(s).digest('hex'); }
 
 // HAR: defense-in-depth HTTP hardening (see HARDENING.md).
 // CSP for the HTML pages. 'unsafe-inline' is REQUIRED today — presenter/control/creator
@@ -58,10 +63,18 @@ function sendStatic(res, req, absPath, contentType) {
   } catch (e) { res.writeHead(404); res.end('not found'); }
 }
 
-export function createServer({ port = 0, controlToken = null } = {}) {
+export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null } = {}) {
   // AUTH-1: a shared secret gates the control roles (presenter/ai). When null,
   // behaviour is unchanged / LAN-open — any browser may claim a control role.
   const CONTROL_TOKEN = controlToken || process.env.PRESENTER_CONTROL_TOKEN || null;
+  // AUTH-ROLE (P5.5): a shared PASSWORD gate via a seeded hash ("keep honest people
+  // honest"). The seed is a public salt; the password is secret. ROLE_HASH =
+  // sha256(seed + password). The browser computes the same hash and sends it as the
+  // hello token — plaintext never leaves the client. NULL password ⇒ this gate is
+  // inactive (so createServer() with no credential stays UNGATED for existing tests).
+  const ROLE_SEED = roleSeed || process.env.PRESENTER_ROLE_SEED || 'argus-presenter';
+  const ROLE_PW = rolePassword || process.env.PRESENTER_ROLE_PASSWORD || null;
+  const ROLE_HASH = ROLE_PW ? sha256hex(ROLE_SEED + ROLE_PW) : null;
   const conns = new Map();     // ws -> {id,userId,userName,role}
   const byUser = new Map();    // userId -> ws
   let connSeq = 0;             // per-server connection counter -> stable socketId (S5-ready)
@@ -201,6 +214,12 @@ export function createServer({ port = 0, controlToken = null } = {}) {
     } else if (req.url === '/branding/argus-presenter.svg') {
       // Default idle branding art (self-contained animated SVG; no external dep).
       sendStatic(res, req, BRANDING, 'image/svg+xml; charset=utf-8');
+    } else if (req.url === '/api/auth' || req.url.startsWith('/api/auth?')) {
+      // AUTH-ROLE (P5.5): tell the client whether the presenter role is gated + the public
+      // SALT it must hash with. NEVER returns ROLE_HASH, ROLE_PW, or CONTROL_TOKEN — only the
+      // seed (public by design) and a boolean. The browser computes sha256(seed+password).
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-cache' });
+      res.end(JSON.stringify({ gated: !!(CONTROL_TOKEN || ROLE_HASH), seed: ROLE_SEED }));
     } else if (req.url === '/api/modules') {
       // Discover available modules (id, title, counts, validation summary) — for the GM panel's SELECT list.
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-cache' });
@@ -311,15 +330,27 @@ export function createServer({ port = 0, controlToken = null } = {}) {
       if (m.t === 'hello') {
         c.userId = m.userId || ('anon-' + Math.random().toString(36).slice(2, 8));
         c.userName = m.userName || c.userId;
-        // AUTH-1: control roles require the configured secret; else force participant.
+        // AUTH-1 / AUTH-ROLE: control roles require a credential when one is configured.
+        // GRANTED iff: ungated (no token AND no password hash) OR the hello token matches
+        // CONTROL_TOKEN (when set) OR it matches ROLE_HASH (the seeded password hash, when
+        // set). Otherwise downgrade to participant. CONTROL_TOKEN-only behaves exactly as
+        // before; neither configured ⇒ ungated (LAN-open back-compat).
         let reqRole = m.role || 'participant';
-        if (CONTROL_TOKEN && (reqRole === 'presenter' || reqRole === 'ai') && m.token !== CONTROL_TOKEN) {
-          log.warn('auth', 'control-denied', { userId: c.userId, role: reqRole });
-          reqRole = 'participant';
+        if (reqRole === 'presenter' || reqRole === 'ai') {
+          const gated = !!(CONTROL_TOKEN || ROLE_HASH);
+          const ok = !gated
+            || (CONTROL_TOKEN && m.token === CONTROL_TOKEN)
+            || (ROLE_HASH && m.token === ROLE_HASH);
+          if (!ok) {
+            log.warn('auth', 'control-denied', { userId: c.userId, role: reqRole });
+            reqRole = 'participant';
+          }
         }
         c.role = reqRole;
         byUser.set(c.userId, ws);
-        send(ws, { t: 'welcome', userId: c.userId, socketId: c.id });
+        // welcome.role = the EFFECTIVE granted role, so the client learns if it was
+        // silently downgraded (wrong/absent password) and can surface feedback.
+        send(ws, { t: 'welcome', userId: c.userId, socketId: c.id, role: c.role });
         // C4/X1: converge the (re)connecting client. If it reports a lastVersion we
         // can still replay from the op-log, send only the MISSED ops (resync);
         // otherwise a full role-filtered snapshot (Memento).
@@ -770,7 +801,14 @@ export function createServer({ port = 0, controlToken = null } = {}) {
 // Runnable standalone: `node app/server.mjs [port]`
 if (import.meta.url === `file://${process.argv[1]}`) {
   const p = parseInt(process.argv[2] || '4300', 10);
-  createServer({ port: p, controlToken: process.env.PRESENTER_CONTROL_TOKEN || null }).then((s) => {
+  // Real deployments are GATED out of the box: default the presenter password to
+  // `password` (override via PRESENTER_ROLE_PASSWORD). This applies ONLY to the CLI
+  // self-run — createServer() from tests stays ungated unless a credential is passed.
+  createServer({
+    port: p,
+    controlToken: process.env.PRESENTER_CONTROL_TOKEN || null,
+    rolePassword: process.env.PRESENTER_ROLE_PASSWORD || 'password',
+  }).then((s) => {
     const u = s.url();   // base like http://127.0.0.1:PORT (no trailing slash)
     console.log('Argus Presenter running:');
     console.log('  display :', u + '/');

@@ -22,6 +22,8 @@
   #ap-config button{background:#12234a;color:#cfe9ff;border:1px solid #2a3a5a;border-radius:5px;padding:3px 7px;font:inherit;cursor:pointer;}
   #ap-config button:hover{border-color:#22e5a0;}
   #ap-config button.sel{border-color:#22e5a0;color:#fff;}
+  #ap-config input{background:#0d1633;color:#cfe9ff;border:1px solid #2a3a5a;border-radius:5px;padding:3px 6px;font:inherit;flex:1 1 90px;min-width:80px;}
+  #ap-config #cfg-role-msg{color:#f97;font-size:11px;flex-basis:100%;margin:0;}
   #ap-config .k{color:#8ab;}
   #ap-config .rd{font-size:11px;opacity:.85;margin-top:8px;border-top:1px solid #1c2a44;padding-top:6px;}
   /* Presenter-control expand/collapse overlay (P5): full-screen iframe host for /control */
@@ -52,6 +54,7 @@
   <div class="row"><span class="k">Zoom</span> <button data-scale="0.9">90%</button><button data-scale="1">100%</button><button data-scale="1.25">125%</button><button data-scale="1.5">150%</button></div>
   <div class="row"><span class="k">Contrast</span> <button id="cfg-contrast">High-contrast: off</button></div>
   <div class="row"><span class="k">Role</span> <button id="cfg-role-user" class="sel">User</button> <button id="cfg-role-presenter">Presenter</button></div>
+  <div class="row" id="cfg-role-pwgroup" style="display:none"><input id="cfg-role-pw" type="password" placeholder="presenter password" autocomplete="off"> <button id="cfg-role-go">Unlock</button><span id="cfg-role-msg"></span></div>
   <div class="row" id="cfg-control-row" style="display:none"><button id="cfg-open-control">▮ Show Presenter Control</button></div>
   <div class="rd" id="cfg-readout"></div>
   <div class="row" style="margin-top:8px"><button id="cfg-close">Close</button></div>
@@ -84,6 +87,16 @@
   };
   function renderWho(){ document.getElementById('who').textContent = identity.role + ' · ' + identity.userName + ' (' + identity.userId + ')'; }
   renderWho();
+
+  // AUTH-ROLE (P5.5): is the presenter role password-gated, and what public salt does the
+  // browser hash with? Default UNGATED on fetch failure. The Role picker (below) reads these.
+  var authGated = false, authSeed = 'argus-presenter';
+  fetch('/api/auth').then(function(r){ return r.json(); })
+    .then(function(d){ authGated = !!(d && d.gated); if (d && d.seed) authSeed = d.seed; })
+    .catch(function(){ authGated = false; });
+  // Set by the Role picker; called from the `welcome` handler with the server's EFFECTIVE
+  // granted role so a silent downgrade (wrong password) surfaces as feedback.
+  var onWelcomeRole = null;
 
   var stage = document.getElementById('stage');
   var led = document.getElementById('led');
@@ -174,7 +187,7 @@
     dbgLog(m);
     if (m.t === 'ping') { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t:'pong', ts:m.ts })); return; }   // X3 RTT
     if (m.t === 'chat_listeners') { updateChat(m.n); return; }   // P3
-    if (m.t === 'welcome') { dbg.socketId = m.socketId || null; dbgRender(); }
+    if (m.t === 'welcome') { dbg.socketId = m.socketId || null; dbgRender(); if (typeof onWelcomeRole === 'function') onWelcomeRole(m.role); }
     else if (m.t === 'snapshot') { lastSnapshot = m; if (typeof m.version === 'number') lastVersion = m.version; if (frame && frame.contentWindow) frame.contentWindow.postMessage({ source:'argus-host', type:'snapshot', state:m.state, version:m.version }, '*'); }
     else if (m.t === 'content') showContent(m.html);
     else if (m.t === 'clear') showIdle();
@@ -272,8 +285,52 @@
       if (ws && (ws.readyState === 0 || ws.readyState === 1)) { try { ws.close(); } catch(e){} }
       else { connect(); }
     }
-    roleUserBtn.addEventListener('click', function(){ setRole('participant'); });
-    rolePresBtn.addEventListener('click', function(){ setRole('presenter'); });
+    // ---- AUTH-ROLE (P5.5): inline password gate on the Presenter switch.
+    // When the server is gated, clicking Presenter reveals a password field instead of
+    // switching immediately. On Unlock we hash the password IN THE BROWSER (WebCrypto) and
+    // send only sha256(seed+password) as the hello token — the plaintext never leaves.
+    // (crypto.subtle needs a secure context: localhost/https qualify; plain-LAN-http is out
+    // of scope for this gate — deployers front it with https or a tunnel.)
+    var pwGroup = document.getElementById('cfg-role-pwgroup');
+    var pwInput = document.getElementById('cfg-role-pw');
+    var pwMsg = document.getElementById('cfg-role-msg');
+    var attempting = null;   // the role we're waiting for the server to CONFIRM via welcome
+    function showPwGroup(show){ pwGroup.style.display = show ? '' : 'none'; if (show){ pwMsg.textContent = ''; try { pwInput.focus(); } catch(e){} } }
+    async function computeHash(pw){
+      var buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(authSeed + pw));
+      return [].map.call(new Uint8Array(buf), function(b){ return b.toString(16).padStart(2,'0'); }).join('');
+    }
+    async function unlock(){
+      var pw = pwInput.value || '';
+      try { identity.token = await computeHash(pw); }
+      catch(e){ pwMsg.textContent = 'cannot hash (insecure context)'; return; }
+      attempting = 'presenter';
+      // setRole short-circuits if role is unchanged; force through when already presenter-attempt.
+      if (identity.role === 'presenter') { if (ws && (ws.readyState===0||ws.readyState===1)){ try{ws.close();}catch(e){} } else connect(); }
+      else setRole('presenter');
+    }
+    roleUserBtn.addEventListener('click', function(){ attempting = null; identity.token = null; pwMsg.textContent = ''; showPwGroup(false); setRole('participant'); });
+    rolePresBtn.addEventListener('click', function(){
+      if (!authGated) { attempting = 'presenter'; setRole('presenter'); }   // ungated → immediate (P4 behavior)
+      else { showPwGroup(true); }                                            // gated → reveal pw field, don't switch yet
+    });
+    document.getElementById('cfg-role-go').addEventListener('click', function(){ unlock(); });
+    pwInput.addEventListener('keydown', function(e){ if (e.key === 'Enter') unlock(); });
+
+    // The server echoes the EFFECTIVE granted role in `welcome`. Sync identity.role to it and,
+    // if we were attempting Presenter, translate a silent downgrade into visible feedback.
+    onWelcomeRole = function(effRole){
+      if (typeof effRole !== 'string') return;
+      var wasAttempting = attempting;
+      identity.role = effRole;
+      try { localStorage.setItem(ROLE_KEY, effRole === 'presenter' ? 'presenter' : 'participant'); } catch(e){}
+      if (wasAttempting === 'presenter'){
+        attempting = null;
+        if (effRole === 'presenter'){ showPwGroup(false); pwInput.value = ''; pwMsg.textContent = ''; }   // granted
+        else { pwMsg.textContent = 'wrong password'; identity.token = null; }                             // denied → revert to User
+      }
+      reflectRole(); renderWho(); readout();
+    };
     reflectRole();
 
     // ---- Presenter-control expand/collapse (P5). The control overlay hosts the
@@ -308,8 +365,9 @@
 
     apply();
     window.__apConfig = {
-      role: function(){ return identity.role; },
+      role: function(){ return identity.role; },   // EFFECTIVE (welcome-confirmed) role
       open: function(){ return panel.classList.contains('open'); },
+      gated: function(){ return authGated; },
       get: function(){ return cfg; }
     };
     window.__apControl = {
