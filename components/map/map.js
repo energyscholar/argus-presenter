@@ -15,8 +15,14 @@
  * WITHOUT building them: view is {x,y,scale}; content is a transformed layer;
  * pointer is a separate overlay; all messages go through the bridge.
  *
- * opts = { controllable?:bool, image?, svg?, preset?, label?, laser?:bool, x?,y?,scale? }
+ * opts = { controllable?:bool, image?, svg?, preset?, label?, laser?:bool,
+ *          cursors?:'all'|'off', x?,y?,scale? }
  * Patterns: State (view), Observer (emit/receive), Command-ready (message types).
+ *
+ * ANCHORING (Plan 0457 T2): markers + cursors are CONTENT-anchored — wire px/py
+ * are fractions of the untransformed .ap-map-content box, elements live inside
+ * .ap-map-content and counter-scale, so they stay pinned under pan/zoom. Legacy
+ * pointer values (no name/laser field) still drive the single viewport dot.
  */
 (function () {
   'use strict';
@@ -45,7 +51,10 @@
   function render(root, opts) {
     opts = opts || {};
     var Argus = window.Argus, controllable = !!opts.controllable;
+    var cursorsMode = opts.cursors === 'off' ? 'off' : 'all';
     var view = { x: opts.x || 0, y: opts.y || 0, scale: opts.scale || 1 };
+    function selfId() { return (Argus && Argus.identity && Argus.identity().userId) || 'anon'; }
+    function selfName() { return (Argus && Argus.identity && Argus.identity().userName) || selfId(); }
 
     root.innerHTML = '';
     var wrap = document.createElement('div'); wrap.className = 'ap-map';
@@ -95,11 +104,49 @@
       });
     })();
 
-    function apply() { content.style.transform = 'translate(' + view.x + 'px, ' + view.y + 'px) scale(' + view.scale + ')'; hideTip(); }   // pan/zoom start hides the tooltip
+    // T2 (Plan 0457): content-anchored elements (markers, cursors). Positioned by
+    // content fraction × untransformed content size; counter-scaled so apparent
+    // size is constant under zoom (element center sits exactly on the anchor).
+    var anchored = [];
+    function counterScale() { return 'translate(-50%, -50%) scale(' + (1 / (view.scale || 1)) + ')'; }
+    function anchor(el, px, py) {
+      el.style.left = (px * 100) + '%'; el.style.top = (py * 100) + '%';
+      el.style.transform = counterScale();
+      content.appendChild(el); anchored.push(el);
+    }
+    function unanchor(el) {
+      var i = anchored.indexOf(el); if (i >= 0) anchored.splice(i, 1);
+      if (el.parentNode) el.parentNode.removeChild(el);
+    }
+    // Inverse of the current view transform: event coords -> content-box fraction.
+    function contentFrac(cx, cy) {
+      var r = content.getBoundingClientRect();
+      if (!r.width || !r.height) return null;
+      return { px: (cx - r.left) / r.width, py: (cy - r.top) / r.height };
+    }
+
+    function apply() {
+      content.style.transform = 'translate(' + view.x + 'px, ' + view.y + 'px) scale(' + view.scale + ')';
+      hideTip();   // pan/zoom start hides the tooltip
+      for (var i = 0; i < anchored.length; i++) anchored[i].style.transform = counterScale();
+    }
     apply();
 
     var lastView = 0, lastPtr = 0;
     function emitView(final) { if (!controllable || !Argus || !Argus.op) return; var n = Date.now(); if (!final && n - lastView < 66) return; lastView = n; Argus.op('map/view', 'set', { x: view.x, y: view.y, scale: view.scale }); }   // E1: store op (perm: presenter)
+
+    // E3 pointer emission (shared mousetrack) — CONTENT-space fractions (T2).
+    // Presenter emits when opts.laser !== false (laser feature); every other user
+    // emits when opts.cursors !== 'off' (multi-cursor feature).
+    function emitPointer(e) {
+      var n = Date.now(); if (n - lastPtr < 66) return; lastPtr = n;
+      if (!Argus || !Argus.op) return;
+      var f = contentFrac(e.clientX, e.clientY); if (!f) return;
+      var v = { px: f.px, py: f.py, name: selfName() };
+      if (controllable) v.laser = true;
+      Argus.op('map/pointer/' + selfId(), 'set', v);
+    }
+    if (controllable ? (opts.laser !== false) : (cursorsMode !== 'off')) viewport.addEventListener('mousemove', emitPointer);
 
     if (controllable) {
       var drag = false, sx = 0, sy = 0, ox = 0, oy = 0;
@@ -107,13 +154,6 @@
       window.addEventListener('mousemove', function (e) { if (!drag) return; view.x = ox + (e.clientX - sx); view.y = oy + (e.clientY - sy); apply(); emitView(); });
       window.addEventListener('mouseup', function () { if (drag) { drag = false; emitView(true); } });
       viewport.addEventListener('wheel', function (e) { e.preventDefault(); view.scale = Math.max(0.3, Math.min(6, view.scale * (e.deltaY < 0 ? 1.1 : 0.9))); apply(); emitView(); }, { passive: false });
-      // Shared laser pointer: DEFAULT ON (opts.laser !== false) for easy testing.
-      // The on/off toggle will live in the presenter page's control panel (by the LED).
-      if (opts.laser !== false) viewport.addEventListener('mousemove', function (e) {   // E3: pointer -> ephemeral store op (perm: self)
-        var n = Date.now(); if (n - lastPtr < 66) return; lastPtr = n;
-        var r = viewport.getBoundingClientRect();
-        if (Argus && Argus.op) Argus.op('map/pointer/' + ((Argus.identity && Argus.identity().userId) || 'anon'), 'set', { px: (e.clientX - r.left) / r.width, py: (e.clientY - r.top) / r.height });
-      });
     }
 
     // Clicks are PEER-TO-PEER (the core feature): ANY user clicks -> ALL users see
@@ -123,33 +163,76 @@
     viewport.addEventListener('mousemove', function (e) { if (Math.abs(e.clientX - dnX) > 4 || Math.abs(e.clientY - dnY) > 4) moved = true; });
     viewport.addEventListener('click', function (e) {   // E2: peer click -> store marker op (perm: any)
       if (moved || !Argus || !Argus.op) return;
-      var r = viewport.getBoundingClientRect();
+      var f = contentFrac(e.clientX, e.clientY); if (!f) return;
       Argus.op('map/markers', 'add', {
         id: 'mk' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-        px: (e.clientX - r.left) / r.width, py: (e.clientY - r.top) / r.height,
+        px: f.px, py: f.py,
         name: (Argus.identity && Argus.identity().userName) || '?'
       });
     });
 
     function showClick(px, py, name) {
-      var r = viewport.getBoundingClientRect();
       var mk = document.createElement('div'); mk.className = 'ap-map-click';
-      mk.style.left = (px * r.width) + 'px'; mk.style.top = (py * r.height) + 'px';
       var dot = document.createElement('div'); dot.className = 'ap-map-click-dot';
       var lab = document.createElement('div'); lab.className = 'ap-map-click-name'; lab.textContent = name || '?';
-      mk.appendChild(dot); mk.appendChild(lab); viewport.appendChild(mk);
+      mk.appendChild(dot); mk.appendChild(lab); anchor(mk, px, py);
       setTimeout(function () { mk.classList.add('is-fading'); }, 2500);
-      setTimeout(function () { if (mk.parentNode) mk.parentNode.removeChild(mk); }, 4000);
+      setTimeout(function () { unanchor(mk); }, 4000);
     }
 
+    // Legacy single-dot pointer (old wire format: {px,py} only, viewport fraction).
     function showPointer(pt) { var r = viewport.getBoundingClientRect(); pointer.style.display = 'block'; pointer.style.left = (pt.px * r.width) + 'px'; pointer.style.top = (pt.py * r.height) + 'px'; }
+
+    // T2 multi-cursor: one content-anchored element per userId, tint from a stable
+    // uid hash, name tag, idle-fade 3 s / remove 6 s, self suppressed. The
+    // presenter's cursor (value.laser) keeps the distinct laser dot styling.
+    var cursorEls = {};   // uid -> { el, idleT, killT }
+    function tint(uid) {
+      var h = 0; for (var i = 0; i < uid.length; i++) h = (h * 131 + uid.charCodeAt(i)) % 100000;
+      return 'hsl(' + Math.round((h * 137.508) % 360) + ', 75%, 62%)';
+    }
+    function removeCursor(uid) {
+      var c = cursorEls[uid]; if (!c) return;
+      clearTimeout(c.idleT); clearTimeout(c.killT); unanchor(c.el); delete cursorEls[uid];
+    }
+    function showCursor(uid, v) {
+      if (cursorsMode === 'off' || uid === selfId()) return;
+      var c = cursorEls[uid];
+      if (!c) {
+        var el = document.createElement('div');
+        el.className = 'ap-map-cursor' + (v.laser ? ' is-laser' : '');
+        el.setAttribute('data-uid', uid);
+        var dot = document.createElement('div');
+        dot.className = v.laser ? 'ap-map-cursor-laser' : 'ap-map-cursor-dot';
+        if (!v.laser) dot.style.background = tint(uid);
+        el.appendChild(dot);
+        var nm = document.createElement('div'); nm.className = 'ap-map-cursor-name';
+        nm.textContent = v.name || uid; if (!v.laser) nm.style.color = tint(uid);
+        el.appendChild(nm);
+        anchor(el, v.px, v.py);
+        c = cursorEls[uid] = { el: el };
+      } else {
+        c.el.style.left = (v.px * 100) + '%'; c.el.style.top = (v.py * 100) + '%';
+        c.el.style.transform = counterScale();
+      }
+      c.el.classList.remove('is-idle');
+      clearTimeout(c.idleT); clearTimeout(c.killT);
+      c.idleT = setTimeout(function () { c.el.classList.add('is-idle'); }, 3000);
+      c.killT = setTimeout(function () { removeCursor(uid); }, 6000);
+    }
 
     var subs = [];
     if (Argus && Argus.subscribeState) {
-      // E1 view mirror · E2 peer markers · E3 pointer/laser (all store-native now).
+      // E1 view mirror · E2 peer markers · E3 pointer/cursors (all store-native now).
       subs.push(Argus.subscribeState('map/view', function (p, v) { if (v) { view.x = v.x; view.y = v.y; view.scale = v.scale; apply(); } }));
       subs.push(Argus.subscribeState('map/markers', function (p, v) { if (v) showClick(v.px, v.py, v.name); }));
-      subs.push(Argus.subscribeState('map/pointer', function (p, v) { if (v) showPointer(v); }));
+      subs.push(Argus.subscribeState('map/pointer', function (p, v) {
+        if (p === 'map/pointer') return;                       // whole-subtree diffs are not produced by emitters
+        var uid = p.slice('map/pointer/'.length);
+        if (!v) { removeCursor(uid); return; }
+        if (v.name == null && !v.laser) { showPointer(v); return; }   // legacy wire format -> single viewport dot
+        showCursor(uid, v);
+      }));
     }
     // E4: seed the current view from the connection snapshot (late joiners mirror it).
     var off = Argus ? Argus.onMessage(function (m) {
