@@ -80,6 +80,32 @@ module that doesn't declare one simply has no title page to show yet.
 | **⌂ Home** | the module's title page |
 | **■ STOP** / end of module | idle **branding** |
 
+## 6. Operator shortcuts and layout
+
+Newer affordances on the control and display pages:
+
+- **Keyboard transport** (control page, whenever you are not typing in a field):
+  `Space` / `→` = Next, `←` = Prev, `Esc` = close the Config overlay if it is
+  open, otherwise **■ STOP**, digits `1`–`9` = jump to the first beat of
+  section N. Keys are no-ops while the matching button is disabled.
+- **Outline jump buttons** — every section and sequence header in the outline
+  carries a small **⏵** button that jumps straight to that tier's first beat.
+  Clicking it does not expand or collapse the header; beat rows are still
+  clickable as before.
+- **Live Preview dock** — the view-as preview now lives in a fixed slot in the
+  top bar, just left of the green dot, so it stays visible while you scroll
+  the outline. The `live preview` checkbox sits directly under the dot.
+- **Window quick-switch pair** — **⧉ Presenter screen** (control top bar)
+  opens — or refocuses, never duplicates — the display in a named window;
+  **⧉ Control** (display, top-left, shown only when your granted role is
+  Presenter) does the reverse. Together they form a two-way switch between
+  the two windows.
+- **Fullscreen map** — a pushed map fills the display (full width, height
+  minus the label bar) and starts zoomed-to-fit. The presenter can drag to
+  pan and use the scroll wheel to zoom; every viewer follows. Clicking the
+  map drops a radar ping (expanding rings + the clicker's name) that fades
+  after about five seconds.
+
 ## Environment variables
 
 - `PRESENTER_MODULES_DIR` — directory content modules are read from (default `./modules`).
