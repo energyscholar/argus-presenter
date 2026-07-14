@@ -14,6 +14,10 @@
   #led-btn{position:fixed;top:4px;right:6px;z-index:60;background:none;border:0;padding:8px;cursor:pointer;line-height:0;border-radius:8px;}
   #led-btn:hover{background:rgba(255,255,255,.06);}
   #led{display:block;width:10px;height:10px;border-radius:50%;background:#cc3333;box-shadow:0 0 8px #cc3333;}
+  /* P2.8: quick-switch to /control. Presenter-GRANTED only (welcome-gated, hidden otherwise).
+     Top-LEFT corner, subtle; z 55 sits BELOW the config overlay (61) and control overlay (70). */
+  #ap-goto-control{position:fixed;top:4px;left:6px;z-index:55;background:rgba(6,10,24,.7);color:#cfe9ff;border:1px solid #2a3a5a;border-radius:6px;padding:4px 9px;font:11px/1.4 'Courier New',monospace;letter-spacing:.06em;cursor:pointer;opacity:.45;}
+  #ap-goto-control:hover{opacity:1;border-color:#22e5a0;}
   #led.on{background:#22e5a0;box-shadow:0 0 8px #22e5a0;}
   #ap-config{position:fixed;top:34px;right:8px;z-index:61;width:236px;background:rgba(6,10,24,.96);border:1px solid #2a3a5a;border-radius:8px;padding:10px 12px;font:12px/1.4 'Courier New',monospace;color:#cfe9ff;display:none;box-shadow:0 6px 24px rgba(0,0,0,.5);}
   #ap-config.open{display:block;}
@@ -49,6 +53,7 @@
 </head>
 <body>
 <button id="led-btn" title="Settings" aria-haspopup="true" aria-label="Connection and settings"><span id="led"></span></button>
+<button id="ap-goto-control" title="Open (or refocus) the presenter control window" style="display:none">⧉ Control</button>
 <div id="ap-config" role="dialog" aria-label="Settings">
   <h4>Display</h4>
   <div class="row"><span class="k">Zoom</span> <button data-scale="0.9">90%</button><button data-scale="1">100%</button><button data-scale="1.25">125%</button><button data-scale="1.5">150%</button></div>
@@ -97,6 +102,25 @@
   // Set by the Role picker; called from the `welcome` handler with the server's EFFECTIVE
   // granted role so a silent downgrade (wrong password) surfaces as feedback.
   var onWelcomeRole = null;
+
+  // ---- P2.8: quick-switch button to /control (reciprocal of control.html's #btn-present).
+  // Visibility is gated on the EFFECTIVE role the server granted in `welcome`, NOT the
+  // requested one: a silent downgrade (wrong/absent credential) must hide the button.
+  // identity.role is ALSO required so switching to User hides it immediately (pre-reconnect).
+  var grantedRole = null;   // last welcome-echoed role; null until a welcome arrives
+  function updateGotoControl(){
+    var b = document.getElementById('ap-goto-control');
+    if (b) b.style.display = (grantedRole === 'presenter' && identity.role === 'presenter') ? '' : 'none';
+  }
+  document.getElementById('ap-goto-control').addEventListener('click', function(){
+    // Reuse THIS page's credential (identity.token: URL param or role-picker hash); never hardcode.
+    var url = '/control?role=presenter';
+    if (identity.token) url += '&token=' + encodeURIComponent(identity.token);
+    // NAMED target: two-way pair with control.html's 'presenter-display' — reopening
+    // FOCUSES the same window instead of spawning duplicates.
+    var w = window.open(url, 'presenter-control');
+    if (w) { try { w.focus(); } catch(e){} }
+  });
 
   var stage = document.getElementById('stage');
   var led = document.getElementById('led');
@@ -187,7 +211,7 @@
     dbgLog(m);
     if (m.t === 'ping') { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t:'pong', ts:m.ts })); return; }   // X3 RTT
     if (m.t === 'chat_listeners') { updateChat(m.n); return; }   // P3
-    if (m.t === 'welcome') { dbg.socketId = m.socketId || null; dbgRender(); if (typeof onWelcomeRole === 'function') onWelcomeRole(m.role); }
+    if (m.t === 'welcome') { dbg.socketId = m.socketId || null; dbgRender(); grantedRole = (typeof m.role === 'string') ? m.role : null; if (typeof onWelcomeRole === 'function') onWelcomeRole(m.role); updateGotoControl(); }
     else if (m.t === 'snapshot') { lastSnapshot = m; if (typeof m.version === 'number') lastVersion = m.version; if (frame && frame.contentWindow) frame.contentWindow.postMessage({ source:'argus-host', type:'snapshot', state:m.state, version:m.version }, '*'); }
     else if (m.t === 'content') showContent(m.html);
     else if (m.t === 'clear') showIdle();
@@ -275,6 +299,7 @@
       var isPres = identity.role === 'presenter';
       controlRow.style.display = isPres ? '' : 'none';
       var ocb = document.getElementById('cfg-open-control'); if (ocb) ocb.disabled = !isPres;
+      updateGotoControl();   // P2.8: quick-switch button tracks role changes too
     }
     function setRole(role){
       if (role === identity.role) return;
