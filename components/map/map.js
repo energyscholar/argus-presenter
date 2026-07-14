@@ -69,6 +69,11 @@
     var pointer = document.createElement('div'); pointer.className = 'ap-map-pointer'; pointer.style.display = 'none';
     viewport.appendChild(content); viewport.appendChild(pointer); wrap.appendChild(viewport); root.appendChild(wrap);
 
+    // T4 (Plan 0457): when the map is THE pushed content (mounted directly on the
+    // .ap-root host), lift the host's readable-column cap so the map fills the
+    // display (full width, full height minus only the label bar).
+    if (root.classList && root.classList.contains('ap-root')) root.classList.add('ap-fullbleed');
+
     // T1 (Plan 0457): styled tooltips. Content authors bake `data-tip` text into the
     // supplied svg/image overlay DOM; the component drives ONE shared floating panel.
     var tip = document.createElement('div'); tip.className = 'ap-map-tip'; tip.style.display = 'none';
@@ -132,6 +137,47 @@
     }
     apply();
 
+    // T4 (Plan 0457): size the content box from the art's INTRINSIC aspect
+    // (SVG viewBox / image natural size) instead of a forced square, and start
+    // ZOOM-TO-FIT (contain, centered) unless the module pinned an explicit view.
+    function intrinsicSize() {
+      var node = content.firstElementChild;
+      var w = 0, h = 0;
+      if (node) {
+        var tag = node.tagName ? String(node.tagName).toLowerCase() : '';
+        if (tag === 'svg') {
+          var vb = node.viewBox && node.viewBox.baseVal;
+          if (vb && vb.width && vb.height) { w = vb.width; h = vb.height; }
+          else { w = parseFloat(node.getAttribute('width')) || 0; h = parseFloat(node.getAttribute('height')) || 0; }
+        } else if (tag === 'img') { w = node.naturalWidth || 0; h = node.naturalHeight || 0; }
+      }
+      if (!w || !h) { w = 800; h = 800; }   // legacy square convention as fallback
+      if (node) { node.style.width = w + 'px'; node.style.height = h + 'px'; }
+      content.style.width = w + 'px'; content.style.height = h + 'px';
+      return { w: w, h: h };
+    }
+    var hasExplicitView = opts.x != null || opts.y != null || opts.scale != null;
+    var viewTouched = hasExplicitView;   // a live view (op/snapshot/drag) must not be refit later
+    function zoomToFit() {
+      // clientWidth/Height = the padding box content coords are relative to
+      // (getBoundingClientRect would include the 1px border and skew centering).
+      var vw = viewport.clientWidth, vh = viewport.clientHeight;
+      if (!vw || !vh) return;
+      var sz = intrinsicSize();
+      var s = Math.min(vw / sz.w, vh / sz.h) || 1;
+      view.scale = s;
+      view.x = (vw - sz.w * s) / 2;
+      view.y = (vh - sz.h * s) / 2;
+      apply();
+    }
+    intrinsicSize();
+    if (!hasExplicitView) zoomToFit();
+    // Images know their natural size only after load: re-measure, refit if untouched.
+    var imgNode = content.querySelector('img.ap-map-img');
+    if (imgNode && !imgNode.complete) imgNode.addEventListener('load', function () {
+      intrinsicSize(); if (!viewTouched) zoomToFit();
+    });
+
     var lastView = 0, lastPtr = 0;
     function emitView(final) { if (!controllable || !Argus || !Argus.op) return; var n = Date.now(); if (!final && n - lastView < 66) return; lastView = n; Argus.op('map/view', 'set', { x: view.x, y: view.y, scale: view.scale }); }   // E1: store op (perm: presenter)
 
@@ -150,10 +196,10 @@
 
     if (controllable) {
       var drag = false, sx = 0, sy = 0, ox = 0, oy = 0;
-      viewport.addEventListener('mousedown', function (e) { drag = true; sx = e.clientX; sy = e.clientY; ox = view.x; oy = view.y; e.preventDefault(); });
+      viewport.addEventListener('mousedown', function (e) { drag = true; viewTouched = true; sx = e.clientX; sy = e.clientY; ox = view.x; oy = view.y; e.preventDefault(); });
       window.addEventListener('mousemove', function (e) { if (!drag) return; view.x = ox + (e.clientX - sx); view.y = oy + (e.clientY - sy); apply(); emitView(); });
       window.addEventListener('mouseup', function () { if (drag) { drag = false; emitView(true); } });
-      viewport.addEventListener('wheel', function (e) { e.preventDefault(); view.scale = Math.max(0.3, Math.min(6, view.scale * (e.deltaY < 0 ? 1.1 : 0.9))); apply(); emitView(); }, { passive: false });
+      viewport.addEventListener('wheel', function (e) { e.preventDefault(); viewTouched = true; view.scale = Math.max(0.3, Math.min(6, view.scale * (e.deltaY < 0 ? 1.1 : 0.9))); apply(); emitView(); }, { passive: false });
     }
 
     // Clicks are PEER-TO-PEER (the core feature): ANY user clicks -> ALL users see
@@ -224,7 +270,7 @@
     var subs = [];
     if (Argus && Argus.subscribeState) {
       // E1 view mirror · E2 peer markers · E3 pointer/cursors (all store-native now).
-      subs.push(Argus.subscribeState('map/view', function (p, v) { if (v) { view.x = v.x; view.y = v.y; view.scale = v.scale; apply(); } }));
+      subs.push(Argus.subscribeState('map/view', function (p, v) { if (v) { viewTouched = true; view.x = v.x; view.y = v.y; view.scale = v.scale; apply(); } }));
       subs.push(Argus.subscribeState('map/markers', function (p, v) { if (v) showClick(v.px, v.py, v.name); }));
       subs.push(Argus.subscribeState('map/pointer', function (p, v) {
         if (p === 'map/pointer') return;                       // whole-subtree diffs are not produced by emitters
@@ -237,11 +283,11 @@
     // E4: seed the current view from the connection snapshot (late joiners mirror it).
     var off = Argus ? Argus.onMessage(function (m) {
       if (m.type === 'snapshot' && m.state && m.state.map && m.state.map.view) {
-        var v = m.state.map.view; view.x = v.x; view.y = v.y; view.scale = v.scale; apply();
+        var v = m.state.map.view; viewTouched = true; view.x = v.x; view.y = v.y; view.scale = v.scale; apply();
       }
     }) : null;
 
-    return { setView: function (v) { Object.assign(view, v); apply(); }, view: function () { return view; }, destroy: function () { if (off) off(); subs.forEach(function (u) { u(); }); root.innerHTML = ''; } };
+    return { setView: function (v) { viewTouched = true; Object.assign(view, v); apply(); }, view: function () { return view; }, destroy: function () { if (off) off(); subs.forEach(function (u) { u(); }); if (root.classList) root.classList.remove('ap-fullbleed'); root.innerHTML = ''; } };
   }
   if (window.ApComponents) window.ApComponents.register('map', render);
 })();
