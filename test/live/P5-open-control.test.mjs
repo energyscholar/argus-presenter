@@ -60,13 +60,14 @@ test('P5 — expand /control overlay from Config, then collapse back to Config',
     const hasSandbox = await page.evaluate(() => document.getElementById('ap-control-frame').hasAttribute('sandbox'));
     expect(hasSandbox === false, 'control iframe has NO sandbox attribute (same-origin)', String(hasSandbox));
 
-    // Wait for /control to actually load AND its own socket to connect (its #led.on).
+    // Wait for /control to actually load AND its own socket to connect (its #led2.on —
+    // P2.6: control's single connectivity LED is #led2 in the top-right settings button).
     await until(() => !!page.frames().find((fr) => fr.url().includes('/control')),
       { timeout: 8000, label: '/control frame attached' });
     const cf = page.frames().find((fr) => fr.url().includes('/control'));
-    await cf.waitForSelector('#led.on', { timeout: 8000 });
-    const ctrlConnected = await cf.evaluate(() => document.getElementById('led').classList.contains('on'));
-    expect(ctrlConnected === true, '/control socket connected (its led.on)');
+    await cf.waitForSelector('#led2.on', { timeout: 8000 });
+    const ctrlConnected = await cf.evaluate(() => document.getElementById('led2').classList.contains('on'));
+    expect(ctrlConnected === true, '/control socket connected (its led2.on)');
     // BASE display socket still alive during the expand.
     const baseAlive1 = await page.evaluate(() => document.getElementById('led').classList.contains('on'));
     expect(baseAlive1 === true, 'base display socket still alive while control expanded');

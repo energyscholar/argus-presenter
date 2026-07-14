@@ -38,7 +38,7 @@ test('CTRL-auth — gated: control downgraded (no users) → password unlock →
     const ctl = await browser.newPage();
     ctl.on('pageerror', (e) => console.log('CTRL PAGEERR', e.message));
     await ctl.goto(`${server.url()}/control?userId=ctl&name=Ctl`, { waitUntil: 'domcontentloaded' });
-    await ctl.waitForSelector('#led.on', { timeout: 5000 });   // socket opens (downgraded, not rejected)
+    await ctl.waitForSelector('#led2.on', { timeout: 5000 });   // socket opens (downgraded, not rejected)
     await until(async () => (await ctl.evaluate(() => window.__ctlAuth.gated())) === true,
       { timeout: 5000, label: 'control learned server is gated (/api/auth)' });
     await until(async () => (await ctl.evaluate(() => window.__ctlAuth.role())) === 'participant',
