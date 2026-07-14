@@ -53,6 +53,8 @@
   .seq>summary{cursor:pointer;padding:3px 8px;font-weight:500;font-size:11px;list-style:none;display:flex;justify-content:space-between;gap:8px;color:var(--dim);}
   .seq>summary::-webkit-details-marker{display:none;}
   .seq .cnt{font-size:9px;color:var(--dim);font-weight:400;}
+  .tocjump{background:none;border:1px solid #1c2a44;border-radius:4px;color:var(--dim);cursor:pointer;font-size:10px;line-height:1;padding:1px 5px;margin-left:6px;}
+  .tocjump:hover{color:#fff;border-color:var(--ok);}
   .seq .beat{padding-left:28px;}
   .beat{padding:3px 8px 3px 20px;font-size:12px;cursor:pointer;border-left:2px solid transparent;color:var(--dim);}
   .beat:hover{color:#fff;}
@@ -259,6 +261,22 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     el.innerHTML=(((b.opts&&(b.opts.title||b.opts.prompt||b.opts.text))||b.id)+'').slice(0,42)+' <span class="comp">'+b.component+(b.target?(' →'+b.target):'')+'</span>'+((i===recBeat&&i!==curBeat)?' <span class="recnote">→ recommended</span>':'');
     el.onclick=function(){ recBeat=-1; control('show_beat',{index:i}); };   // manual override always works + clears the recommendation
     return el; }
+  // Plan 0456 P2: first RESOLVABLE beat index of a tier (section or sequence) — shared by the
+  // KBD-1 digit jump and the TOC ⏵ jump buttons. Returns -1 when the tier has none.
+  function firstResolvableBeat(tier){
+    var ids = (tier.sequences&&tier.sequences.length) ? tier.sequences.reduce(function(a,q){return a.concat(q.beatIds||[]);},[]) : (tier.beatIds||[]);
+    for(var k=0;k<ids.length;k++){ var i=beatIndex(ids[k]); if(i>=0) return i; }
+    return -1;
+  }
+  // Plan 0456 P2: small ⏵ jump button for a section/sequence <summary> → same show_beat path as
+  // beatRow() (recBeat=-1 clears the recommendation). stopPropagation+preventDefault keep the
+  // <details> open/close state untouched. Returns null (no button) for a tier with no resolvable beats.
+  function jumpBtn(tier){
+    var i=firstResolvableBeat(tier); if(i<0) return null;
+    var b=document.createElement('button'); b.type='button'; b.className='tocjump'; b.title='Jump to first beat'; b.textContent='⏵';
+    b.onclick=function(e){ e.stopPropagation(); e.preventDefault(); recBeat=-1; control('show_beat',{index:i}); };
+    return b;
+  }
   // SCH-1: format a duration estimate. <60s → "~Ns"; else round to nearest minute → "~N min".
   function fmtDur(sec){ return sec<60 ? '~'+sec+'s' : '~'+Math.round(sec/60)+' min'; }
   function beatDur(bid){ var b=beatById(bid); var d=b&&b.durationSec; return (typeof d==='number'&&isFinite(d))?d:0; }
@@ -281,11 +299,13 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
       var secCount = hasSeq ? s.sequences.reduce(function(n,q){return n+(q.beatIds||[]).length;},0) : (s.beatIds||[]).length;
       var estStr = ''; if(anyDur){ var sd=secDur(s); if(sd>0) estStr=' · '+fmtDur(sd); }
       var sum=document.createElement('summary'); sum.innerHTML='<span>'+(s.title||'section')+'</span><span class="cnt">'+secCount+' beats'+estStr+'</span>';
+      var jb=jumpBtn(s); if(jb) sum.querySelector('.cnt').appendChild(jb);   // P2: section-level jump (absent when no resolvable beats)
       det.appendChild(sum);
       if(hasSeq){
         s.sequences.forEach(function(q){
           var qdet=document.createElement('details'); qdet.className='seq'; qdet.open=true;
           var qsum=document.createElement('summary'); qsum.innerHTML='<span>'+(q.title||'sequence')+'</span><span class="cnt">'+(q.beatIds||[]).length+' beats</span>';
+          var qjb=jumpBtn(q); if(qjb) qsum.querySelector('.cnt').appendChild(qjb);   // P2: sequence-level jump
           qdet.appendChild(qsum);
           (q.beatIds||[]).forEach(function(bid){ var el=beatRow(bid); if(el) qdet.appendChild(el); });
           det.appendChild(qdet);
@@ -431,8 +451,7 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
       if(!module) return;
       var secs = module.sections && module.sections.length ? module.sections : [{title:'(all beats)',beatIds:(module.beats||[]).map(function(b){return b.id;})}];   // same derivation as renderOutline()
       var s=secs[(+e.key)-1]; if(!s) return;
-      var ids = (s.sequences&&s.sequences.length) ? s.sequences.reduce(function(a,q){return a.concat(q.beatIds||[]);},[]) : (s.beatIds||[]);
-      for(var k=0;k<ids.length;k++){ var i=beatIndex(ids[k]); if(i>=0){ recBeat=-1; control('show_beat',{index:i}); return; } }   // first RESOLVABLE beat of section N
+      var i=firstResolvableBeat(s); if(i>=0){ recBeat=-1; control('show_beat',{index:i}); }   // shared with the TOC ⏵ jump (P2)
     }
   });
   $('cfg-close').addEventListener('click',function(){ toggleConfig(false); });
