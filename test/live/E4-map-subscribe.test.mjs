@@ -38,8 +38,8 @@ test('E4 — a peer marker auto-expires client-side (is-fading)', async () => {
     await new Promise((r) => setTimeout(r, 120));
     pres.send(JSON.stringify({ t: 'op', path: 'map/markers', verb: 'add', value: { id: 'x1', px: 0.5, py: 0.5, name: 'X' }, opId: 'e4m' }));
     await until(async () => (await f.$$eval('.ap-map-click', (e) => e.length)) >= 1, { label: 'marker shown', timeout: 5000 });
-    // Auto-expire: the marker gains 'is-fading' after ~2.5s.
-    await until(async () => (await f.$$eval('.ap-map-click.is-fading', (e) => e.length)) >= 1, { label: 'marker fading', timeout: 4000 });
+    // Auto-expire: the marker gains 'is-fading' after ~4s (T5 radar-ping lifetime).
+    await until(async () => (await f.$$eval('.ap-map-click.is-fading', (e) => e.length)) >= 1, { label: 'marker fading', timeout: 6500 });
     expect('marker auto-expires (is-fading applied)', true);
   } finally { await browser.close(); await server.close(); }
 });

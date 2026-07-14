@@ -210,20 +210,37 @@
     viewport.addEventListener('click', function (e) {   // E2: peer click -> store marker op (perm: any)
       if (moved || !Argus || !Argus.op) return;
       var f = contentFrac(e.clientX, e.clientY); if (!f) return;
-      Argus.op('map/markers', 'add', {
+      var mv = {
         id: 'mk' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
         px: f.px, py: f.py,
         name: (Argus.identity && Argus.identity().userName) || '?'
-      });
+      };
+      if (controllable) mv.laser = true;   // presenter ping uses the laser accent (T5; same field pattern as T2 pointers)
+      Argus.op('map/markers', 'add', mv);
     });
 
-    function showClick(px, py, name) {
+    // T5 (Plan 0457): radar ping — 3 staggered expanding rings around a bright
+    // center dot + the clicker's name tag. Lifetime ~5 s (full strength ~4 s,
+    // fade over the last ~1 s, removed ~5.2 s). Content-anchored + counter-scaled
+    // (T2). Ring color = the per-user tint; a presenter ping (laser) uses the
+    // laser accent. CSS-only animation; only the two existing timers, retimed.
+    function showClick(px, py, name, laser) {
+      var col = laser ? '#ff4d4d' : tint(name || '?');
       var mk = document.createElement('div'); mk.className = 'ap-map-click';
+      var core = document.createElement('div'); core.className = 'ap-map-click-core';
+      for (var i = 0; i < 3; i++) {
+        var ring = document.createElement('div'); ring.className = 'ap-map-click-ring';
+        ring.style.borderColor = col; ring.style.animationDelay = (i * 0.4) + 's';
+        core.appendChild(ring);
+      }
       var dot = document.createElement('div'); dot.className = 'ap-map-click-dot';
-      var lab = document.createElement('div'); lab.className = 'ap-map-click-name'; lab.textContent = name || '?';
-      mk.appendChild(dot); mk.appendChild(lab); anchor(mk, px, py);
-      setTimeout(function () { mk.classList.add('is-fading'); }, 2500);
-      setTimeout(function () { unanchor(mk); }, 4000);
+      dot.style.borderColor = col; dot.style.background = col;
+      core.appendChild(dot);
+      var lab = document.createElement('div'); lab.className = 'ap-map-click-name';
+      lab.textContent = name || '?'; lab.style.color = col;
+      mk.appendChild(core); mk.appendChild(lab); anchor(mk, px, py);
+      setTimeout(function () { mk.classList.add('is-fading'); }, 4000);
+      setTimeout(function () { unanchor(mk); }, 5200);
     }
 
     // Legacy single-dot pointer (old wire format: {px,py} only, viewport fraction).
@@ -271,7 +288,7 @@
     if (Argus && Argus.subscribeState) {
       // E1 view mirror · E2 peer markers · E3 pointer/cursors (all store-native now).
       subs.push(Argus.subscribeState('map/view', function (p, v) { if (v) { viewTouched = true; view.x = v.x; view.y = v.y; view.scale = v.scale; apply(); } }));
-      subs.push(Argus.subscribeState('map/markers', function (p, v) { if (v) showClick(v.px, v.py, v.name); }));
+      subs.push(Argus.subscribeState('map/markers', function (p, v) { if (v) showClick(v.px, v.py, v.name, v.laser); }));
       subs.push(Argus.subscribeState('map/pointer', function (p, v) {
         if (p === 'map/pointer') return;                       // whole-subtree diffs are not produced by emitters
         var uid = p.slice('map/pointer/'.length);
