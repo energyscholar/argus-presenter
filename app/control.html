@@ -8,7 +8,8 @@
   :root{--bg:#0a0e1c;--panel:rgba(10,16,32,.6);--line:#21314f;--ink:#cfe9ff;--dim:#8ab;--ok:#22e5a0;--warn:#ffb454;--danger:#ff6b6b;}
   html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font:13px/1.45 'Segoe UI',system-ui,sans-serif;}
   body{display:grid;grid-template-columns:1fr 320px;grid-template-rows:auto 1fr;gap:10px;padding:10px;box-sizing:border-box;height:100vh;}
-  h1{grid-column:1/3;margin:0;font-size:15px;letter-spacing:.04em;display:flex;align-items:center;gap:10px;}
+  /* P2.5: top bar reserves vertical space for the fixed preview dock (Bruce-approved trade) */
+  h1{grid-column:1/3;margin:0;font-size:15px;letter-spacing:.04em;display:flex;align-items:flex-start;gap:10px;min-height:112px;}
   #status{font-size:.72rem;color:var(--dim);display:flex;align-items:center;gap:5px;}
   #led{display:inline-block;width:9px;height:9px;border-radius:50%;background:#c33;}#led.on{background:var(--ok);}
   /* Top-right Settings button (green connectivity dot doubles as the settings entry — mirrors presenter.html) */
@@ -36,6 +37,12 @@
   .badge{font-size:10px;padding:1px 6px;border-radius:10px;border:1px solid #2a3a5a;color:var(--dim);}
   .badge.ok{color:var(--ok);border-color:var(--ok);}.badge.warn{color:var(--warn);border-color:var(--warn);}
   #nowplaying{display:flex;gap:10px;align-items:center;}
+  /* P2.5 (Plan 0456): the Live Preview lives in a FIXED dock in the top bar, immediately
+     LEFT of the green settings dot (#led-btn: fixed top:4px right:6px, ≈26px wide) — always
+     visible while the outline column scrolls. Fixed placement also defuses focus-reveal
+     scrolling: revealing an already-visible element is a no-op. z-index BELOW the config
+     overlay (61) and the dot (60); the top bar (h1 min-height) keeps it off the columns. */
+  #pvdock{position:fixed;top:4px;right:38px;z-index:59;display:flex;flex-direction:column;gap:3px;}
   #preview{width:150px;height:98px;border:1px solid #2a3a5a;border-radius:6px;overflow:hidden;background:#050510;flex:0 0 auto;position:relative;}
   #preview iframe{border:0;width:600px;height:392px;transform:scale(.25);transform-origin:top left;pointer-events:none;}
   #preview .pvlabel{position:absolute;left:0;right:0;bottom:0;font-size:9px;text-align:center;background:rgba(0,0,0,.6);color:var(--dim);padding:1px;}
@@ -79,6 +86,11 @@
 </head>
 <body>
 <button id="led-btn" title="Settings" aria-haspopup="true" aria-label="Connection and settings"><span id="led2"></span></button>
+<!-- P2.5: Live Preview dock — fixed in the top bar, left of the green dot (see #pvdock CSS) -->
+<div id="pvdock">
+  <div id="preview"><iframe id="pvframe" sandbox="allow-scripts"></iframe><div class="pvlabel" id="pvlabel">idle</div><div id="pvwarn"><div class="pvwarn-main">⚠ preview paused</div><div class="pvwarn-sub">system busy</div></div></div>
+  <label id="livepreview-lbl" title="live 'view-as' thumbnail — first thing dropped when the tab is busy"><input type="checkbox" id="livepreview" checked> live preview</label>
+</div>
 <div id="ap-config" role="dialog" aria-label="Settings">
   <h4>Control · Settings</h4>
   <div class="rd" id="cfg-readout"></div>
@@ -97,10 +109,7 @@
   <section>
     <h2>Now playing</h2>
     <div id="nowplaying">
-      <div style="display:flex;flex-direction:column;gap:3px;flex:0 0 auto">
-        <div id="preview"><iframe id="pvframe" sandbox="allow-scripts"></iframe><div class="pvlabel" id="pvlabel">idle</div><div id="pvwarn"><div class="pvwarn-main">⚠ preview paused</div><div class="pvwarn-sub">system busy</div></div></div>
-        <label id="livepreview-lbl" title="live 'view-as' thumbnail — first thing dropped when the tab is busy"><input type="checkbox" id="livepreview" checked> live preview</label>
-      </div>
+      <!-- P2.5: the Live Preview thumbnail moved to the fixed #pvdock in the top bar -->
       <div>
         <div id="np-meta">Showing: <b id="np-what">idle (branding)</b></div>
         <div id="viewingas"></div>
@@ -397,6 +406,17 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     }
   }
   $('livepreview').onchange=function(){ livePreview=this.checked; applyPreviewState(); };
+  // P2.5 (Plan 0456): pushed content can STEAL FOCUS into the preview iframe (autofocus /
+  // .focus() runs under sandbox allow-scripts on every srcdoc reload); the browser then
+  // scrolls ancestors to reveal the focused frame — that was the outline column jumping to
+  // top on every interactive push. The thumbnail is pure decoration (pointer-events:none)
+  // and must NEVER hold focus (it would also swallow the KBD-1 keyboard transport): kick
+  // focus back out on every load and on any later steal. Sandbox stays allow-scripts only.
+  (function(){ var pv=$('pvframe');
+    function kick(){ if(document.activeElement===pv) pv.blur(); }
+    pv.addEventListener('load', kick);
+    pv.addEventListener('focus', function(){ setTimeout(kick,0); });
+  })();
   // Cheap 1 Hz SELF-monitor: measures its own lateness (tab starvation), NOT a render loop.
   setInterval(function(){
     var now=performance.now();
