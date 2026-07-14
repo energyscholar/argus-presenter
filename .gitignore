@@ -8,3 +8,7 @@ test/screenshots/
 # Local content modules stay out of the public repo (content is not shipped here; core stays neutral)
 modules/*.json
 !modules/demo-welcome.json
+
+# Local plugin installs stay out of the public repo (domain plugins are installed
+# locally under plugins/<name>/ and are never committed; core stays neutral)
+plugins/starship-ops/
