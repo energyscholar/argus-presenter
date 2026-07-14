@@ -413,7 +413,28 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   $('led-btn').addEventListener('click',function(e){ e.stopPropagation(); toggleConfig(); });
   $('ap-config').addEventListener('click',function(e){ e.stopPropagation(); });
   document.addEventListener('click',function(){ toggleConfig(false); });
-  document.addEventListener('keydown',function(e){ if(e.key==='Escape') toggleConfig(false); });
+  // KBD-1 (Plan 0456 P1): ONE document-level keyboard transport handler.
+  // Space/ArrowRight → Next · ArrowLeft → Prev · Escape → close config if open (takes
+  // precedence, preserves the old Escape-closes-config behavior) else STOP · digits 1–9 →
+  // first beat of section N. Keys route through the EXISTING buttons / beat-jump path
+  // (control('show_beat')) so branch-recommendation + nav-state logic stays single-source.
+  // Guards: never hijack typing (input/textarea/select/contenteditable), ignore modified
+  // keys, no-op on disabled buttons / no module; preventDefault on Space only when handled.
+  document.addEventListener('keydown',function(e){
+    if(e.ctrlKey||e.altKey||e.metaKey) return;
+    var t=e.target, tag=t&&t.tagName;
+    if(tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT'||(t&&t.isContentEditable)) return;
+    if(e.key===' '||e.key==='ArrowRight'){ var nb=$('btn-next'); if(!nb.disabled){ if(e.key===' ') e.preventDefault(); nb.click(); } return; }
+    if(e.key==='ArrowLeft'){ var pb=$('btn-prev'); if(!pb.disabled) pb.click(); return; }
+    if(e.key==='Escape'){ if($('ap-config').classList.contains('open')) toggleConfig(false); else $('btn-end').click(); return; }
+    if(/^[1-9]$/.test(e.key)){
+      if(!module) return;
+      var secs = module.sections && module.sections.length ? module.sections : [{title:'(all beats)',beatIds:(module.beats||[]).map(function(b){return b.id;})}];   // same derivation as renderOutline()
+      var s=secs[(+e.key)-1]; if(!s) return;
+      var ids = (s.sequences&&s.sequences.length) ? s.sequences.reduce(function(a,q){return a.concat(q.beatIds||[]);},[]) : (s.beatIds||[]);
+      for(var k=0;k<ids.length;k++){ var i=beatIndex(ids[k]); if(i>=0){ recBeat=-1; control('show_beat',{index:i}); return; } }   // first RESOLVABLE beat of section N
+    }
+  });
   $('cfg-close').addEventListener('click',function(){ toggleConfig(false); });
 
   // The server echoes the EFFECTIVE granted role in `welcome`; a silent downgrade surfaces
