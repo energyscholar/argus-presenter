@@ -60,7 +60,42 @@
     var pointer = document.createElement('div'); pointer.className = 'ap-map-pointer'; pointer.style.display = 'none';
     viewport.appendChild(content); viewport.appendChild(pointer); wrap.appendChild(viewport); root.appendChild(wrap);
 
-    function apply() { content.style.transform = 'translate(' + view.x + 'px, ' + view.y + 'px) scale(' + view.scale + ')'; }
+    // T1 (Plan 0457): styled tooltips. Content authors bake `data-tip` text into the
+    // supplied svg/image overlay DOM; the component drives ONE shared floating panel.
+    var tip = document.createElement('div'); tip.className = 'ap-map-tip'; tip.style.display = 'none';
+    viewport.appendChild(tip);
+    function hideTip() { tip.style.display = 'none'; }
+    function fillTip(text) {
+      tip.textContent = '';
+      String(text).split('\n').forEach(function (line) {
+        var d = document.createElement('div'); d.className = 'ap-map-tip-line'; d.textContent = line; tip.appendChild(d);
+      });
+    }
+    function placeTip(e) {
+      var r = viewport.getBoundingClientRect();
+      var x = e.clientX - r.left + 14, y = e.clientY - r.top + 18;
+      var tw = tip.offsetWidth, th = tip.offsetHeight;
+      if (x + tw > r.width - 4) x = e.clientX - r.left - 14 - tw;   // flip left near the right edge
+      if (y + th > r.height - 4) y = e.clientY - r.top - 18 - th;   // flip above near the bottom edge
+      if (x < 4) x = 4; if (y < 4) y = 4;
+      tip.style.left = x + 'px'; tip.style.top = y + 'px';
+    }
+    // Walk the supplied overlay DOM once; wire every [data-tip] node. A native SVG
+    // <title> child on the same node is removed (no double tooltip); its text is
+    // kept as aria-label for a11y.
+    (function wireTips() {
+      var nodes = content.querySelectorAll('[data-tip]');
+      Array.prototype.forEach.call(nodes, function (n) {
+        for (var c = n.firstElementChild; c; c = c.nextElementSibling) {
+          if (c.tagName && String(c.tagName).toLowerCase() === 'title') { n.setAttribute('aria-label', c.textContent); n.removeChild(c); break; }
+        }
+        n.addEventListener('mouseenter', function (e) { fillTip(n.getAttribute('data-tip')); tip.style.display = 'block'; placeTip(e); });
+        n.addEventListener('mousemove', function (e) { if (tip.style.display !== 'none') placeTip(e); });
+        n.addEventListener('mouseleave', hideTip);
+      });
+    })();
+
+    function apply() { content.style.transform = 'translate(' + view.x + 'px, ' + view.y + 'px) scale(' + view.scale + ')'; hideTip(); }   // pan/zoom start hides the tooltip
     apply();
 
     var lastView = 0, lastPtr = 0;
