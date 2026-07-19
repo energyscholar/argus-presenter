@@ -30,21 +30,25 @@ or env is required. Dependencies (`@modelcontextprotocol/sdk`, `zod`, `ws`) reso
 from the repo's `node_modules`. After adding the config, reconnect MCP (`/mcp`);
 the `presenter_*` tools then appear in-session.
 
-## The tool surface (14 tools)
+## The tool surface (16 tools)
 
 | Tool | Purpose |
 |------|---------|
-| `presenter_start` `{port?}` | Start the (single) presenter server; returns the URL to open. `port:0` = random. |
+| `presenter_start` `{port?}` | Start the (single) presenter server; returns the URL to open. `port:0` = random — **pass `4300`** (the canonical port). |
 | `presenter_stop` | Stop it. |
-| `presenter_status` | Running? URL + connected users (presence). |
+| `presenter_status` | Running? URL + connected users (presence, incl. `eyesOn`). |
 | `present_module` | Load a content module and begin delivering it. |
 | `next_beat` | Advance to the next beat. |
 | `append_beat` | Add a beat on the fly (compose / co-author). |
 | `push_component` `{target,component,opts,...}` | Assemble one component/scene and push it to `all` \| a role \| a userId. |
 | `open_poll` / `get_poll` / `close_poll` | Live polling. |
 | `reload_clients` `{target?,delay?}` | Hot-reload connected clients (swap code without dropping them). |
+| `presenter_ready` `{message?,requireAck?,ackId?}` | Ring a gentle chime + "Ready to start?" banner (for a human keeping the tab backgrounded). `requireAck:true` adds a CONFIRM button the viewer must click — proves eyes-on / not-AFK; the banner then persists until confirmed. |
+| `presenter_check_ack` `{ackId?}` | Poll the eyes-on handshake: who confirmed watching (timestamps) and who is still `pending` (AFK). Wait until `acked` before presenting. |
 | `presenter_debug` / `presenter_health` | Introspection / health. |
 | `presenter_raf` | RAF control-plane action. |
+
+**Eyes-on handshake (optional, context-dependent):** when you need to know a human is actually watching before you present, call `presenter_ready{requireAck:true, ackId:'x'}`, then poll `presenter_check_ack{ackId:'x'}` until `acked:true`. Each viewer's confirmation also lands in presence as `eyesOn` (a timestamp), which the Control page shows as a per-user `👁 eyes-on Ns` badge.
 
 ## Typical flow: show a module
 
