@@ -393,12 +393,14 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     users.forEach(function(u){
       var el=document.createElement('div'); el.className='user'+(viewingAs===u.userId?' sel':'');
       var seen = u.lastSeen ? (((Date.now()-u.lastSeen)/1000)|0)+'s' : '';
+      var eyesAge = u.eyesOn ? (((Date.now()-u.eyesOn)/1000)|0) : null;   // eyes-on ack age (s)
+      var eyes = (eyesAge!=null) ? ('<span style="color:'+(eyesAge<45?'#8ef0a0':'#c9a24b')+'" title="viewer confirmed watching '+eyesAge+'s ago">👁 eyes-on '+eyesAge+'s</span>') : '';
       var rowText=[u.userId,u.userName,u.ip,u.role,u.socketId].join('\t');
       el.innerHTML='<span class="u-role">'+u.role+'</span>'
         +'<b class="cp" data-copy="'+esc(u.userId)+'" title="copy userId">'+esc(u.userName||u.userId)+'</b>'
         +'<span class="u-meta"><span class="cp" data-copy="'+esc(u.ip||'')+'" title="copy IP">'+esc(u.ip||'—')+'</span>'
         +' <span class="cp" data-copy="'+esc(u.socketId)+'" title="copy socketId">'+esc(u.socketId)+'</span>'
-        +'<br>sees: '+esc(u.display||'—')+(seen?(' · '+seen):'')
+        +'<br>sees: '+esc(u.display||'—')+(seen?(' · '+seen):'')+(eyes?(' · '+eyes):'')
         +' <span class="u-copy" data-copy="'+esc(rowText)+'" title="copy row">⧉</span>'
         +' <span class="u-reset" data-reset="'+esc(u.userId)+'" title="reset to default (follow role display)">↺ default</span></span>';
       el.onclick=function(){ selectView(u.userId); };

@@ -60,6 +60,10 @@
   #ap-ready .bell{font-size:20px;animation:ap-ready-ring 1.1s ease infinite;}
   #ap-ready .msg{font-weight:bold;color:#eafff6;}
   #ap-ready .sub{opacity:.6;font-size:12px;}
+  #ap-ready .ap-ack{margin-left:6px;pointer-events:auto;cursor:pointer;background:#12341f;color:#8ef0a0;
+    border:1px solid #22e5a0;border-radius:8px;padding:7px 14px;font:bold 13px/1 'Courier New',monospace;
+    letter-spacing:.04em;white-space:nowrap;}
+  #ap-ready .ap-ack:hover{background:#164a2a;color:#eafff6;}
   @keyframes ap-ready-in{from{transform:translateY(-14px);opacity:0}to{transform:translateY(0);opacity:1}}
   @keyframes ap-ready-ring{0%,60%,100%{transform:rotate(0)}70%{transform:rotate(14deg)}80%{transform:rotate(-10deg)}90%{transform:rotate(6deg)}}
 </style>
@@ -83,7 +87,7 @@
        display page carries NO extra child browsing context while idle (a persistent
        iframe would pollute the "does this page have a content frame?" invariant). -->
 </div>
-<div id="ap-ready" aria-live="polite"><div class="pill" role="status"><span class="bell">🔔</span><span><span class="msg">Ready to start?</span> <span class="sub">— bring me forward, then tell me to go.</span></span></div></div>
+<div id="ap-ready" aria-live="polite"><div class="pill" role="status"><span class="bell">🔔</span><span><span class="msg">Ready to start?</span> <span class="sub">— bring me forward, then tell me to go.</span></span><button class="ap-ack" type="button" style="display:none">✓ I'm watching</button></div></div>
 <div id="stage"><div id="idle"><img class="ap-idle-brand" src="/branding/argus-presenter.svg" alt="Argus Presenter — awaiting content"></div></div>
 <div id="who"></div>
 <div id="ap-chat"><input id="ap-chat-input" disabled placeholder="chat (disabled until a listener is attached)"><button id="ap-chat-send" disabled>Send</button></div>
@@ -292,10 +296,24 @@
   }
   function apStopTitleFlash(){ if (apTitleTimer){ clearInterval(apTitleTimer); apTitleTimer = null; } document.title = apOrigTitle; }
   var apReadyEl = document.getElementById('ap-ready');
-  function apShowReady(message){
+  var apAckBtn = apReadyEl ? apReadyEl.querySelector('.ap-ack') : null;
+  var apAckId = 'ready';
+  function apShowReady(message, requireAck, ackId){
     var msgEl = apReadyEl.querySelector('.msg'); if (msgEl && message) msgEl.textContent = message;
+    apAckId = ackId || 'ready';
+    if (apAckBtn){ apAckBtn.style.display = requireAck ? '' : 'none'; apAckBtn.textContent = "✓ I'm watching"; apAckBtn.disabled = false; }
     apReadyEl.classList.add('show');
   }
+  // CONFIRM button = eyes-on acknowledgement (proves not-AFK). Sends {t:'ack'} to the server,
+  // which records it in presence so the Control User sees eyes-on. Also unlocks audio.
+  if (apAckBtn) apAckBtn.addEventListener('click', function(e){
+    e.stopPropagation();                                       // don't let the pill's dismiss handler swallow it
+    apEnsureAudio();
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t:'ack', ackId: apAckId }));
+    apAckBtn.textContent = '✓ Confirmed — thanks'; apAckBtn.disabled = true;
+    apStopTitleFlash();
+    setTimeout(apClearReady, 1200);
+  });
   var apReadyTimer = null;
   function apClearReady(){ apReadyEl.classList.remove('show'); apStopTitleFlash(); if (apReadyTimer){ clearTimeout(apReadyTimer); apReadyTimer = null; } }
   if (apReadyEl) apReadyEl.addEventListener('click', apClearReady);   // click the pill to dismiss
@@ -306,11 +324,13 @@
   window.addEventListener('focus', apOnForeground);
   document.addEventListener('visibilitychange', function(){ if (!document.hidden) apOnForeground(); });
   function onChime(m){
+    var requireAck = !!(m && m.requireAck);
     apPlayChime();
-    apShowReady(m && m.message);
+    apShowReady(m && m.message, requireAck, m && m.ackId);
     if (document.hidden) apStartTitleFlash();   // flash the tab title only while backgrounded
-    if (apReadyTimer) clearTimeout(apReadyTimer);
-    apReadyTimer = setTimeout(apClearReady, 60000);   // auto-dismiss after 60s if never acknowledged
+    if (apReadyTimer) { clearTimeout(apReadyTimer); apReadyTimer = null; }
+    // A plain ding auto-dismisses after 60s; an eyes-on REQUEST persists until the viewer confirms.
+    if (!requireAck) apReadyTimer = setTimeout(apClearReady, 60000);
     dbg.lastChime = (m && m.message) || 'ready';
   }
 
