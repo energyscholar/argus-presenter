@@ -296,15 +296,21 @@
     var msgEl = apReadyEl.querySelector('.msg'); if (msgEl && message) msgEl.textContent = message;
     apReadyEl.classList.add('show');
   }
-  function apClearReady(){ apReadyEl.classList.remove('show'); apStopTitleFlash(); }
+  var apReadyTimer = null;
+  function apClearReady(){ apReadyEl.classList.remove('show'); apStopTitleFlash(); if (apReadyTimer){ clearTimeout(apReadyTimer); apReadyTimer = null; } }
   if (apReadyEl) apReadyEl.addEventListener('click', apClearReady);   // click the pill to dismiss
-  // Bringing the tab forward is the natural acknowledgement → clear the cues.
-  window.addEventListener('focus', apClearReady);
-  document.addEventListener('visibilitychange', function(){ if (!document.hidden) apClearReady(); });
+  // Foregrounding the tab stops the tab-title flash, but the banner MUST persist — the
+  // whole point is the human sees "Ready to start?" when they arrive. Clearing on focus
+  // would erase the banner the instant they look (the bug that made it read as "nothing").
+  function apOnForeground(){ apStopTitleFlash(); apEnsureAudio(); }   // also try to (re)arm audio when they return
+  window.addEventListener('focus', apOnForeground);
+  document.addEventListener('visibilitychange', function(){ if (!document.hidden) apOnForeground(); });
   function onChime(m){
     apPlayChime();
     apShowReady(m && m.message);
-    if (document.hidden) apStartTitleFlash();   // only flash if actually backgrounded
+    if (document.hidden) apStartTitleFlash();   // flash the tab title only while backgrounded
+    if (apReadyTimer) clearTimeout(apReadyTimer);
+    apReadyTimer = setTimeout(apClearReady, 60000);   // auto-dismiss after 60s if never acknowledged
     dbg.lastChime = (m && m.message) || 'ready';
   }
 
