@@ -104,6 +104,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     rtt: { last: telem.rtt.last, avg: telem.rtt.count ? +(telem.rtt.sum / telem.rtt.count).toFixed(1) : null, samples: telem.rtt.count },
   });
   const polls = new Map();     // promptId -> {spec, votes:Map(userId->{value,userName,ts}), open}
+  const acks = new Map();      // ackId -> { message, requestedAt, target, by:Map(userId->{userName,at}) } — eyes-on handshake
   const lastResults = {};      // PRIM-results: promptId -> { userId -> {type,value} } (last beat result per user)
   const listeners = { presence: [], result: [], poll: [] };
   const emit = (ev, data) => listeners[ev].forEach((cb) => { try { cb(data); } catch (e) {} });
@@ -285,14 +286,14 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   const wss = new WebSocketServer({ server: httpServer, maxPayload: MAX_PAYLOAD });
 
   function send(ws, msg) { try { ws.send(JSON.stringify(msg)); } catch (e) {} }
-  function presence() { return [...conns.values()].map((c) => ({ userId: c.userId, userName: c.userName, role: c.role })); }
+  function presence() { return [...conns.values()].map((c) => ({ userId: c.userId, userName: c.userName, role: c.role, eyesOn: c.eyesOn || null })); }
   // Full presence (incl. IP + socketId + current display id) pushed to CONTROL roles only, for the GM user list.
   function pushPresence() {
     // No-op unless a control client (presenter/ai) is actually listening — avoids building/sending
     // the presence feed on every display change when nobody's watching.
     const ctl = [...conns.values()].filter((c) => c.role === 'presenter' || c.role === 'ai');
     if (!ctl.length) return;
-    const users = [...conns.values()].map((c) => ({ userId: c.userId, userName: c.userName, role: c.role, ip: c.ip, socketId: c.id, lastSeen: c.lastSeen, display: displayIdFor(c) }));
+    const users = [...conns.values()].map((c) => ({ userId: c.userId, userName: c.userName, role: c.role, ip: c.ip, socketId: c.id, lastSeen: c.lastSeen, display: displayIdFor(c), eyesOn: c.eyesOn || null }));
     for (const [ws, c] of conns.entries()) if (c.role === 'presenter' || c.role === 'ai') send(ws, { t: 'presence', users });
   }
   // PRIM-results: forward a beat result (answer/continue) to CONTROL roles ONLY (presenter/ai),
@@ -387,6 +388,15 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         else if (m.kind === 'rtt' && typeof m.value === 'number') { telem.rtt.last = m.value; telem.rtt.sum += m.value; telem.rtt.count++; }
       } else if (m.t === 'request-poll') {
         emit('poll', { type: 'request', from: { userId: c.userId, userName: c.userName }, spec: m.spec });
+      } else if (m.t === 'ack') {
+        // Eyes-on acknowledgement: the viewer clicked CONFIRM on a requireAck chime.
+        const ackId = (m && m.ackId) || 'ready';
+        c.eyesOn = Date.now();                              // this connection is confirmed watching (not AFK)
+        let a = acks.get(ackId);
+        if (!a) { a = { message: null, requestedAt: null, target: 'all', by: new Map() }; acks.set(ackId, a); }
+        a.by.set(c.userId, { userName: c.userName, at: c.eyesOn });
+        log.info('ack', 'eyes-on', { ackId, userId: c.userId });
+        pushPresence();                                    // control user-list reflects eyes-on immediately
       }
     });
     ws.on('close', () => { const c = conns.get(ws); if (c && c.userId) byUser.delete(c.userId); conns.delete(ws); updateChatListeners(); emit('presence', presence()); });
@@ -678,7 +688,21 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     // READY chime: a transient signal (NOT a display descriptor — no setDisplay, so it
     // never re-fires on reconnect). Rings a gentle chime + shows a "Ready to start?"
     // banner on live clients, so a human keeping the tab backgrounded knows to come look.
-    chime: ({ message = 'Ready to start?', target = 'all' } = {}) => targets(target).map((ws) => send(ws, { t: 'chime', message })).length,
+    // requireAck=true makes the banner show a CONFIRM button — the viewer must click it to
+    // prove eyes-on (not AFK). Poll getAck(ackId) for who has confirmed / who is pending.
+    chime: ({ message = 'Ready to start?', target = 'all', requireAck = false, ackId = 'ready' } = {}) => {
+      if (requireAck) { const prev = acks.get(ackId); acks.set(ackId, { message, requestedAt: Date.now(), target, by: (prev && prev.by) || new Map() }); }
+      return targets(target).map((ws) => send(ws, { t: 'chime', message, requireAck: !!requireAck, ackId })).length;
+    },
+    // Eyes-on status for an ackId: who confirmed they're watching, and who (among current
+    // viewers of the requested target) is still pending — the AFK signal.
+    getAck: (ackId = 'ready') => {
+      const a = acks.get(ackId);
+      const viewerIds = targets((a && a.target) || 'all').map((ws) => conns.get(ws)).filter(Boolean).map((c) => c.userId);
+      const by = a ? [...a.by.entries()].map(([userId, v]) => ({ userId, userName: v.userName, at: v.at })) : [];
+      const acked = new Set(by.map((b) => b.userId));
+      return { ackId, message: a ? a.message : null, requestedAt: a ? a.requestedAt : null, acked: by.length > 0, count: by.length, by, pending: viewerIds.filter((u) => u && !acked.has(u)) };
+    },
     closePoll: (promptId) => { const p = polls.get(promptId); if (p) p.open = false; serverApply({ path: 'polls/' + promptId + '/open', verb: 'set', value: false }); return { promptId, ...tally(promptId) }; },
     // Debug snapshot for the ?debug overlay + the presenter_debug MCP tool.
     // state = current authoritative view (proto: polls; the core store extends this
