@@ -114,6 +114,12 @@ export const tools = [
     handler: async ({ beat }) => need().appendBeat(beat)
   },
   {
+    name: 'presenter_ready',
+    description: 'Ring a gentle READY chime + show a "Ready to start?" banner on connected displays. Use when the deck is built and you want the human — who keeps the tab in the background while you work — to bring it forward. Then wait for their go-ahead before presenting.',
+    input: { type: 'object', properties: { message: { type: 'string', default: 'Ready to start?', description: 'Banner text shown on the display' }, target: { type: 'string', default: 'all', description: 'userId | all | participant | presenter | ai' } } },
+    handler: async ({ message = 'Ready to start?', target = 'all' } = {}) => ({ chimed: need().chime({ message, target }) })
+  },
+  {
     name: 'presenter_raf',
     description: 'RAF metrics from the op-log: peer-catalysis ratio (peer-visible peer actions), teacher-dependency (AI/GM-catalyzed), interaction-graph density (peer->peer response edges).',
     input: { type: 'object', properties: { windowMs: { type: 'number', default: 5000, description: 'Response window for peer->peer interaction edges' } } },

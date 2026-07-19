@@ -675,6 +675,10 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     // display descriptor so a RECONNECTING client converges to idle branding, not the stale last content
     // (fixes "stuck on the end card, never reverts to branding"). Use as the standard session-end primitive.
     clear: (target = 'all') => { setDisplay(target, null); return targets(target).map((ws) => send(ws, { t: 'clear' })).length; },
+    // READY chime: a transient signal (NOT a display descriptor — no setDisplay, so it
+    // never re-fires on reconnect). Rings a gentle chime + shows a "Ready to start?"
+    // banner on live clients, so a human keeping the tab backgrounded knows to come look.
+    chime: ({ message = 'Ready to start?', target = 'all' } = {}) => targets(target).map((ws) => send(ws, { t: 'chime', message })).length,
     closePoll: (promptId) => { const p = polls.get(promptId); if (p) p.open = false; serverApply({ path: 'polls/' + promptId + '/open', verb: 'set', value: false }); return { promptId, ...tally(promptId) }; },
     // Debug snapshot for the ?debug overlay + the presenter_debug MCP tool.
     // state = current authoritative view (proto: polls; the core store extends this
