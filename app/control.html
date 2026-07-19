@@ -210,7 +210,7 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   function control(action,args){ if(ws&&ws.readyState===1) ws.send(JSON.stringify({t:'control',action:action,args:args||{}})); }
   function connect(){
     ws=new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host);
-    ws.onopen=function(){ $('led2').classList.add('on'); $('statustext').textContent='connected · '+identity.userName; ws.send(JSON.stringify(Object.assign({t:'hello'},identity))); };
+    ws.onopen=function(){ $('led2').classList.add('on'); $('statustext').textContent='connected · '+identity.userName; ws.send(JSON.stringify(Object.assign({t:'hello'},identity))); refreshModules(); };   // AUT-2b: re-scan modules on every (re)connect so the <select> never goes stale after a server restart / instance-swap / unlock reconnect
     ws.onclose=function(){ $('led2').classList.remove('on'); $('statustext').textContent='disconnected'; renderConfig(); setTimeout(connect,800); };
     ws.onmessage=onMsg;
   }
@@ -246,7 +246,7 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
 
   function refreshModules(){
     var sel=$('mod-select'); var keep=sel.value;   // preserve selection across the async rebuild
-    fetch('/api/modules').then(function(r){return r.json();}).then(function(list){
+    fetch('/api/modules',{cache:'no-store'}).then(function(r){return r.json();}).then(function(list){
       sel.innerHTML='<option value="">— select a module —</option>';
       list.forEach(function(m){ var o=document.createElement('option'); o.value=m.id;
         o.textContent=m.title+' — '+m.beats+' beats/'+m.sections+' sec'+(m.warn?(' ⚠'+m.warn):'')+(m.error?' (ERR)':''); sel.appendChild(o); });
