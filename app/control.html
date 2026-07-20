@@ -98,6 +98,22 @@
   .u-reset{cursor:pointer;opacity:.5;margin-left:4px;font-size:9px;}.u-reset:hover{opacity:1;color:var(--ok);}
   .mini{font-size:11px;padding:3px 6px;}
   textarea{width:100%;box-sizing:border-box;min-height:40px;}
+  /* ATT (Plan 0466 §2.7): attendance overlay — full columns + per-row controls + summary footer. */
+  #ap-attendance{position:fixed;inset:5vh 5vw;z-index:70;background:rgba(6,10,24,.98);border:1px solid #2a3a5a;border-radius:10px;
+    display:none;flex-direction:column;box-shadow:0 12px 44px rgba(0,0,0,.6);}
+  #ap-attendance.open{display:flex;}
+  #att-bar{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid #21314f;}
+  #att-bar>span{font-size:14px;font-weight:600;letter-spacing:.06em;}
+  #att-gate-lbl{margin-left:auto;font-size:11px;color:var(--dim);display:inline-flex;align-items:center;gap:5px;cursor:pointer;}
+  #att-close{font-size:12px;padding:4px 12px;}
+  #att-table{flex:1 1 auto;overflow:auto;padding:6px 16px;}
+  #att-table table{width:100%;border-collapse:collapse;font-size:12px;}
+  #att-table th{text-align:left;color:var(--dim);font-weight:600;padding:5px 8px;border-bottom:1px solid #21314f;position:sticky;top:0;background:rgba(6,10,24,.99);}
+  #att-table td{padding:5px 8px;border-bottom:1px solid #12203a;vertical-align:middle;}
+  #att-table .att-actions{white-space:nowrap;}
+  #att-table .att-actions button{font-size:12px;padding:2px 7px;margin-right:3px;}
+  #att-summary{padding:9px 16px;border-top:1px solid #21314f;font-size:12px;color:var(--dim);}
+  .att-dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;vertical-align:middle;}
 </style>
 </head>
 <body>
@@ -121,7 +137,17 @@
   </div>
   <!-- P2.7: Now Playing show/hide (persisted, default VISIBLE) -->
   <div class="row"><label id="cfg-shownp-lbl" style="cursor:pointer"><input type="checkbox" id="cfg-shownp" checked> Show Now Playing</label></div>
+  <div class="row"><button id="cfg-attendance">👁 Show attendance</button></div>
   <div class="row" style="margin-top:8px"><button id="cfg-close">Close</button></div>
+</div>
+<!-- ATT (Plan 0466 §2.7): attendance overlay — control render = full columns + per-row ↺/👁/🔔
+     buttons + summary footer. Presenter-gated "roster visible to attendees" toggle lives here. -->
+<div id="ap-attendance" role="dialog" aria-label="Attendance">
+  <div id="att-bar"><span>Attendance</span>
+    <label id="att-gate-lbl" title="let attendees see the room roster (default off)"><input type="checkbox" id="att-gate"> roster visible to attendees</label>
+    <button id="att-close">✕ Close</button></div>
+  <div id="att-table"></div>
+  <div id="att-summary"></div>
 </div>
 <!-- P2.7: top frame — ALWAYS-VISIBLE presenter controls (see #topframe CSS note) -->
 <header id="topframe">
@@ -222,6 +248,7 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     if(m.t==='welcome'){ onWelcome(m); return; }   // P5.5: effective granted role (downgrade → unlock)
     if(m.t==='presence'){ users=m.users||[]; renderUsers(); onPresenceRefresh(); return; }
     if(m.t==='mirror'){ onMirror(m); return; }   // MON-2: target user's live display html
+    if(m.t==='attendance'){ onAttendance(m); return; }   // ATT (Plan 0466): roster reply
     if(m.t==='content'){ renderPreview(m.html, m.contentId); return; }
     if(m.t==='clear'){ renderPreview(null,'idle'); return; }
     if(m.t==='result'){ results[m.promptId]=results[m.promptId]||{}; results[m.promptId][m.userId]={type:m.type,value:m.value}; maybeBranch(m); return; }
@@ -514,7 +541,7 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     if(tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT'||(t&&t.isContentEditable)) return;
     if(e.key===' '||e.key==='ArrowRight'){ var nb=$('btn-next'); if(!nb.disabled){ if(e.key===' ') e.preventDefault(); nb.click(); } return; }
     if(e.key==='ArrowLeft'){ var pb=$('btn-prev'); if(!pb.disabled) pb.click(); return; }
-    if(e.key==='Escape'){ if($('ap-config').classList.contains('open')) toggleConfig(false); else $('btn-end').click(); return; }
+    if(e.key==='Escape'){ if($('ap-attendance').classList.contains('open')){ closeAttendance(); return; } if($('ap-config').classList.contains('open')) toggleConfig(false); else $('btn-end').click(); return; }
     if(/^[1-9]$/.test(e.key)){
       if(!module) return;
       var secs = module.sections && module.sections.length ? module.sections : [{title:'(all beats)',beatIds:(module.beats||[]).map(function(b){return b.id;})}];   // same derivation as renderOutline()
@@ -535,6 +562,61 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   }
   $('cfg-shownp').addEventListener('change',function(){ try{ localStorage.setItem(NP_KEY,this.checked?'1':'0'); }catch(e){} applyNowPlaying(); });
   applyNowPlaying();
+
+  // ---- ATT (Plan 0466 §2.7): attendance overlay (control render — full roster + per-row controls) ----
+  // Request/reply, NO standing feed: on open we ask, re-request every ~2s, and re-render ages on a
+  // 1s tick (so seconds count up smoothly between re-requests). Closing stops both. Per-row ↺/👁/🔔
+  // route through handleControl (reset_user / bell+requireAck / bell), targeted at that userId (P2-F).
+  var attReqTimer=null, attTickTimer=null, attLast=null, attAt=0, attRecvCount=0;
+  function attRequest(){ if(ws&&ws.readyState===1) ws.send(JSON.stringify({t:'attendance-request'})); }
+  function openAttendance(){ toggleConfig(false); $('ap-attendance').classList.add('open'); attRequest();
+    if(!attReqTimer) attReqTimer=setInterval(attRequest,2000); }   // re-request every ~2s; the 1s age tick is (re)phased per reply in onAttendance
+  function closeAttendance(){ $('ap-attendance').classList.remove('open');
+    if(attReqTimer){ clearInterval(attReqTimer); attReqTimer=null; }
+    if(attTickTimer){ clearInterval(attTickTimer); attTickTimer=null; } }
+  function attDot(status){ var c=status==='active'?'var(--ok)':(status==='idle'?'var(--warn)':'var(--danger)'); return '<span class="att-dot" style="background:'+c+'" title="'+esc(status)+'"></span>'; }
+  function attFmtIdle(r,extra){ if(!r.everActive) return '—'; return ((r.idleSec||0)+extra)+'s'; }   // never-active ⇒ nominal huge idleSec → show "—"
+  function onAttendance(m){ attLast=m; attAt=Date.now(); attRecvCount++;
+    if(typeof m.rosterVisible==='boolean') $('att-gate').checked=m.rosterVisible;
+    renderAttendance(m);
+    // Phase the 1s age tick to THIS reply so it fires at attAt+1s (floor → +1), giving a clean
+    // per-second count-up between the ~2s re-requests. Re-created each reply keeps it aligned.
+    if(attTickTimer) clearInterval(attTickTimer);
+    if($('ap-attendance').classList.contains('open')) attTickTimer=setInterval(function(){ if(attLast) renderAttendance(attLast); },1000);
+  }
+  function renderAttendance(m){
+    if(!$('ap-attendance').classList.contains('open')) return;
+    var extra=Math.floor((Date.now()-attAt)/1000);   // 1s age tick applied on top of the last reply
+    var roster=(m&&m.roster)||[], sm=(m&&m.summary)||{};
+    var rows=roster.map(function(r){
+      var eyes=(r.eyesOnAgoSec!=null)?((r.eyesOnAgoSec+extra)+'s'):'—';
+      return '<tr>'
+        +'<td>'+attDot(r.status)+esc(r.userName||r.userId)+'</td>'
+        +'<td>'+esc(r.role)+'</td>'
+        +'<td>'+esc(r.status)+'</td>'
+        +'<td>'+attFmtIdle(r,extra)+'</td>'
+        +'<td>'+eyes+'</td>'
+        +'<td>'+esc(r.display||'—')+'</td>'
+        +'<td>'+esc(r.ip||'—')+'</td>'
+        +'<td>'+esc(r.socketId||'—')+'</td>'
+        +'<td class="att-actions">'
+          +'<button data-att-reset="'+esc(r.userId)+'" title="reset to default (follow role display)">↺</button>'
+          +'<button data-att-verify="'+esc(r.userId)+'" title="verify watching (bell + confirm)">👁</button>'
+          +'<button data-att-ring="'+esc(r.userId)+'" title="ring bell (notify)">🔔</button>'
+        +'</td></tr>';
+    }).join('');
+    $('att-table').innerHTML='<table><thead><tr><th>name</th><th>role</th><th>status</th><th>idle</th><th>eyes-on</th><th>sees</th><th>ip</th><th>socketId</th><th>actions</th></tr></thead><tbody>'+(rows||'')+'</tbody></table>';
+    $('att-summary').textContent='🟢 '+(sm.active||0)+' active · 🟡 '+(sm.idle||0)+' idle · 🔴 '+(sm.afk||0)+' afk · '+(sm.total||0)+' total';
+    var t=$('att-table');
+    [].forEach.call(t.querySelectorAll('[data-att-reset]'),function(b){ b.onclick=function(){ control('reset_user',{userId:b.getAttribute('data-att-reset')}); }; });
+    [].forEach.call(t.querySelectorAll('[data-att-verify]'),function(b){ b.onclick=function(){ control('bell',{requireAck:true,target:b.getAttribute('data-att-verify')}); }; });
+    [].forEach.call(t.querySelectorAll('[data-att-ring]'),function(b){ b.onclick=function(){ control('bell',{target:b.getAttribute('data-att-ring')}); }; });
+  }
+  $('cfg-attendance').addEventListener('click',function(e){ e.stopPropagation(); openAttendance(); });
+  $('att-close').addEventListener('click',function(e){ e.stopPropagation(); closeAttendance(); });
+  $('ap-attendance').addEventListener('click',function(e){ e.stopPropagation(); });   // clicks inside stay inside (don't trip the config click-away)
+  $('att-gate').addEventListener('change',function(){ control('set_roster_visible',{value:this.checked}); });
+  window.__att={ open:function(){return $('ap-attendance').classList.contains('open');}, last:function(){return attLast;}, count:function(){return attRecvCount;}, close:closeAttendance, show:openAttendance };   // test hook
 
   // The server echoes the EFFECTIVE granted role in `welcome`; a silent downgrade surfaces
   // as the unlock prompt (or, mid-unlock, as success/"wrong password").

@@ -66,6 +66,20 @@
   #ap-ready .ap-ack:hover{background:#164a2a;color:#eafff6;}
   @keyframes ap-ready-in{from{transform:translateY(-14px);opacity:0}to{transform:translateY(0);opacity:1}}
   @keyframes ap-ready-ring{0%,60%,100%{transform:rotate(0)}70%{transform:rotate(14deg)}80%{transform:rotate(-10deg)}90%{transform:rotate(6deg)}}
+  /* ATT (Plan 0466): attendance overlay — a big clean read-only roster (participant view: dots). */
+  #ap-attendance{position:fixed;inset:6vh 8vw;z-index:82;background:rgba(6,10,24,.98);border:1px solid #2a3a5a;border-radius:12px;
+    display:none;flex-direction:column;box-shadow:0 12px 44px rgba(0,0,0,.6);font:13px/1.5 'Courier New',monospace;color:#cfe9ff;}
+  #ap-attendance.open{display:flex;}
+  #att-bar{display:flex;align-items:center;gap:12px;padding:12px 18px;border-bottom:1px solid #21314f;}
+  #att-bar span{font-size:15px;font-weight:bold;letter-spacing:.06em;}
+  #att-bar button{margin-left:auto;background:#12234a;color:#cfe9ff;border:1px solid #2a3a5a;border-radius:6px;padding:5px 12px;font:inherit;cursor:pointer;}
+  #att-bar button:hover{border-color:#22e5a0;}
+  #att-list{flex:1 1 auto;overflow:auto;padding:12px 18px;}
+  #att-list .att-row{display:flex;align-items:center;gap:10px;padding:6px 4px;border-bottom:1px solid #12203a;}
+  #att-list .att-name{font-weight:bold;color:#eafff6;}
+  #att-list .att-role{font-size:11px;color:#8ab;border:1px solid #2a3a5a;border-radius:8px;padding:0 6px;}
+  #att-summary{padding:10px 18px;border-top:1px solid #21314f;font-size:12px;color:#8ab;}
+  .att-dot{display:inline-block;width:11px;height:11px;border-radius:50%;flex:0 0 auto;}
 </style>
 </head>
 <body>
@@ -78,8 +92,16 @@
   <div class="row"><span class="k">Role</span> <button id="cfg-role-user" class="sel">User</button> <button id="cfg-role-presenter">Presenter</button></div>
   <div class="row" id="cfg-role-pwgroup" style="display:none"><input id="cfg-role-pw" type="password" placeholder="presenter password" autocomplete="off"> <button id="cfg-role-go">Unlock</button><span id="cfg-role-msg"></span></div>
   <div class="row" id="cfg-control-row" style="display:none"><button id="cfg-open-control">▮ Show Presenter Control</button></div>
+  <div class="row" style="margin-top:8px"><button id="cfg-attendance">👁 Show attendance</button></div>
   <div class="rd" id="cfg-readout"></div>
   <div class="row" style="margin-top:8px"><button id="cfg-close">Close</button></div>
+</div>
+<!-- ATT (Plan 0466 §2.7): attendance overlay — participant render = names · role · colored status dot
+     (🟢 active / 🟡 idle / 🔴 afk). Read-only "who's in the room". Hidden until opened; request/reply. -->
+<div id="ap-attendance" role="dialog" aria-label="Attendance">
+  <div id="att-bar"><span>Who's here</span><button id="att-close">✕ Close</button></div>
+  <div id="att-list"></div>
+  <div id="att-summary"></div>
 </div>
 <div id="ap-control-overlay" role="dialog" aria-label="Presenter Control">
   <div id="ap-control-bar"><span>Presenter Control</span><button id="ap-control-close">✕ Close</button></div>
@@ -235,6 +257,7 @@
     else if (m.t === 'clear') showIdle();
     else if (m.t === 'reload') setTimeout(function(){ location.reload(); }, m.delay || 0);
     else if (m.t === 'chime') { onChime(m); }
+    else if (m.t === 'attendance') { onAttendance(m); }
     else if (m.t === 'host') {
       if (m.msg && m.msg.type === 'diff') {
         if (typeof m.msg.version === 'number') lastVersion = Math.max(lastVersion, m.msg.version);
@@ -333,6 +356,40 @@
     if (!requireAck) apReadyTimer = setTimeout(apClearReady, 60000);
     dbg.lastChime = (m && m.message) || 'ready';
   }
+
+  // ---- ATT (Plan 0466 §2.7): attendance overlay (participant render — names/role/dot only) ----
+  // Request/reply, NO standing feed: on open we ask, then re-request every ~2s; closing stops it.
+  // The server redacts by our role — participants get names + role + status; the whole overlay
+  // stays hidden until opened. Gate OFF ⇒ the server answers self-only (handled server-side).
+  var attEl = document.getElementById('ap-attendance');
+  var attReqTimer = null;
+  function attDotColor(status){ return status === 'active' ? '#22e5a0' : (status === 'idle' ? '#ffb454' : '#ff6b6b'); }
+  function attEscape(s){ return (s == null ? '' : ('' + s)).replace(/[&<>"]/g, function(ch){ return ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' })[ch]; }); }
+  function attRequest(){ if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t:'attendance-request' })); }
+  function openAttendance(){
+    document.getElementById('ap-config').classList.remove('open');   // came from Config → close it
+    attEl.classList.add('open');
+    attRequest();
+    if (!attReqTimer) attReqTimer = setInterval(attRequest, 2000);
+  }
+  function closeAttendance(){ attEl.classList.remove('open'); if (attReqTimer){ clearInterval(attReqTimer); attReqTimer = null; } }
+  function onAttendance(m){
+    if (!attEl.classList.contains('open')) return;   // ignore late replies after close
+    var roster = (m && m.roster) || [], sm = (m && m.summary) || {};
+    document.getElementById('att-list').innerHTML = roster.map(function(r){
+      return '<div class="att-row"><span class="att-dot" style="background:' + attDotColor(r.status) + '" title="' + attEscape(r.status) + '"></span>'
+        + '<span class="att-name">' + attEscape(r.userName || r.userId) + '</span>'
+        + '<span class="att-role">' + attEscape(r.role) + '</span></div>';
+    }).join('') || '<div style="opacity:.6">(no one else visible)</div>';
+    document.getElementById('att-summary').textContent =
+      '🟢 ' + (sm.active || 0) + ' active · 🟡 ' + (sm.idle || 0) + ' idle · 🔴 ' + (sm.afk || 0) + ' afk · ' + (sm.total || 0) + ' total';
+  }
+  (function(){
+    var open = document.getElementById('cfg-attendance'); if (open) open.addEventListener('click', function(e){ e.stopPropagation(); openAttendance(); });
+    var close = document.getElementById('att-close'); if (close) close.addEventListener('click', function(e){ e.stopPropagation(); closeAttendance(); });
+    if (attEl) attEl.addEventListener('click', function(e){ e.stopPropagation(); });   // don't let clicks bubble to the config click-away closer
+    document.addEventListener('keydown', function(e){ if (e.key === 'Escape' && attEl.classList.contains('open')) closeAttendance(); });
+  })();
 
   // P3: bottom chat input — always present, enabled only when a listener is attached.
   function sendOp(path, verb, value){ if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t:'op', path:path, verb:verb, value:value, opId: identity.userId + ':' + Date.now() })); }

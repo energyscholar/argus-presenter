@@ -140,6 +140,15 @@ export const tools = [
     handler: async ({ ackId = 'ready' } = {}) => need().getAck(ackId)
   },
   {
+    name: 'presenter_attendance',
+    description: 'Passive/continuous room liveness: roster + summary of connected users. Per user: idleSec (seconds since their last DELIBERATE interaction — the headline number), status (active/idle/afk from thresholds), connectedSec, eyes-on age, current display, ip, socketId. The AI is a controller → UNREDACTED view. Poll on demand (no push). Fresh/reconnected users read afk until they interact.',
+    input: { type: 'object', properties: {
+      activeSec: { type: 'number', default: 30, description: 'idle < this ⇒ active' },
+      afkSec: { type: 'number', default: 120, description: 'idle ≥ this ⇒ afk (between ⇒ idle)' }
+    } },
+    handler: async ({ activeSec = 30, afkSec = 120 } = {}) => need().attendance({ activeSec, afkSec, viewerRole: 'ai' })
+  },
+  {
     name: 'presenter_raf',
     description: 'RAF metrics from the op-log: peer-catalysis ratio (peer-visible peer actions), teacher-dependency (AI/GM-catalyzed), interaction-graph density (peer->peer response edges).',
     input: { type: 'object', properties: { windowMs: { type: 'number', default: 5000, description: 'Response window for peer->peer interaction edges' } } },
