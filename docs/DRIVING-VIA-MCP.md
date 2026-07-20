@@ -30,7 +30,7 @@ or env is required. Dependencies (`@modelcontextprotocol/sdk`, `zod`, `ws`) reso
 from the repo's `node_modules`. After adding the config, reconnect MCP (`/mcp`);
 the `presenter_*` tools then appear in-session.
 
-## The tool surface (18 tools)
+## The tool surface (20 tools)
 
 | Tool | Purpose |
 |------|---------|
@@ -47,6 +47,8 @@ the `presenter_*` tools then appear in-session.
 | `presenter_verify_watching` `{message?,target?,ackId?,bell?}` | Eyes-on handshake: chime + banner with a CONFIRM button the viewer must click — proves eyes-on / not-AFK; the banner persists until confirmed. `bell:false` = silent ask (banner only). |
 | `presenter_check_ack` `{ackId?}` | Poll the eyes-on handshake: who confirmed watching (timestamps) and who is still `pending` (AFK). Wait until `acked` before presenting. |
 | `presenter_attendance` `{activeSec?,afkSec?}` | Passive room liveness: roster + summary of connected users with `idleSec` (since last deliberate interaction), `status` (active/idle/afk), `connectedSec`, eyes-on age, current display, ip/socketId. Unredacted (AI is a controller). Poll on demand. |
+| `presenter_voice_enable` `{target?}` | **Inbound voice (Plan 0470).** REQUEST that a target enable mic capture — sends a `voice_enable` signal. The human still passes the browser mic-permission prompt (uncoerceable) and sees an on-air badge with one-click stop; this can never silently hot a mic. Recognized speech flows back — poll `presenter_transcript`. Also warms the recognizer. Needs a secure context (localhost/HTTPS). |
+| `presenter_transcript` `{since?}` | **Inbound voice (Plan 0470).** Cursored poll of recognized speech: returns transcript entries `{seq,userId,userName,text,final,ts,conf}` with `seq > since`, plus a next `cursor`. Call with `since:0`, then pass the returned cursor for only-new entries. Transcripts are ephemeral (in-memory ring) unless `PRESENTER_TRANSCRIPT_PERSIST` is set. |
 | `presenter_debug` / `presenter_health` | Introspection / health. |
 | `presenter_raf` | RAF control-plane action. |
 
