@@ -276,6 +276,17 @@
       try { if (window.APVoice) window.APVoice.enable(m.opts || {}).then(function(){ if (window.__apVoicePaint) window.__apVoicePaint(); }).catch(function(e){ dbgLog({ t:'voice_error', msg: String(e && e.message || e) }); }); }
       catch(e){ dbgLog({ t:'voice_error', msg: String(e && e.message || e) }); }
     }
+    else if (m.t === 'voice_dropped') {
+      // F1 (never-silent): the server throttled/dropped some audio — flash a brief, non-intrusive
+      // notice in the on-air badge so the speaker knows their words were cut, not silently lost.
+      try {
+        var vb = document.getElementById('ap-voice-badge');
+        if (vb) { var lbl = vb.querySelector('span:nth-child(2)') || vb; if (!lbl.__apPrev) lbl.__apPrev = lbl.textContent;
+          lbl.textContent = '⚠ audio dropped'; clearTimeout(lbl.__apT);
+          lbl.__apT = setTimeout(function(){ lbl.textContent = lbl.__apPrev || 'Mic on-air'; lbl.__apPrev = null; }, 1500); }
+      } catch(e){}
+      dbgLog(m);
+    }
     else if (m.t === 'voice_status') { dbgLog(m); /* recognizer ready / status */ }
     else if (m.t === 'transcript') { if (window.APVoiceHost && typeof window.APVoiceHost.onTranscript === 'function') window.APVoiceHost.onTranscript(m); }
     else if (m.t === 'host') {

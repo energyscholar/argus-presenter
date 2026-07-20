@@ -99,13 +99,52 @@ test('T-BINARY gated by active session, exempt from durable-op cap, byte-rate ca
     await until(() => s.getTranscripts(0).transcripts.length >= 1, 'session-1 finalized');
     expect('binary frames never counted against the durable-op rate cap', s.telemetry().ops.throttled === 0, 'throttled=' + s.telemetry().ops.throttled);
 
-    // 3) per-conn byte-rate cap: push ~160 KB in one window -> cap enforced + logged (never silent).
+    // 3) token-bucket flood control (F1): a burst EXCEEDING one full segment's capacity (>960 KB)
+    //    throttles the overflow AND surfaces it (rate-drop log + a voice_dropped frame) — never silent.
     spk.ws.send(JSON.stringify({ t: 'voice_seg_start', seq: 2 }));
-    for (let i = 0; i < 40; i++) spk.ws.send(pcm(2000));   // 40 * 4000 B = 160 KB > 64 KB/s cap
+    for (let i = 0; i < 11; i++) spk.ws.send(pcm(50000));   // 11 * 100 KB = 1.1 MB > 960 KB capacity
     spk.ws.send(JSON.stringify({ t: 'voice_seg_end', seq: 2 }));
-    await wait(300);
-    expect('byte-rate cap enforced + logged', log.tail(400).some((e) => e.tag === 'voice' && e.msg === 'byterate-cap'));
+    await until(() => spk.msgs.some((m) => m.t === 'voice_dropped'), 'flood surfaced to speaker');
+    expect('over-capacity flood throttled + logged (rate-drop)', log.tail(400).some((e) => e.tag === 'voice' && e.msg === 'rate-drop'));
+    expect('drop SURFACED to the speaker (never silent)', spk.msgs.some((m) => m.t === 'voice_dropped' && m.reason === 'rate'));
     pres.ws.close(); spk.ws.close();
+  } finally { await s.close(); }
+});
+
+test('T-LONG-UTTERANCE (F1) a >2s burst arrives WHOLE (no truncation); force-cut still bounds a 30s+ babble', async () => {
+  process.env.PRESENTER_ASR_CMD = 'node ' + STUB;
+  delete process.env.AP_ASR_COUNT_FILE;
+  log.clear();
+  const s = await createServer({ port: 0 });
+  try {
+    const spk = await client(s.url(), { userId: 'u1', userName: 'A', role: 'participant' });
+    await client(s.url(), { userId: 'gm', userName: 'GM', role: 'presenter' });
+
+    // A single final-only burst of ~128 KB (~4s of 16 kHz PCM16) — well over the old 64 KB window cap,
+    // well under the 960 KB force-cut. It MUST be accumulated whole.
+    const N = 128 * 1024;                       // 128 KB total
+    const samples = N / 2;                       // 65536 samples
+    spk.ws.send(JSON.stringify({ t: 'voice_seg_start', seq: 1 }));
+    // send in 8 frames of 16 KB (8192 samples) — mirrors the worklet's 100ms batches
+    for (let i = 0; i < 8; i++) spk.ws.send(pcm(8192));
+    spk.ws.send(JSON.stringify({ t: 'voice_seg_end', seq: 1 }));
+    await until(() => s.getTranscripts(0).transcripts.length >= 1, 'long segment recognized');
+    // BYTE INTEGRITY (the F1 regression): the finalized segment must carry ALL 128 KB — the old
+    // per-second cap truncated any >2s utterance to ~64000 B.
+    const fin = log.tail(400).find((e) => e.tag === 'voice' && e.msg === 'seg-final');
+    expect('segment finalized with the FULL byte count (no ~2s truncation)', fin && fin.fields.bytes === N, 'bytes=' + (fin && fin.fields.bytes) + ' expected=' + N);
+    // No throttle/force-cut fired for a legit sub-capacity utterance.
+    expect('no voice_dropped for a legit >2s utterance (F1 fixed)', !spk.msgs.some((m) => m.t === 'voice_dropped'), JSON.stringify(spk.msgs.filter((m) => m.t === 'voice_dropped')));
+    expect('no force-cut for a 128 KB (~4s) utterance', !log.tail(400).some((e) => e.tag === 'voice' && e.msg === 'seg-forcecut'));
+
+    // (b) a burst EXCEEDING one segment's capacity is bounded by the FORCE-CUT, NOT silently bucket-dropped.
+    log.clear();
+    spk.ws.send(JSON.stringify({ t: 'voice_seg_start', seq: 2 }));
+    for (let i = 0; i < 10; i++) spk.ws.send(pcm(48000));   // 10 * 96000 B = 960000 B = VOICE_SEG_MAX_BYTES
+    spk.ws.send(JSON.stringify({ t: 'voice_seg_end', seq: 2 }));
+    await until(() => log.tail(400).some((e) => e.tag === 'voice' && e.msg === 'seg-forcecut'), 'force-cut bounds the over-capacity segment');
+    expect('over-capacity segment bounded by force-cut, not silently bucket-dropped', !spk.msgs.some((m) => m.t === 'voice_dropped'));
+    spk.ws.close();
   } finally { await s.close(); }
 });
 
