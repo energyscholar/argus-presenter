@@ -114,6 +114,9 @@
 <div id="stage"><div id="idle"><img class="ap-idle-brand" src="/branding/argus-presenter.svg" alt="Argus Presenter — awaiting content"></div></div>
 <div id="who"></div>
 <div id="ap-chat"><input id="ap-chat-input" disabled placeholder="chat (disabled until a listener is attached)"><button id="ap-chat-send" disabled>Send</button></div>
+<!-- Plan 0470 Tier 0: the ONLY voice code loaded by default (~sub-1KB). It does nothing until
+     enable(), which dynamic-imports the Tier-1 capture engine on demand (T-LAZY). -->
+<script src="/lib/voice-stub.js"></script>
 <script>
 (function(){
   var NS = 'argus-presenter';
@@ -217,6 +220,9 @@
     ws.onerror = function(){ /* onclose handles reconnect */ };
     ws.onmessage = onMessage;
   }
+  // Plan 0470: hand the live socket to the voice stub so Tier-1 capture shares THIS WebSocket
+  // for the binary PCM lane (no second connection). getSocket() always returns the current ws.
+  window.APVoiceHost = { getSocket: function(){ return ws; }, onTranscript: null };
 
   var lastSnapshot = null;   // most recent server snapshot (relayed into new content frames)
   // F1: keep lastSnapshot CURRENT by merging live diffs into it, so a late-mounted
@@ -259,6 +265,15 @@
     else if (m.t === 'reload') setTimeout(function(){ location.reload(); }, m.delay || 0);
     else if (m.t === 'chime') { onChime(m); }
     else if (m.t === 'attendance') { onAttendance(m); }
+    else if (m.t === 'voice_enable') {
+      // Plan 0470 (RT-9): a REQUEST only. enable() triggers the browser mic-permission prompt
+      // (uncoerceable) and, on grant, shows the on-air badge + one-click stop. We never capture
+      // without that grant. Errors (no secure context / no AudioWorklet) are surfaced, not silent.
+      try { if (window.APVoice) window.APVoice.enable(m.opts || {}).catch(function(e){ dbgLog({ t:'voice_error', msg: String(e && e.message || e) }); }); }
+      catch(e){ dbgLog({ t:'voice_error', msg: String(e && e.message || e) }); }
+    }
+    else if (m.t === 'voice_status') { dbgLog(m); /* recognizer ready / status */ }
+    else if (m.t === 'transcript') { if (window.APVoiceHost && typeof window.APVoiceHost.onTranscript === 'function') window.APVoiceHost.onTranscript(m); }
     else if (m.t === 'host') {
       if (m.msg && m.msg.type === 'diff') {
         if (typeof m.msg.version === 'number') lastVersion = Math.max(lastVersion, m.msg.version);
