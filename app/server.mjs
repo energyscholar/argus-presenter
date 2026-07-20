@@ -404,7 +404,9 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         byUser.set(c.userId, ws);
         // welcome.role = the EFFECTIVE granted role, so the client learns if it was
         // silently downgraded (wrong/absent password) and can surface feedback.
-        send(ws, { t: 'welcome', userId: c.userId, socketId: c.id, role: c.role });
+        // RT-26 consent surface: tell every client whether recognized speech is being written to
+        // disk. Default false (ephemeral-only) — saving people's words silently is a consent violation.
+        send(ws, { t: 'welcome', userId: c.userId, socketId: c.id, role: c.role, transcriptPersisting: TRANSCRIPT_PERSIST });
         // C4/X1: converge the (re)connecting client. If it reports a lastVersion we
         // can still replay from the op-log, send only the MISSED ops (resync);
         // otherwise a full role-filtered snapshot (Memento).
@@ -736,7 +738,20 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   let voiceSessions = 0;                 // active voice sessions (capped, RT-22)
   const transcripts = [];                // cursored in-memory ring (presenter_transcript reads this)
   let transcriptSeq = 0;
-  const TRANSCRIPT_LOG = process.env.PRESENTER_TRANSCRIPT_LOG || null;   // optional JSONL append sink
+  // RT-26 persistence policy. Recognized text is EPHEMERAL BY DEFAULT — it lives ONLY in the
+  // bounded ring above; ring eviction / restart losing history is INTENDED. Disk persistence is
+  // OPT-IN via PRESENTER_TRANSCRIPT_PERSIST; when ON, one JSONL line per FINAL transcript is
+  // appended to a STABLE file under PRESENTER_TRANSCRIPT_DIR (so a restart appends, not truncates).
+  // Audio segment WAVs are ALWAYS deleted after ASR regardless of the flag — only text is ever
+  // persistable. When ON, clients are TOLD (welcome.transcriptPersisting) — never save silently.
+  const TRANSCRIPT_PERSIST = /^(1|true|yes|on)$/i.test(process.env.PRESENTER_TRANSCRIPT_PERSIST || '');
+  const TRANSCRIPT_DIR = process.env.PRESENTER_TRANSCRIPT_DIR || join(__dirname, '..', '.transcripts');
+  const TRANSCRIPT_FILE = join(TRANSCRIPT_DIR, 'transcripts.jsonl');
+  function persistTranscript(e) {
+    if (!TRANSCRIPT_PERSIST) return;   // default OFF: nothing touches disk
+    try { mkdirSync(TRANSCRIPT_DIR, { recursive: true }); appendFileSync(TRANSCRIPT_FILE, JSON.stringify({ ts: e.ts, userId: e.userId, userName: e.userName, seq: e.seq, text: e.text, conf: e.conf }) + '\n'); }
+    catch (err) { log.warn('voice', 'transcript-persist-fail', { msg: String(err && err.message || err) }); }
+  }
   function ensureAsr() {
     if (!asr) asr = createAsr({ cwd: join(__dirname, '..'), onReady: () => announceVoiceStatus({ ready: true }) });
     return asr;
@@ -756,7 +771,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   function emitTranscript({ userId, userName, text, conf, seq }) {
     const entry = { seq: ++transcriptSeq, userId, userName, text, conf: (conf == null ? null : conf), final: true, ts: Date.now() };
     transcripts.push(entry); if (transcripts.length > TRANSCRIPT_RING) transcripts.shift();
-    if (TRANSCRIPT_LOG) { try { appendFileSync(TRANSCRIPT_LOG, JSON.stringify(entry) + '\n'); } catch (e) {} }
+    persistTranscript(entry);   // RT-26: no-op unless PRESENTER_TRANSCRIPT_PERSIST is ON
     for (const [ws, c] of conns.entries()) if (c.role === 'presenter' || c.role === 'ai') send(ws, { t: 'transcript', ...entry });
     emit('transcript', entry);
     log.info('voice', 'transcript', { userId, seq, len: (text || '').length });

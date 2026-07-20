@@ -4,6 +4,8 @@ node_modules/
 # Plan 0470: ASR scratch (segment WAVs / stub worker counters) never committed
 .asr-cache/
 *.asr-count
+# Plan 0470 (RT-26): opt-in transcript persistence sink stays out of the repo
+.transcripts/
 /harness/_shots/
 test/screenshots/
 *.tmp
