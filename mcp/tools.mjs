@@ -160,6 +160,15 @@ export const tools = [
     handler: async ({ since = 0 } = {}) => need().getTranscripts(since)
   },
   {
+    name: 'presenter_inbox',
+    description: 'Plan 0472 (unified inbox): cursored + optional long-poll read of the ONE voice+text input stream — the standing consumer surface for a wearable/orchestration loop. Returns items {seq,kind:"voice"|"text",userId,userName,role,text,conf,final,ts,sessionId} with seq > since, interleaved by arrival seq, plus a next cursor. Call with since=0 first, then pass the returned cursor to get only new items. With waitMs>0 it LONG-POLLS: returns immediately if anything is newer than since, else blocks server-side until the next item arrives or waitMs elapses (near-real-time, no polling storm; one server-side waiter, always cleaned up). NOTE: `final` = segment-final ASR result (this recognition pass is done), NOT that the speaker finished their turn. Superset of presenter_transcript (which is the voice-only view).',
+    input: { type: 'object', properties: {
+      since: { type: 'number', default: 0, description: 'Return items with seq greater than this cursor (0 = from the start of the ring)' },
+      waitMs: { type: 'number', default: 0, description: 'Long-poll budget in ms. 0 = return immediately (instantaneous poll); >0 = block up to this long for the next item, then return (possibly empty).' }
+    } },
+    handler: async ({ since = 0, waitMs = 0 } = {}) => need().getInbox(since, waitMs)
+  },
+  {
     name: 'presenter_raf',
     description: 'RAF metrics from the op-log: peer-catalysis ratio (peer-visible peer actions), teacher-dependency (AI/GM-catalyzed), interaction-graph density (peer->peer response edges).',
     input: { type: 'object', properties: { windowMs: { type: 'number', default: 5000, description: 'Response window for peer->peer interaction edges' } } },

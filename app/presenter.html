@@ -428,8 +428,11 @@
   // P3: bottom chat input — always present, enabled only when a listener is attached.
   function sendOp(path, verb, value){ if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t:'op', path:path, verb:verb, value:value, opId: identity.userId + ':' + Date.now() })); }
   function updateChat(n){ var en = (n|0) > 0; var i = document.getElementById('ap-chat-input'), b = document.getElementById('ap-chat-send'); if (i){ i.disabled = !en; i.placeholder = en ? 'type a message…' : 'chat (disabled until a listener is attached)'; } if (b) b.disabled = !en; }
+  // Plan 0472: typed text is FIRST-CLASS input — a {t:'chat'} message the server lands in the unified
+  // inbox with the connection's server-authoritative identity (and dual-writes the display slice).
+  function sendChat(text){ if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t:'chat', text: text, id: identity.userId + '-' + Date.now() })); }
   (function(){ var b = document.getElementById('ap-chat-send'), i = document.getElementById('ap-chat-input');
-    function go(){ var v = i.value; if (!v || i.disabled) return; sendOp('chat', 'add', { id: identity.userId + '-' + Date.now(), text: v, name: identity.userName }); i.value = ''; }
+    function go(){ var v = i.value; if (!v || i.disabled) return; sendChat(v); i.value = ''; }
     b.addEventListener('click', go);
     i.addEventListener('keydown', function(e){ if (e.key === 'Enter') go(); });
   })();

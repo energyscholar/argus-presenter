@@ -138,7 +138,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   const polls = new Map();     // promptId -> {spec, votes:Map(userId->{value,userName,ts}), open}
   const acks = new Map();      // ackId -> { message, requestedAt, target, by:Map(userId->{userName,at}) } — eyes-on handshake
   const lastResults = {};      // PRIM-results: promptId -> { userId -> {type,value} } (last beat result per user)
-  const listeners = { presence: [], result: [], poll: [], transcript: [] };
+  const listeners = { presence: [], result: [], poll: [], transcript: [], inbox: [] };
   const emit = (ev, data) => listeners[ev].forEach((cb) => { try { cb(data); } catch (e) {} });
 
   const CONTROL = join(__dirname, 'control.html');
@@ -489,6 +489,16 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         voiceSegStart(c, ws, m);
       } else if (m.t === 'voice_seg_end') {
         voiceSegFinalize(c, ws, {});   // finalize -> WAV -> WARM ASR -> transcript out
+      } else if (m.t === 'chat') {
+        // Plan 0472: typed text is FIRST-CLASS input. Land it in the unified inbox attributed to the
+        // SERVER-AUTHORITATIVE connection identity (never the client payload). D5 = DUAL-WRITE: also
+        // drive the chat STORE slice so the existing read-perm'd chat display (P3) keeps working.
+        if (c && typeof m.text === 'string' && m.text.length) {
+          c.lastActive = Date.now();   // ATT: typing = deliberate human interaction
+          emitInbox({ kind: 'text', userId: c.userId, userName: c.userName, role: c.role, text: m.text, conf: null, final: true });
+          const id = (typeof m.id === 'string' && m.id) ? m.id : (c.userId + '-' + Date.now());
+          handleOp(c, { path: 'chat', verb: 'add', value: { id, text: m.text, name: c.userName } });   // display slice (best-effort; perm-gated)
+        }
       }
     });
     ws.on('close', () => {
@@ -742,8 +752,18 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   let asr = null;
   const segTimeoutMs = parseInt(process.env.PRESENTER_VOICE_SEG_TIMEOUT_MS || '3000', 10);   // RT-14 (per-server; test-overridable)
   let voiceSessions = 0;                 // active voice sessions (capped, RT-22)
-  const transcripts = [];                // cursored in-memory ring (presenter_transcript reads this)
-  let transcriptSeq = 0;
+  // Plan 0472: the ONE unified voice+text INBOX. Voice transcripts AND typed text land here as a
+  // single cursored ring; `kind` discriminates them and one global monotonic `seq` interleaves them
+  // by arrival. getTranscripts is a kind==='voice' VIEW over this ring (back-compat alias).
+  const inbox = [];                      // cursored in-memory ring (presenter_inbox / presenter_transcript read this)
+  let inboxSeq = 0;
+  // A stable id for this server instance's session — every inbox item carries it so a consumer can
+  // tell a fresh server run from a resumed one (the ring is in-memory; a restart starts a new session).
+  const SESSION_ID = 'sess-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+  // Long-poll waiters (Plan 0472): each pending presenter_inbox({waitMs}) that had nothing ready
+  // registers ONE waiter here; it is resolved (and removed) on the next emit, at its timeout, or on
+  // server close. Never left dangling — no leaked timers or promises.
+  const inboxWaiters = new Set();
   // RT-26 persistence policy. Recognized text is EPHEMERAL BY DEFAULT — it lives ONLY in the
   // bounded ring above; ring eviction / restart losing history is INTENDED. Disk persistence is
   // OPT-IN via PRESENTER_TRANSCRIPT_PERSIST; when ON, one JSONL line per FINAL transcript is
@@ -753,9 +773,11 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   const TRANSCRIPT_PERSIST = /^(1|true|yes|on)$/i.test(process.env.PRESENTER_TRANSCRIPT_PERSIST || '');
   const TRANSCRIPT_DIR = process.env.PRESENTER_TRANSCRIPT_DIR || join(__dirname, '..', '.transcripts');
   const TRANSCRIPT_FILE = join(TRANSCRIPT_DIR, 'transcripts.jsonl');
-  function persistTranscript(e) {
+  // RT-26 (Plan 0472: applies to TEXT too). Persist ONE JSONL line per inbox item — voice or text —
+  // only when PRESENTER_TRANSCRIPT_PERSIST is ON. Default OFF ⇒ nothing touches disk (ephemeral ring).
+  function persistInboxItem(e) {
     if (!TRANSCRIPT_PERSIST) return;   // default OFF: nothing touches disk
-    try { mkdirSync(TRANSCRIPT_DIR, { recursive: true }); appendFileSync(TRANSCRIPT_FILE, JSON.stringify({ ts: e.ts, userId: e.userId, userName: e.userName, seq: e.seq, text: e.text, conf: e.conf }) + '\n'); }
+    try { mkdirSync(TRANSCRIPT_DIR, { recursive: true }); appendFileSync(TRANSCRIPT_FILE, JSON.stringify({ ts: e.ts, kind: e.kind, userId: e.userId, userName: e.userName, role: e.role, seq: e.seq, text: e.text, conf: e.conf }) + '\n'); }
     catch (err) { log.warn('voice', 'transcript-persist-fail', { msg: String(err && err.message || err) }); }
   }
   function ensureAsr() {
@@ -774,13 +796,32 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     h.write('data', 36); h.writeUInt32LE(pcm.length, 40);
     return Buffer.concat([h, pcm]);
   }
-  function emitTranscript({ userId, userName, text, conf, seq }) {
-    const entry = { seq: ++transcriptSeq, userId, userName, text, conf: (conf == null ? null : conf), final: true, ts: Date.now() };
-    transcripts.push(entry); if (transcripts.length > TRANSCRIPT_RING) transcripts.shift();
-    persistTranscript(entry);   // RT-26: no-op unless PRESENTER_TRANSCRIPT_PERSIST is ON
-    for (const [ws, c] of conns.entries()) if (c.role === 'presenter' || c.role === 'ai') send(ws, { t: 'transcript', ...entry });
-    emit('transcript', entry);
-    log.info('voice', 'transcript', { userId, seq, len: (text || '').length });
+  // Plan 0472: land ONE item into the unified inbox. The item is a FLAT, EXTENSIBLE object — a future
+  // increment adds fields (turnId, turnComplete, annotations{...}, identity{...}, dropped) WITHOUT
+  // overloading these. `final` means "segment-final ASR result" (this recognition pass is complete) —
+  // it does NOT mean the speaker's turn is over; a future `turnComplete` will signal turn-end.
+  function emitInbox({ kind, userId, userName, role, text, conf = null, final = true, sessionId }) {
+    const entry = {
+      seq: ++inboxSeq, kind, userId, userName, role: role || null,
+      text, conf: (conf == null ? null : conf), final: final !== false,
+      ts: Date.now(), sessionId: sessionId || SESSION_ID,
+    };
+    inbox.push(entry); if (inbox.length > TRANSCRIPT_RING) inbox.shift();
+    persistInboxItem(entry);   // RT-26: no-op unless PRESENTER_TRANSCRIPT_PERSIST is ON (voice AND text)
+    // Back-compat: voice items still surface to control roles as {t:'transcript'} (presenter voice host).
+    if (kind === 'voice') {
+      for (const [ws, c] of conns.entries()) if (c.role === 'presenter' || c.role === 'ai') send(ws, { t: 'transcript', ...entry });
+      emit('transcript', entry);
+    }
+    emit('inbox', entry);
+    // Wake every pending long-poll waiter (each resolves with what arrived and removes itself).
+    for (const w of [...inboxWaiters]) w.wake();
+    log.info('voice', 'inbox', { kind, userId, seq: entry.seq, len: (text || '').length });
+    return entry;
+  }
+  // Back-compat shim: voice-path callers still call emitTranscript(); it is kind:'voice' into the inbox.
+  function emitTranscript({ userId, userName, role, text, conf }) {
+    return emitInbox({ kind: 'voice', userId, userName, role, text, conf, final: true });
   }
   function voiceArmTimeout(c, ws) {   // RT-14: an open segment starved of frames is flushed/discarded
     const v = c.voice; if (!v) return;
@@ -838,7 +879,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     const result = await ensureAsr().recognize(wavPath, seq);
     try { unlinkSync(wavPath); } catch (e) {}
     if (!result || !result.text) { log.info('voice', 'no-text', { socketId: c.id, seq }); return; }
-    emitTranscript({ userId: c.userId, userName: c.userName, text: result.text, conf: result.conf, seq });
+    emitTranscript({ userId: c.userId, userName: c.userName, role: c.role, text: result.text, conf: result.conf });
   }
 
   const api = {
@@ -893,8 +934,32 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     // the client still goes through the browser mic-permission prompt (uncoerceable, RT-9) — it
     // can never silently hot a participant's mic. Also warms the recognizer (RT-25).
     voiceEnable: (target = 'all') => { ensureAsr(); return targets(target).map((ws) => send(ws, { t: 'voice_enable' })).length; },
-    // Cursored read of recognized speech. Returns entries with seq > since + a next cursor.
-    getTranscripts: (since = 0) => ({ transcripts: transcripts.filter((t) => t.seq > (since || 0)), cursor: transcriptSeq }),
+    // Cursored read of recognized speech — VOICE-ONLY view over the unified inbox (back-compat alias).
+    // Returns voice entries with seq > since + the (global) next cursor.
+    getTranscripts: (since = 0) => ({ transcripts: inbox.filter((t) => t.kind === 'voice' && t.seq > (since || 0)), cursor: inboxSeq }),
+    // Plan 0472: cursored + optional long-poll read of the UNIFIED inbox (superset of getTranscripts).
+    // Returns items with seq > since (interleaved voice+text, seq-ordered) + a next cursor. With
+    // waitMs > 0 it LONG-POLLS: returns immediately if anything is already newer than `since`, else
+    // registers ONE server-side waiter that resolves on the next emit or at the timeout. The `since`
+    // arg is a MANUAL cursor today; the {items,cursor} contract also accommodates a future auto-cursor
+    // (server-held per-consumer) mode and a companion presenter_situation() tool without a reshape.
+    getInbox: (since = 0, waitMs = 0) => {
+      const s = since || 0;
+      const ready = inbox.filter((i) => i.seq > s);
+      if (ready.length || !waitMs) return { items: ready, cursor: inboxSeq };
+      return new Promise((resolve) => {
+        const w = { settled: false };
+        w.wake = () => {
+          if (w.settled) return; w.settled = true;
+          clearTimeout(w.timer); inboxWaiters.delete(w);
+          resolve({ items: inbox.filter((i) => i.seq > s), cursor: inboxSeq });   // emit-woke: new items; timeout: empty
+        };
+        w.timer = setTimeout(w.wake, waitMs);
+        w.timer.unref?.();
+        inboxWaiters.add(w);
+      });
+    },
+    getInboxWaiters: () => inboxWaiters.size,   // test/observability hook: assert no waiter leak
     // Clear the display back to idle/branding. Sends {t:'clear'} to live clients AND drops the stored
     // display descriptor so a RECONNECTING client converges to idle branding, not the stale last content
     // (fixes "stuck on the end card, never reverts to branding"). Use as the standard session-end primitive.
@@ -1072,7 +1137,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       };
     },
     store,
-    close: () => new Promise((res) => { clearInterval(heartbeat); /* Plan 0468 (INV-7) */ if (ephTimer) clearTimeout(ephTimer); for (const t of hotTimers.values()) clearTimeout(t); hotTimers.clear(); for (const [, c] of conns) { if (c.voice && c.voice.timer) clearTimeout(c.voice.timer); } if (asr) { try { asr.close(); } catch (e) {} asr = null; } watcher && watcher.close(); wss.clients.forEach((c) => c.close()); httpServer.close(() => res()); }),
+    close: () => new Promise((res) => { clearInterval(heartbeat); /* Plan 0468 (INV-7) */ if (ephTimer) clearTimeout(ephTimer); for (const t of hotTimers.values()) clearTimeout(t); hotTimers.clear(); for (const w of [...inboxWaiters]) w.wake(); /* Plan 0472: drain pending long-poll waiters (resolve, no dangling) */ for (const [, c] of conns) { if (c.voice && c.voice.timer) clearTimeout(c.voice.timer); } if (asr) { try { asr.close(); } catch (e) {} asr = null; } watcher && watcher.close(); wss.clients.forEach((c) => c.close()); httpServer.close(() => res()); }),
     _http: httpServer,
   };
 
