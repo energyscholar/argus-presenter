@@ -95,6 +95,13 @@
   <div class="row" id="cfg-role-pwgroup" style="display:none"><input id="cfg-role-pw" type="password" placeholder="presenter password" autocomplete="off"> <button id="cfg-role-go">Unlock</button><span id="cfg-role-msg"></span></div>
   <div class="row" id="cfg-control-row" style="display:none"><button id="cfg-open-control">▮ Show Presenter Control</button></div>
   <div class="row" style="margin-top:8px"><button id="cfg-attendance">👁 Show attendance</button></div>
+  <!-- AP-VOICE:BEGIN -->
+  <!-- Plan 0470 (RT-27): the ONLY voice on/off control lives here in Settings — never as
+       standalone chrome. Default OFF (Tier-0 stub only, nothing loaded). ON => APVoice.enable()
+       => browser mic prompt; Tier-1 + capture begin only on grant. Deny => reverts to OFF + msg.
+       Plan 0473 P0: this whole block is STRIPPED server-side when PRESENTER_VOICE_ENABLED is off. -->
+  <div class="row" id="cfg-voice-row" style="margin-top:8px"><span class="k">Voice</span> <button id="cfg-voice-toggle" aria-pressed="false">🎙 Mic: off</button><span id="cfg-voice-msg" style="color:#f97;font-size:11px;flex-basis:100%;margin:0"></span></div>
+  <!-- AP-VOICE:END -->
   <div class="rd" id="cfg-readout"></div>
   <div class="row" style="margin-top:8px"><button id="cfg-close">Close</button></div>
 </div>
@@ -116,6 +123,13 @@
 <div id="stage"><div id="idle"><img class="ap-idle-brand" src="/branding/argus-presenter.svg" alt="Argus Presenter — awaiting content"></div></div>
 <div id="who"></div>
 <div id="ap-chat"><input id="ap-chat-input" disabled placeholder="chat (disabled until a listener is attached)"><button id="ap-chat-send" disabled>Send</button></div>
+<!-- AP-VOICE:BEGIN -->
+<!-- Plan 0470 Tier 0: the ONLY voice code loaded by default (~sub-1KB). It does nothing until
+     enable(), which dynamic-imports the Tier-1 capture engine on demand (T-LAZY).
+     Plan 0473 P0: this <script> is STRIPPED server-side when PRESENTER_VOICE_ENABLED is off,
+     so the audience page pulls ZERO voice bytes and runs no always-on voice runtime. -->
+<script src="/lib/voice-stub.js"></script>
+<!-- AP-VOICE:END -->
 <script>
 (function(){
   var NS = 'argus-presenter';
@@ -131,7 +145,11 @@
     role: q.get('role') || savedRole || 'participant',
     // Token pass-through: when a PRESENTER_CONTROL_TOKEN is configured server-side,
     // ?token=… in the URL satisfies the AUTH-1 gate for a control role. Default: none (open).
-    token: q.get('token') || null
+    token: q.get('token') || null,
+    // Plan 0472 P4: a permissioned GUEST capability link (?cap=<signed token>). Pass it through on the
+    // hello; the server verifies the HMAC + expiry + revocation and grants a scoped guest identity
+    // (participant only). No client-side trust — the client just forwards the bearer token.
+    cap: q.get('cap') || null
   };
   function renderWho(){ document.getElementById('who').textContent = identity.role + ' · ' + identity.userName + ' (' + identity.userId + ')'; }
   renderWho();
@@ -222,6 +240,12 @@
     ws.onerror = function(){ /* onclose handles reconnect */ };
     ws.onmessage = onMessage;
   }
+  /* AP-VOICE:BEGIN */
+  // Plan 0470: hand the live socket to the voice stub so Tier-1 capture shares THIS WebSocket
+  // for the binary PCM lane (no second connection). getSocket() always returns the current ws.
+  // Plan 0473 P0: stripped server-side when PRESENTER_VOICE_ENABLED is off.
+  window.APVoiceHost = { getSocket: function(){ return ws; }, onTranscript: null };
+  /* AP-VOICE:END */
 
   var lastSnapshot = null;   // most recent server snapshot (relayed into new content frames)
   // F1: keep lastSnapshot CURRENT by merging live diffs into it, so a late-mounted
@@ -264,6 +288,75 @@
     else if (m.t === 'reload') setTimeout(function(){ location.reload(); }, m.delay || 0);
     else if (m.t === 'chime') { onChime(m); }
     else if (m.t === 'attendance') { onAttendance(m); }
+    /* AP-VOICE:BEGIN */
+    else if (m.t === 'voice_enable') {
+      // Plan 0470 (RT-9): a REQUEST only. enable() triggers the browser mic-permission prompt
+      // (uncoerceable) and, on grant, shows the on-air badge + one-click stop. We never capture
+      // without that grant. Errors (no secure context / no AudioWorklet) are surfaced, not silent.
+      try { if (window.APVoice) window.APVoice.enable(m.opts || {}).then(function(){ if (window.__apVoicePaint) window.__apVoicePaint(); }).catch(function(e){ dbgLog({ t:'voice_error', msg: String(e && e.message || e) }); }); }
+      catch(e){ dbgLog({ t:'voice_error', msg: String(e && e.message || e) }); }
+    }
+    else if (m.t === 'voice_dropped') {
+      // F1 (never-silent): the server throttled/dropped some audio — flash a brief, non-intrusive
+      // notice in the on-air badge so the speaker knows their words were cut, not silently lost.
+      try {
+        var vb = document.getElementById('ap-voice-badge');
+        if (vb) { var lbl = vb.querySelector('span:nth-child(2)') || vb; if (!lbl.__apPrev) lbl.__apPrev = lbl.textContent;
+          lbl.textContent = '⚠ audio dropped'; clearTimeout(lbl.__apT);
+          lbl.__apT = setTimeout(function(){ lbl.textContent = lbl.__apPrev || 'Mic on-air'; lbl.__apPrev = null; }, 1500); }
+      } catch(e){}
+      dbgLog(m);
+    }
+    else if (m.t === 'voice_status') { dbgLog(m); /* recognizer ready / status */ }
+    else if (m.t === 'transcript') { if (window.APVoiceHost && typeof window.APVoiceHost.onTranscript === 'function') window.APVoiceHost.onTranscript(m); }
+    else if (m.t === 'turn_budget') {
+      // Plan 0473 P5 (proactive per-turn budget, NEVER silent): the SERVER decides; the client only
+      // RENDERS the cue (a display affordance) and, on 'closed', YIELDS the mic. No heavy logic here —
+      // the stub stays a stub. 'wrap' = a gentle wrap-up nudge; 'closed' = the turn was gracefully
+      // closed at the budget, so stop capturing (the captured audio is still transcribed server-side).
+      try {
+        var tb = document.getElementById('ap-voice-badge');
+        if (tb) { var tl = tb.querySelector('span:nth-child(2)') || tb; if (!tl.__apPrev) tl.__apPrev = tl.textContent;
+          tl.textContent = (m.state === 'closed') ? '⏹ turn ended — your turn' : '⏳ please wrap up';
+          clearTimeout(tl.__apT); tl.__apT = setTimeout(function(){ tl.textContent = tl.__apPrev || 'Mic on-air'; tl.__apPrev = null; }, m.state === 'closed' ? 2500 : 1800); }
+        if (m.state === 'closed' && window.APVoice && window.APVoice.enabled) { try { window.APVoice.disable(); if (window.__apVoicePaint) window.__apVoicePaint(); } catch(e){} }
+      } catch(e){}
+      dbgLog(m);
+    }
+    else if (m.t === 'floor') {
+      // Plan 0473 P6 (floor control, NEVER silent): the SERVER detects overload and decides; the client
+      // only RENDERS a transparent cue and GATES capture on the signal (stub-tier — no heavy logic).
+      // 'hold' = please hold + pause the mic (capture gated at the source); 'wrap' = please wrap up
+      // soon; 'go' = clear. `gated:true` = THIS would-be speaker's segment was just refused under hold.
+      try {
+        var fb = document.getElementById('ap-voice-badge');
+        if (fb) { var fl = fb.querySelector('span:nth-child(2)') || fb; if (!fl.__apPrev) fl.__apPrev = fl.textContent;
+          if (m.state === 'hold') { fl.textContent = '✋ please hold'; }
+          else if (m.state === 'wrap') { fl.textContent = '⏳ wrap up soon'; }
+          else { fl.textContent = fl.__apPrev || 'Mic on-air'; fl.__apPrev = null; }
+          clearTimeout(fl.__apT); if (m.state !== 'go') fl.__apT = setTimeout(function(){ fl.textContent = fl.__apPrev || 'Mic on-air'; fl.__apPrev = null; }, 2000); }
+        // Gate capture at the source: on hold, pause the mic (the user may re-enable when it clears).
+        if (m.state === 'hold' && window.APVoice && window.APVoice.enabled) { try { window.APVoice.disable(); if (window.__apVoicePaint) window.__apVoicePaint(); } catch(e){} }
+      } catch(e){}
+      dbgLog(m);
+    }
+    else if (m.t === 'barge_in') {
+      // Plan 0473 P13 (barge-in, cross-plan 0469/0470): the SERVER detected a user speaking WHILE the
+      // agent's outbound TTS reply was playing. The client only RENDERS a brief cue and calls a DUCK
+      // hook — the actual TTS audio duck/stop is the Plan-0469 client seam (stub here). No heavy logic;
+      // the stub stays a stub.
+      try {
+        var xb = document.getElementById('ap-voice-badge');
+        if (xb) { var xl = xb.querySelector('span:nth-child(2)') || xb; if (!xl.__apPrev) xl.__apPrev = xl.textContent;
+          xl.textContent = '🔇 interrupted';
+          clearTimeout(xl.__apT); xl.__apT = setTimeout(function(){ xl.textContent = xl.__apPrev || 'Mic on-air'; xl.__apPrev = null; }, 1500); }
+        // DUCK/STOP seam — Plan 0469 wires real TTS ducking to this hook (a no-op stub until then).
+        if (window.APVoice && typeof window.APVoice.duck === 'function') { try { window.APVoice.duck(m); } catch(e){} }
+        if (typeof window.__apBargeIn === 'function') { try { window.__apBargeIn(m); } catch(e){} }
+      } catch(e){}
+      dbgLog(m);
+    }
+    /* AP-VOICE:END */
     else if (m.t === 'host') {
       if (m.msg && m.msg.type === 'diff') {
         if (typeof m.msg.version === 'number') lastVersion = Math.max(lastVersion, m.msg.version);
@@ -403,8 +496,11 @@
   // P3: bottom chat input — always present, enabled only when a listener is attached.
   function sendOp(path, verb, value){ if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t:'op', path:path, verb:verb, value:value, opId: identity.userId + ':' + Date.now() })); }
   function updateChat(n){ var en = (n|0) > 0; var i = document.getElementById('ap-chat-input'), b = document.getElementById('ap-chat-send'); if (i){ i.disabled = !en; i.placeholder = en ? 'type a message…' : 'chat (disabled until a listener is attached)'; } if (b) b.disabled = !en; }
+  // Plan 0472: typed text is FIRST-CLASS input — a {t:'chat'} message the server lands in the unified
+  // inbox with the connection's server-authoritative identity (and dual-writes the display slice).
+  function sendChat(text){ if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t:'chat', text: text, id: identity.userId + '-' + Date.now() })); }
   (function(){ var b = document.getElementById('ap-chat-send'), i = document.getElementById('ap-chat-input');
-    function go(){ var v = i.value; if (!v || i.disabled) return; sendOp('chat', 'add', { id: identity.userId + '-' + Date.now(), text: v, name: identity.userName }); i.value = ''; }
+    function go(){ var v = i.value; if (!v || i.disabled) return; sendChat(v); i.value = ''; }
     b.addEventListener('click', go);
     i.addEventListener('keydown', function(e){ if (e.key === 'Enter') go(); });
   })();
@@ -454,6 +550,29 @@
     [].forEach.call(panel.querySelectorAll('[data-scale]'), function(b){ b.addEventListener('click', function(){ cfg.scale = parseFloat(b.getAttribute('data-scale')); apply(); }); });
     document.getElementById('cfg-contrast').addEventListener('click', function(){ cfg.contrast = !cfg.contrast; apply(); });
     document.getElementById('cfg-close').addEventListener('click', function(){ toggle(false); });
+
+    /* AP-VOICE:BEGIN */
+    // Plan 0470 (RT-27): voice on/off row. Default OFF. ON => APVoice.enable() (mic prompt);
+    // Tier-1 loads + capture start ONLY on grant. Deny/error => revert to OFF + inline message.
+    // The transient on-air badge + one-click stop (RT-9) is the ONLY voice affordance outside here.
+    // Plan 0473 P0: stripped server-side when PRESENTER_VOICE_ENABLED is off (the row it binds is gone too).
+    (function(){
+      var vbtn = document.getElementById('cfg-voice-toggle');
+      var vmsg = document.getElementById('cfg-voice-msg');
+      if (!vbtn) return;
+      function paint(){ var on = !!(window.APVoice && window.APVoice.enabled); vbtn.textContent = '🎙 Mic: ' + (on ? 'on' : 'off'); vbtn.setAttribute('aria-pressed', on ? 'true' : 'false'); vbtn.classList.toggle('sel', on); if (!on) vbtn.disabled = false; }
+      window.__apVoicePaint = paint;   // let server-initiated enable()/stop refresh this row
+      vbtn.addEventListener('click', function(e){
+        e.stopPropagation(); vmsg.textContent = '';
+        if (window.APVoice && window.APVoice.enabled) { try { window.APVoice.disable(); } catch(err){} paint(); return; }
+        vbtn.disabled = true; vbtn.textContent = '🎙 Mic: requesting…';
+        Promise.resolve().then(function(){ return window.APVoice && window.APVoice.enable(); })
+          .then(function(){ vbtn.disabled = false; paint(); })
+          .catch(function(err){ vbtn.disabled = false; paint(); vmsg.textContent = String(err && err.message || err); });
+      });
+      paint();
+    })();
+    /* AP-VOICE:END */
 
     // ---- Role picker (P4): become presenter/user without editing the URL.
     // Reflects identity.role in the .sel classes; on change persists to localStorage
