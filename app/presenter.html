@@ -93,6 +93,10 @@
   <div class="row" id="cfg-role-pwgroup" style="display:none"><input id="cfg-role-pw" type="password" placeholder="presenter password" autocomplete="off"> <button id="cfg-role-go">Unlock</button><span id="cfg-role-msg"></span></div>
   <div class="row" id="cfg-control-row" style="display:none"><button id="cfg-open-control">▮ Show Presenter Control</button></div>
   <div class="row" style="margin-top:8px"><button id="cfg-attendance">👁 Show attendance</button></div>
+  <!-- Plan 0470 (RT-27): the ONLY voice on/off control lives here in Settings — never as
+       standalone chrome. Default OFF (Tier-0 stub only, nothing loaded). ON => APVoice.enable()
+       => browser mic prompt; Tier-1 + capture begin only on grant. Deny => reverts to OFF + msg. -->
+  <div class="row" id="cfg-voice-row" style="margin-top:8px"><span class="k">Voice</span> <button id="cfg-voice-toggle" aria-pressed="false">🎙 Mic: off</button><span id="cfg-voice-msg" style="color:#f97;font-size:11px;flex-basis:100%;margin:0"></span></div>
   <div class="rd" id="cfg-readout"></div>
   <div class="row" style="margin-top:8px"><button id="cfg-close">Close</button></div>
 </div>
@@ -269,7 +273,7 @@
       // Plan 0470 (RT-9): a REQUEST only. enable() triggers the browser mic-permission prompt
       // (uncoerceable) and, on grant, shows the on-air badge + one-click stop. We never capture
       // without that grant. Errors (no secure context / no AudioWorklet) are surfaced, not silent.
-      try { if (window.APVoice) window.APVoice.enable(m.opts || {}).catch(function(e){ dbgLog({ t:'voice_error', msg: String(e && e.message || e) }); }); }
+      try { if (window.APVoice) window.APVoice.enable(m.opts || {}).then(function(){ if (window.__apVoicePaint) window.__apVoicePaint(); }).catch(function(e){ dbgLog({ t:'voice_error', msg: String(e && e.message || e) }); }); }
       catch(e){ dbgLog({ t:'voice_error', msg: String(e && e.message || e) }); }
     }
     else if (m.t === 'voice_status') { dbgLog(m); /* recognizer ready / status */ }
@@ -464,6 +468,26 @@
     [].forEach.call(panel.querySelectorAll('[data-scale]'), function(b){ b.addEventListener('click', function(){ cfg.scale = parseFloat(b.getAttribute('data-scale')); apply(); }); });
     document.getElementById('cfg-contrast').addEventListener('click', function(){ cfg.contrast = !cfg.contrast; apply(); });
     document.getElementById('cfg-close').addEventListener('click', function(){ toggle(false); });
+
+    // Plan 0470 (RT-27): voice on/off row. Default OFF. ON => APVoice.enable() (mic prompt);
+    // Tier-1 loads + capture start ONLY on grant. Deny/error => revert to OFF + inline message.
+    // The transient on-air badge + one-click stop (RT-9) is the ONLY voice affordance outside here.
+    (function(){
+      var vbtn = document.getElementById('cfg-voice-toggle');
+      var vmsg = document.getElementById('cfg-voice-msg');
+      if (!vbtn) return;
+      function paint(){ var on = !!(window.APVoice && window.APVoice.enabled); vbtn.textContent = '🎙 Mic: ' + (on ? 'on' : 'off'); vbtn.setAttribute('aria-pressed', on ? 'true' : 'false'); vbtn.classList.toggle('sel', on); if (!on) vbtn.disabled = false; }
+      window.__apVoicePaint = paint;   // let server-initiated enable()/stop refresh this row
+      vbtn.addEventListener('click', function(e){
+        e.stopPropagation(); vmsg.textContent = '';
+        if (window.APVoice && window.APVoice.enabled) { try { window.APVoice.disable(); } catch(err){} paint(); return; }
+        vbtn.disabled = true; vbtn.textContent = '🎙 Mic: requesting…';
+        Promise.resolve().then(function(){ return window.APVoice && window.APVoice.enable(); })
+          .then(function(){ vbtn.disabled = false; paint(); })
+          .catch(function(err){ vbtn.disabled = false; paint(); vmsg.textContent = String(err && err.message || err); });
+      });
+      paint();
+    })();
 
     // ---- Role picker (P4): become presenter/user without editing the URL.
     // Reflects identity.role in the .sel classes; on change persists to localStorage
