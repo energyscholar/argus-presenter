@@ -61,6 +61,22 @@ const TRANSCRIPT_RING = 500;                   // in-memory cursored transcript 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PAGE = join(__dirname, 'presenter.html');
 
+// Plan 0473 P0 — audio-in is OPTIONAL and USUALLY OFF ⇒ ZERO client cost when off.
+// Parse a truthy env flag (1/true/on/yes). Used as the DEFAULT for createServer({voiceEnabled}).
+function envVoiceEnabled() { return /^(1|true|on|yes)$/i.test(String(process.env.PRESENTER_VOICE_ENABLED || '').trim()); }
+
+// Plan 0473 P0 — the audience page's voice code lives inside AP-VOICE:BEGIN..END markers
+// (HTML comments in body, /* */ block comments inside <script>). When voice is OFF we remove
+// those regions ENTIRELY before serving, so the page pulls ZERO voice bytes (no voice-stub
+// <script>, no APVoice wiring, no mic row) and runs no always-on voice runtime.
+const VOICE_BLOCK_RE = /[^\S\n]*(?:<!--|\/\*)\s*AP-VOICE:BEGIN\s*(?:-->|\*\/)[\s\S]*?(?:<!--|\/\*)\s*AP-VOICE:END\s*(?:-->|\*\/)[^\S\n]*\n?/g;
+function stripVoiceBlocks(html) { return html.replace(VOICE_BLOCK_RE, ''); }
+// Serve presenter.html, stripping the voice block(s) unless voice is enabled for this server.
+export function renderPresenterPage(voiceEnabled) {
+  const html = readFileSync(PAGE, 'utf8');
+  return voiceEnabled ? html : stripVoiceBlocks(html);
+}
+
 // AUTH-ROLE (P5.5): standard seeded hash. The plaintext password NEVER travels —
 // the browser sends sha256(seed + password); the server compares against ROLE_HASH.
 function sha256hex(s) { return createHash('sha256').update(s).digest('hex'); }
@@ -91,7 +107,11 @@ function sendStatic(res, req, absPath, contentType) {
   } catch (e) { res.writeHead(404); res.end('not found'); }
 }
 
-export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null } = {}) {
+export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined } = {}) {
+  // Plan 0473 P0: audio-in is OPTIONAL, DEFAULT OFF. Explicit boolean wins; else the env flag; else off.
+  // When off, the served presenter.html carries ZERO voice code (strip below) — the audience display
+  // is byte-clean of voice. The unified inbox + typed chat are NOT voice and stay on regardless.
+  const VOICE_ENABLED = (typeof voiceEnabled === 'boolean') ? voiceEnabled : envVoiceEnabled();
   // AUTH-1: a shared secret gates the control roles (presenter/ai). When null,
   // behaviour is unchanged / LAN-open — any browser may claim a control role.
   const CONTROL_TOKEN = controlToken || process.env.PRESENTER_CONTROL_TOKEN || null;
@@ -227,8 +247,9 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   } catch (e) { log.warn('module', 'watch-failed', { err: String((e && e.message) || e).slice(0, 80) }); }
   const httpServer = http.createServer((req, res) => {
     if (req.url === '/' || req.url.startsWith('/?')) {
+      // Plan 0473 P0: strip the voice block(s) unless voice is enabled ⇒ zero voice bytes when off.
       res.writeHead(200, htmlHeaders());
-      res.end(readFileSync(PAGE, 'utf8'));
+      res.end(renderPresenterPage(VOICE_ENABLED));
     } else if (req.url === '/control' || req.url.startsWith('/control?')) {
       res.writeHead(200, htmlHeaders());
       res.end(readFileSync(CONTROL, 'utf8'));

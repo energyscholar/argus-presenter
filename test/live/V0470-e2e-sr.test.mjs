@@ -22,7 +22,7 @@ test('T-E2E-SR (stubbed) fake-audio WAV -> client DSP/VAD -> WARM stub ASR -> tr
   delete process.env.AP_ASR_COUNT_FILE;
   const wav = join(tmpdir(), 'ap-e2e-' + Date.now() + '.wav');
   writeWav(wav, [{ freq: 0, secs: 0.4 }, { freq: 440, secs: 0.9, amp: 0.35 }, { freq: 0, secs: 1.2 }]);
-  const s = await createServer({ port: 0 });
+  const s = await createServer({ port: 0, voiceEnabled: true });
   const b = await launchVoice({ wavPath: wav });
   try {
     const page = await b.newPage();

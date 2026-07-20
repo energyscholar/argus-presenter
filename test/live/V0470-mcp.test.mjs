@@ -25,7 +25,7 @@ async function until(pred, label, { timeout = 5000 } = {}) { const t0 = Date.now
 test('T-MCP presenter_voice_enable + presenter_transcript (cursored) on the tool surface', async () => {
   process.env.PRESENTER_ASR_CMD = 'node ' + STUB;
   delete process.env.AP_ASR_COUNT_FILE;
-  const T = toolMap();
+  const T = toolMap({ voiceEnabled: true });
   expect('presenter_voice_enable is registered', !!T.presenter_voice_enable);
   expect('presenter_transcript is registered', !!T.presenter_transcript);
   const started = await T.presenter_start.handler({ port: 0 });

@@ -11,7 +11,7 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const hasBadge = (page) => page.evaluate(() => !!document.getElementById('ap-voice-badge'));
 
 test('T-PRIVACY grant: badge appears only after capture starts; one-click stop halts it', async () => {
-  const s = await createServer({ port: 0 });
+  const s = await createServer({ port: 0, voiceEnabled: true });
   const b = await launchVoice({});   // fake device + auto-grant UI
   try {
     const page = await b.newPage();
@@ -31,7 +31,7 @@ test('T-PRIVACY grant: badge appears only after capture starts; one-click stop h
 });
 
 test('T-PRIVACY deny: denied mic surfaces an error, NO capture, NO badge (uncoerceable)', async () => {
-  const s = await createServer({ port: 0 });
+  const s = await createServer({ port: 0, voiceEnabled: true });
   const b = await launchVoice({});
   try {
     const page = await b.newPage();
