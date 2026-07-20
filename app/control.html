@@ -141,6 +141,9 @@
             <button class="mini" id="btn-next" disabled>Next ▶</button>
             <button class="mini" id="btn-home">⌂ Home</button>
             <button class="mini" id="btn-end">■ STOP</button>
+            <!-- Bell as a control: 🔔 rings (notifier); 👁 verifies watching (bell + requireAck). Same api.chime path as presenter_bell / presenter_verify_watching. -->
+            <button class="mini" id="btn-bell" title="Ring the bell — gentle chime + banner on all displays (notify a backgrounded human)">🔔 Bell</button>
+            <button class="mini" id="btn-verify" title="Verify watching — banner with a CONFIRM button; proves eyes-on / not AFK">👁 Verify</button>
             <label id="autofollow-lbl" title="auto-advance to the branch-recommended next beat when a player answers"><input type="checkbox" id="autofollow"> ⛓ auto-follow branch</label>
           </div>
         </div>
@@ -372,6 +375,8 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   $('btn-next').onclick=function(){ recBeat=-1; control('next_beat',{}); };
   $('btn-home').onclick=function(){ recBeat=-1; control('show_default',{}); };   // DEF-1: back to the module title page
   $('btn-end').onclick=function(){ control('clear',{target:'all'}); };           // STOP → branding (reuses clear)
+  $('btn-bell').onclick=function(){ control('bell',{}); };                       // 🔔 ring bell (notifier) — same api.chime path as presenter_bell
+  $('btn-verify').onclick=function(){ control('bell',{requireAck:true}); };      // 👁 verify watching — bell + requireAck (presenter_verify_watching)
   // P2.7 (Plan 0456): PRESENTER SCREEN — open (or refocus, via the NAMED window target)
   // the presenter display page on the SAME origin, carrying THIS page's credential:
   // identity.token is whatever the control page holds (URL ?token= or the persisted

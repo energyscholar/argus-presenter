@@ -114,20 +114,29 @@ export const tools = [
     handler: async ({ beat }) => need().appendBeat(beat)
   },
   {
-    name: 'presenter_ready',
-    description: 'Ring a gentle READY chime + show a "Ready to start?" banner on connected displays. Use when the deck is built and you want the human — who keeps the tab in the background while you work — to bring it forward. Then wait for their go-ahead before presenting. Set requireAck:true to make the banner show a CONFIRM ("I\'m watching") button the viewer must click — proves eyes-on / not AFK; then poll presenter_check_ack to see who confirmed.',
+    name: 'presenter_bell',
+    description: 'Ring a gentle chime + show a persistent banner on connected displays — a pure notifier (fire-and-forget, no acknowledgement). Use when you want the human — who keeps the tab in the background while you work — to bring it forward. For an eyes-on / not-AFK handshake instead, use presenter_verify_watching.',
+    input: { type: 'object', properties: {
+      message: { type: 'string', default: 'Ready to start?', description: 'Banner text shown on the display' },
+      target: { type: 'string', default: 'all', description: 'userId | all | participant | presenter | ai' }
+    } },
+    handler: async ({ message = 'Ready to start?', target = 'all' } = {}) => ({ chimed: need().chime({ message, target }) })
+  },
+  {
+    name: 'presenter_verify_watching',
+    description: 'On-demand eyes-on handshake: chime + banner WITH a CONFIRM ("I\'m watching") button the viewer must click — proves eyes-on / not AFK. The banner persists until confirmed; poll presenter_check_ack to see who confirmed. Set bell:false to ask SILENTLY (banner only, no audio).',
     input: { type: 'object', properties: {
       message: { type: 'string', default: 'Ready to start?', description: 'Banner text shown on the display' },
       target: { type: 'string', default: 'all', description: 'userId | all | participant | presenter | ai' },
-      requireAck: { type: 'boolean', default: false, description: 'Require the viewer to click CONFIRM (eyes-on). The banner then persists until confirmed; poll presenter_check_ack for the result.' },
-      ackId: { type: 'string', default: 'ready', description: 'Correlation id for this eyes-on request (used by presenter_check_ack)' }
+      ackId: { type: 'string', default: 'ready', description: 'Correlation id for this eyes-on request (used by presenter_check_ack)' },
+      bell: { type: 'boolean', default: true, description: 'Play the audible chime. bell:false = silent ask (banner only).' }
     } },
-    handler: async ({ message = 'Ready to start?', target = 'all', requireAck = false, ackId = 'ready' } = {}) => ({ chimed: need().chime({ message, target, requireAck, ackId }), requireAck, ackId })
+    handler: async ({ message = 'Ready to start?', target = 'all', ackId = 'ready', bell = true } = {}) => ({ chimed: need().chime({ message, target, requireAck: true, ackId, bell }), requireAck: true, ackId })
   },
   {
     name: 'presenter_check_ack',
-    description: 'Check the eyes-on acknowledgement for an ackId: who has confirmed they are watching (with timestamps) and who is still pending (the AFK signal). Poll this after presenter_ready{requireAck:true} and wait until acked before presenting.',
-    input: { type: 'object', properties: { ackId: { type: 'string', default: 'ready', description: 'The ackId passed to presenter_ready' } } },
+    description: 'Check the eyes-on acknowledgement for an ackId: who has confirmed they are watching (with timestamps) and who is still pending (the AFK signal). Poll this after presenter_verify_watching and wait until acked before presenting.',
+    input: { type: 'object', properties: { ackId: { type: 'string', default: 'ready', description: 'The ackId passed to presenter_verify_watching' } } },
     handler: async ({ ackId = 'ready' } = {}) => need().getAck(ackId)
   },
   {

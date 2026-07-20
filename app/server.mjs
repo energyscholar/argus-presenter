@@ -493,6 +493,9 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         send(ws, { t: 'mirror', userId: uid, html });
         break;
       }
+      // Bell as a control: playable from the control page (🔔) and the verify-watching
+      // path (👁 = bell + requireAck) via the SAME api.chime method the MCP tools drive.
+      case 'bell': api.chime(a); break;
       case 'push_component': api.pushComponent(a.target || 'all', a.component, a.opts || {}, a.theme || 'argus', a.requires || []); break;
       case 'open_poll': api.openPoll(a); break;
       case 'close_poll': api.closePoll(a.promptId); break;
@@ -685,14 +688,16 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     // display descriptor so a RECONNECTING client converges to idle branding, not the stale last content
     // (fixes "stuck on the end card, never reverts to branding"). Use as the standard session-end primitive.
     clear: (target = 'all') => { setDisplay(target, null); return targets(target).map((ws) => send(ws, { t: 'clear' })).length; },
-    // READY chime: a transient signal (NOT a display descriptor — no setDisplay, so it
-    // never re-fires on reconnect). Rings a gentle chime + shows a "Ready to start?"
-    // banner on live clients, so a human keeping the tab backgrounded knows to come look.
+    // CHIME (bell control): a transient signal (NOT a display descriptor — no setDisplay, so it
+    // never re-fires on reconnect). Rings a gentle chime + shows a persistent banner on live
+    // clients, so a human keeping the tab backgrounded knows to come look.
     // requireAck=true makes the banner show a CONFIRM button — the viewer must click it to
     // prove eyes-on (not AFK). Poll getAck(ackId) for who has confirmed / who is pending.
-    chime: ({ message = 'Ready to start?', target = 'all', requireAck = false, ackId = 'ready' } = {}) => {
+    // bell (default true) is carried in the frame: bell:false = SILENT ask (banner only, no
+    // audio) — the client's onChime plays audio unless m.bell === false.
+    chime: ({ message = 'Ready to start?', target = 'all', requireAck = false, ackId = 'ready', bell = true } = {}) => {
       if (requireAck) { const prev = acks.get(ackId); acks.set(ackId, { message, requestedAt: Date.now(), target, by: (prev && prev.by) || new Map() }); }
-      return targets(target).map((ws) => send(ws, { t: 'chime', message, requireAck: !!requireAck, ackId })).length;
+      return targets(target).map((ws) => send(ws, { t: 'chime', message, requireAck: !!requireAck, ackId, bell: bell !== false })).length;
     },
     // Eyes-on status for an ackId: who confirmed they're watching, and who (among current
     // viewers of the requested target) is still pending — the AFK signal.

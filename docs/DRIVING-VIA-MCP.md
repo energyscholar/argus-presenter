@@ -30,7 +30,7 @@ or env is required. Dependencies (`@modelcontextprotocol/sdk`, `zod`, `ws`) reso
 from the repo's `node_modules`. After adding the config, reconnect MCP (`/mcp`);
 the `presenter_*` tools then appear in-session.
 
-## The tool surface (16 tools)
+## The tool surface (17 tools)
 
 | Tool | Purpose |
 |------|---------|
@@ -43,12 +43,15 @@ the `presenter_*` tools then appear in-session.
 | `push_component` `{target,component,opts,...}` | Assemble one component/scene and push it to `all` \| a role \| a userId. |
 | `open_poll` / `get_poll` / `close_poll` | Live polling. |
 | `reload_clients` `{target?,delay?}` | Hot-reload connected clients (swap code without dropping them). |
-| `presenter_ready` `{message?,requireAck?,ackId?}` | Ring a gentle chime + "Ready to start?" banner (for a human keeping the tab backgrounded). `requireAck:true` adds a CONFIRM button the viewer must click — proves eyes-on / not-AFK; the banner then persists until confirmed. |
+| `presenter_bell` `{message?,target?}` | Ring a gentle chime + banner (for a human keeping the tab backgrounded). Pure notifier — fire-and-forget, no acknowledgement. |
+| `presenter_verify_watching` `{message?,target?,ackId?,bell?}` | Eyes-on handshake: chime + banner with a CONFIRM button the viewer must click — proves eyes-on / not-AFK; the banner persists until confirmed. `bell:false` = silent ask (banner only). |
 | `presenter_check_ack` `{ackId?}` | Poll the eyes-on handshake: who confirmed watching (timestamps) and who is still `pending` (AFK). Wait until `acked` before presenting. |
 | `presenter_debug` / `presenter_health` | Introspection / health. |
 | `presenter_raf` | RAF control-plane action. |
 
-**Eyes-on handshake (optional, context-dependent):** when you need to know a human is actually watching before you present, call `presenter_ready{requireAck:true, ackId:'x'}`, then poll `presenter_check_ack{ackId:'x'}` until `acked:true`. Each viewer's confirmation also lands in presence as `eyesOn` (a timestamp), which the Control page shows as a per-user `👁 eyes-on Ns` badge.
+**Bell as a control:** the bell is a first-class control action (`bell`) playable two ways that route to the same `api.chime`: a 🔔 / 👁 button on the Control page, or the MCP tools `presenter_bell` (notifier) / `presenter_verify_watching` (eyes-on handshake). `presenter_bell` just dings; `presenter_verify_watching` adds the CONFIRM button.
+
+**Eyes-on handshake (optional, context-dependent):** when you need to know a human is actually watching before you present, call `presenter_verify_watching{ackId:'x'}`, then poll `presenter_check_ack{ackId:'x'}` until `acked:true`. Each viewer's confirmation also lands in presence as `eyesOn` (a timestamp), which the Control page shows as a per-user `👁 eyes-on Ns` badge.
 
 ## Typical flow: show a module
 
