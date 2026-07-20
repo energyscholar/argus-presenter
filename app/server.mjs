@@ -28,6 +28,7 @@ import { validate, summarize } from './validate.mjs';
 import { createAsr } from './asr.mjs';
 import { verifyCapability, mintCapability } from '../lib/capability.mjs';
 import { selectProfile, DEFAULT_PROFILE } from './profiles.mjs';
+import { createHeuristicSummarizer } from './summarizer.mjs';
 
 // X6 resilience caps.
 const MAX_CONNS = 200;              // connection cap
@@ -884,6 +885,31 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   let turnSeq = 0;
   let openTurn = null;   // { turnId, userId, items:[entry...], timer, wrapTimer, budgetTimer, budgetMs, startedAt } | null
 
+  // ---- Plan 0473 P7: ROLLING SUMMARY (continuity BEYOND the recent-N turns) ----
+  // The situation digest (P3) surfaces only the last-N turns; a session is UNBOUNDED in duration, so
+  // context OLDER than N would be LOST (the agent — even a solo wearable over a long conversation —
+  // goes amnesiac past N). The rolling summary RETAINS that aged-out context, itself BOUNDED, and is
+  // PRECOMPUTED INCREMENTALLY as turns SETTLE/AGE (never computed on-read) so situation() never blocks.
+  //
+  // F-10 SEAM: the updater is a SWAPPABLE unit behind this single `summarizer` reference. DEFAULT = the
+  // cheap incremental heuristic (app/summarizer.mjs): NO LLM, NO new dependency, NO agent cognition. A
+  // future cheap-model (Haiku) worker or an agent-assist presenter_set_summary would just reassign
+  // `summarizer` to another {kind,onTurnAged,onShed,view} — the engine calls only that interface, and
+  // Tier-1/situation() NEVER hard-depends on an LLM. NONE of those replacements is built here.
+  const summarizer = createHeuristicSummarizer();
+  // Staging ring modelling the recent-N window BY TURN COUNT (mirrors coalesceTurns(...).slice(-N)):
+  // a turn folds into the summary EXACTLY when a newer settled turn pushes it out of the last-N. O(1)/turn.
+  const settledTurnRing = [];
+  // Feed ONE freshly-settled turn to the staging ring; the evicted head (now older than recent-N) folds
+  // into the rolling summary. Incremental + non-blocking (pure in-memory), called from closeTurn.
+  function stageSettledTurn(t) {
+    const text = t.items.map((i) => i.text || '').join(' ').trim();
+    if (!text) return;                         // an empty turn carries no continuity — skip
+    const last = t.items[t.items.length - 1];
+    settledTurnRing.push({ turnId: t.turnId, userId: t.userId, userName: (last && last.userName) || null, text });
+    while (settledTurnRing.length > RECENT_TURNS_N) summarizer.onTurnAged(settledTurnRing.shift());
+  }
+
   // ---- Plan 0473 P5: PROACTIVE per-turn budget (transparent — never a silent truncation) ----
   // A single conversational TURN is TIME-bounded by the ACTIVE PROFILE's perTurnBudget knob (per role/
   // trust — read here, NEVER a name fork). This is the USER-FACING proactive layer that sits ABOVE the
@@ -963,6 +989,9 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     emit('turnComplete', signal);
     // Plan 0473 P4: a SETTLED turn is the substrate a work item is DERIVED from (cheap rule below).
     deriveWorkFromTurn(t, last);
+    // Plan 0473 P7: a SETTLED turn is also staged for the ROLLING SUMMARY — when it later ages out of
+    // the recent-N window it folds into the summary (continuity beyond recent-N). Incremental, non-blocking.
+    stageSettledTurn(t);
     log.info('voice', 'turn-complete', { turnId: t.turnId, userId: t.userId, items: signal.count, reason });
     return signal;
   }
@@ -1193,6 +1222,10 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       },
       recentTurns: coalesceTurns(inbox, recentN),
       newSinceLastRead: { count: since.length, turns: coalesceTurns(since, recentN) },
+      // Plan 0473 P7: the ROLLING SUMMARY — continuity for context OLDER than the recent-N turns.
+      // A PRECOMPUTED, BOUNDED snapshot (this is a pure read of the incrementally-maintained state via
+      // the F-10 seam — it NEVER blocks/computes on read), so a long session is not amnesiac past N.
+      summary: summarizer.view(),
       // Plan 0473 P4: the WORK QUEUE — the judgment items, prioritized + bounded (aged/expired pruned).
       queue: queueView(),
       // Plan 0473 P6: one-glance overload awareness. `floor` = the current proactive floor state
@@ -1278,6 +1311,10 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     const dropN = pending.length - maxPending;
     for (let i = 0; i < dropN; i++) { const it = pending[i]; it.status = 'shed'; it.shedTs = Date.now(); }
     sheddedCount += dropN;   // Plan 0473 P6: count the reactive shed so it is SURFACED, never silent
+    // Plan 0473 P7: the P6 "fold ambient to summary" path — a shed is REPRESENTED in the rolling summary
+    // WITH its count (never a silent drop). The shed turns' TEXT is already retained via stageSettledTurn
+    // (every settled turn is staged); this records the backpressure MAGNITUDE as a summary dimension.
+    summarizer.onShed(dropN);
     if (dropN > 0) log.info('queue', 'shed', { dropN, sheddedCount });
     pruneTerminal();
   }
