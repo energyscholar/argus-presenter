@@ -318,6 +318,23 @@
       } catch(e){}
       dbgLog(m);
     }
+    else if (m.t === 'floor') {
+      // Plan 0473 P6 (floor control, NEVER silent): the SERVER detects overload and decides; the client
+      // only RENDERS a transparent cue and GATES capture on the signal (stub-tier — no heavy logic).
+      // 'hold' = please hold + pause the mic (capture gated at the source); 'wrap' = please wrap up
+      // soon; 'go' = clear. `gated:true` = THIS would-be speaker's segment was just refused under hold.
+      try {
+        var fb = document.getElementById('ap-voice-badge');
+        if (fb) { var fl = fb.querySelector('span:nth-child(2)') || fb; if (!fl.__apPrev) fl.__apPrev = fl.textContent;
+          if (m.state === 'hold') { fl.textContent = '✋ please hold'; }
+          else if (m.state === 'wrap') { fl.textContent = '⏳ wrap up soon'; }
+          else { fl.textContent = fl.__apPrev || 'Mic on-air'; fl.__apPrev = null; }
+          clearTimeout(fl.__apT); if (m.state !== 'go') fl.__apT = setTimeout(function(){ fl.textContent = fl.__apPrev || 'Mic on-air'; fl.__apPrev = null; }, 2000); }
+        // Gate capture at the source: on hold, pause the mic (the user may re-enable when it clears).
+        if (m.state === 'hold' && window.APVoice && window.APVoice.enabled) { try { window.APVoice.disable(); if (window.__apVoicePaint) window.__apVoicePaint(); } catch(e){} }
+      } catch(e){}
+      dbgLog(m);
+    }
     /* AP-VOICE:END */
     else if (m.t === 'host') {
       if (m.msg && m.msg.type === 'diff') {
