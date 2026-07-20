@@ -109,7 +109,7 @@ function sendStatic(res, req, absPath, contentType) {
   } catch (e) { res.writeHead(404); res.end('not found'); }
 }
 
-export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null, profile = DEFAULT_PROFILE, settlingMs = null, queueMaxPending = null, queueTtlMs = null, perTurnBudgetMs = null, perTurnWrapMs = null } = {}) {
+export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null, profile = DEFAULT_PROFILE, settlingMs = null, queueMaxPending = null, queueTtlMs = null, perTurnBudgetMs = null, perTurnWrapMs = null, floorThresholds = null } = {}) {
   // Plan 0473 P1 — SESSION-TYPE PROFILE (the config-knob spine). Selected ONCE at session start;
   // its knobs are DATA the working-set engine will READ (settling/shedding/budget/floor/digest/queue).
   // Unknown/absent name falls back cleanly to the default (wearable). Profiles are data, not forks.
@@ -140,6 +140,13 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     if (typeof perTurnBudgetMs === 'number') ptb.overrideMs = perTurnBudgetMs;
     if (typeof perTurnWrapMs === 'number') ptb.wrapMs = perTurnWrapMs;
     ACTIVE_PROFILE = { ...ACTIVE_PROFILE, perTurnBudget: ptb };
+  }
+  // Plan 0473 P6 — likewise an explicit `floorThresholds` at session start OVERRIDES/MERGES the active
+  // profile's floorThresholds knob (enable + tune the load levels), threaded THROUGH the SAME knob shape
+  // (never a code branch) so the floor engine keeps reading them from api.profile().floorThresholds.
+  // Absent ⇒ the profile's own floorThresholds govern (wearable = disabled → floor is a no-op).
+  if (floorThresholds && typeof floorThresholds === 'object') {
+    ACTIVE_PROFILE = { ...ACTIVE_PROFILE, floorThresholds: { ...(ACTIVE_PROFILE.floorThresholds || {}), ...floorThresholds } };
   }
   // Plan 0473 P0: audio-in is OPTIONAL, DEFAULT OFF. Explicit boolean wins; else the env flag; else off.
   // When off, the served presenter.html carries ZERO voice code (strip below) — the audience display
@@ -604,6 +611,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       const c = conns.get(ws);
       if (c && c.voice && c.voice.active) { if (c.voice.timer) clearTimeout(c.voice.timer); c.voice.active = false; voiceSessions = Math.max(0, voiceSessions - 1); }   // RT-14: drop an orphaned open segment
       if (c && c.userId) byUser.delete(c.userId); conns.delete(ws); updateChatListeners(); emit('presence', presence());
+      evaluateFloor();   // Plan 0473 P6: a disconnect can lower the load (speaker gone) — reassess the floor
     });
   });
 
@@ -1033,6 +1041,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       emit('transcript', entry);
     }
     emit('inbox', entry);
+    evaluateFloor();   // Plan 0473 P6: fresh input can push a consumer behind — reassess the floor
     // Wake every pending long-poll waiter (each resolves with what arrived and removes itself).
     for (const w of [...inboxWaiters]) w.wake();
     log.info('voice', 'inbox', { kind, userId, seq: entry.seq, len: (text || '').length });
@@ -1053,6 +1062,10 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     // Plan 0472 P4: a GUEST may open a voice segment ONLY if its capability scope includes 'speak'
     // (token-signed; not client-widenable). Surface the refusal (never silent). Non-guests unaffected.
     if (c.isGuest && !(c.capScope || []).includes('speak')) { log.warn('cap', 'speak-out-of-scope', { socketId: c.id }); send(ws, { t: 'voice_rejected', reason: 'not permitted' }); return; }
+    // Plan 0473 P6 — PROACTIVE floor gate: under HOLD (overload) refuse a NEW segment AT THE SOURCE and
+    // tell the speaker to hold, instead of accepting audio only to shed it downstream. No-op when the
+    // floor is disabled (solo wearable) — so existing single-speaker voice behaviour is unchanged.
+    if (floorGated()) { log.info('floor', 'gated-seg-start', { socketId: c.id, userId: c.userId }); send(ws, { t: 'floor', state: 'hold', gated: true }); return; }
     if (!c.voice) c.voice = { active: false, seq: 0, chunks: [], bytes: 0, startedAt: 0, timer: null, tokens: VOICE_TB_CAPACITY, lastRefill: Date.now() };
     const v = c.voice;
     if (v.active) { if (v.timer) clearTimeout(v.timer); v.active = false; voiceSessions = Math.max(0, voiceSessions - 1); v.chunks = []; v.bytes = 0; }   // drop a stray-open prior segment
@@ -1066,6 +1079,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     v.tokens = VOICE_TB_CAPACITY; v.lastRefill = Date.now();   // F1: full-capacity bucket per segment
     voiceSessions++;
     voiceArmTimeout(c, ws);
+    evaluateFloor();   // Plan 0473 P6: a new active speaker changes the load — reassess the floor
     log.info('voice', 'seg-start', { socketId: c.id, userId: c.userId, seq: v.seq, sessions: voiceSessions });
   }
   // Binary PCM frame from a conn. IGNORED unless that conn has an active voice session (RT-7);
@@ -1090,6 +1104,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     const v = c && c.voice; if (!v || !v.active) return;
     if (v.timer) { clearTimeout(v.timer); v.timer = null; }
     v.active = false; voiceSessions = Math.max(0, voiceSessions - 1);
+    evaluateFloor();   // Plan 0473 P6: a speaker yielding the floor lowers the load — reassess the floor
     const pcm = Buffer.concat(v.chunks, v.bytes); const seq = v.seq;
     v.chunks = []; v.bytes = 0;
     log.info('voice', 'seg-final', { socketId: c.id, seq, bytes: pcm.length });   // F1: byte-integrity trace (utterance must arrive whole)
@@ -1161,6 +1176,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     const last = situationCursors.get(consumerId) || 0;
     const since = inbox.filter((i) => i.seq > last);   // bounded: the ring is capped at TRANSCRIPT_RING
     situationCursors.set(consumerId, inboxSeq);         // advance the cursor to everything now shown
+    evaluateFloor();   // Plan 0473 P6: this read caught the consumer up (backlog reduced) — reassess the floor
     const att = api.attendance({ viewerRole: 'ai' });
     const openPolls = [...polls.entries()].filter(([, p]) => p.open)
       .map(([id, p]) => ({ promptId: id, prompt: p.spec && p.spec.prompt, open: true, ...tally(id) }));
@@ -1179,6 +1195,11 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       newSinceLastRead: { count: since.length, turns: coalesceTurns(since, recentN) },
       // Plan 0473 P4: the WORK QUEUE — the judgment items, prioritized + bounded (aged/expired pruned).
       queue: queueView(),
+      // Plan 0473 P6: one-glance overload awareness. `floor` = the current proactive floor state
+      // (go/wrap/hold); `backpressure.sheddedCount` = the reactive fold-to-summary total, SURFACED so a
+      // shed is never silent (the LAST resort, secondary to the floor).
+      floor: effectiveFloor(),
+      backpressure: { sheddedCount, floor: effectiveFloor() },
       cursor: inboxSeq,   // informational only — the consumer does NOT need to pass this back
     };
   }
@@ -1198,6 +1219,10 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   const workItemsMap = new Map();   // id -> item (pending/claimed live here; resolved/expired kept for status tracking, bounded)
   const RESOLVED_KEEP = 100;        // bounded terminal-status history (resolved/expired) for server-side tracking
   let workSeq = 0;
+  // Plan 0473 P6 — REACTIVE BACKSTOP counter: the running total of ambient turns folded-to-summary/count
+  // when the queue overflows capacity. Surfaced in situation().backpressure so a shed is NEVER silent.
+  // This is the LAST resort, secondary to the proactive floor control (below).
+  let sheddedCount = 0;
   // Cheap question/request heuristic (F-4 minimal): trimmed text ends with '?'. No ML, no NLP.
   function isQuestion(text) { return /\?\s*$/.test(String(text || '').trim()); }
   // Read the queue knobs from the ACTIVE PROFILE (consume knobs, never the profile NAME — drift guard).
@@ -1226,7 +1251,11 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       createdTs: Date.now(),
     };
     workItemsMap.set(item.id, item);
-    enforceQueueBounds();                                     // keep the PENDING queue bounded (F-11)
+    // Plan 0473 P6 — PROACTIVE-FIRST: reassess load + engage the floor (wrap/hold) BEFORE the reactive
+    // shed. The floor gates NEW input at the source; only input that STILL exceeds capacity below hits
+    // the reactive backstop — so the floor is always already in effect before sheddedCount can rise.
+    evaluateFloor();
+    enforceQueueBounds();                                     // REACTIVE last resort: shed ambient overflow WITH a count (F-11)
     return item;
   }
   // Age out stale PENDING items (claimed items are being handled ⇒ exempt) — lazy, called on every read
@@ -1248,6 +1277,8 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     pending.sort((a, b) => (a.priority - b.priority) || (a.createdTs - b.createdTs));
     const dropN = pending.length - maxPending;
     for (let i = 0; i < dropN; i++) { const it = pending[i]; it.status = 'shed'; it.shedTs = Date.now(); }
+    sheddedCount += dropN;   // Plan 0473 P6: count the reactive shed so it is SURFACED, never silent
+    if (dropN > 0) log.info('queue', 'shed', { dropN, sheddedCount });
     pruneTerminal();
   }
   // Bound the retained terminal-status history (resolved/expired/shed) so workItemsMap can't grow forever.
@@ -1273,6 +1304,66 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     live.sort((a, b) => (b.priority - a.priority) || (a.createdTs - b.createdTs));
     return live.map(itemView);
   }
+
+  // ---- Plan 0473 P6: FLOOR CONTROL (proactive, at the SOURCE) + reactive backstop (last resort) ----
+  // PROACTIVE-FIRST overload prevention. The server measures live LOAD from EXISTING state — concurrent
+  // active speakers (voiceSessions), work-queue depth (pending items), and how far the consumer has
+  // fallen behind (unread backlog) — against the ACTIVE PROFILE's `floorThresholds` knob (DATA, read via
+  // floorKnobs(), NEVER a name fork). Crossing the WRAP level emits a gentle "please wrap" floor cue;
+  // crossing HOLD emits "please hold" AND GATES new capture AT THE SOURCE (a would-be speaker is told to
+  // hold instead of the server accepting audio only to shed it). When load clears, the floor returns to
+  // 'go'. The wearable profile has floorThresholds.enabled:false (solo → a no-op); the mechanism is built
+  // + tested with an enabled/injected threshold. The REACTIVE shed (`sheddedCount`, above) is the LAST
+  // resort — secondary to, and always after, this proactive floor.
+  const FLOOR_STATES = ['go', 'wrap', 'hold'];
+  let floorState = 'go';
+  // SEAM (F-7): explicit teacher moderation (a later TEACHING feature) will OVERRIDE the automatic floor.
+  // NOT built here — this is the clean precedence hook: when a moderation floor is set it wins over the
+  // auto floor everywhere the floor is consumed (broadcast + gate). Left null; no setter is wired yet.
+  let moderationFloor = null;
+  function effectiveFloor() { return moderationFloor || floorState; }
+  // Read the floor knobs from the ACTIVE PROFILE (consume knobs, never the profile NAME — drift guard).
+  function floorKnobs() {
+    const ft = (ACTIVE_PROFILE.floorThresholds) || {};
+    return { enabled: ft.enabled === true, speakers: ft.speakers || null, queue: ft.queue || null,
+      backlog: ft.backlog || null, moderationOverrides: ft.moderationOverrides === true };
+  }
+  // Live LOAD signals, measured from existing server state (NO new bookkeeping).
+  function pendingCount() { let n = 0; for (const it of workItemsMap.values()) if (it.status === 'pending') n++; return n; }
+  // How far the furthest-behind consumer has fallen behind (unread inbox items). 0 when nobody has read.
+  function consumerBacklog() { let max = 0; for (const last of situationCursors.values()) { const b = inboxSeq - last; if (b > max) max = b; } return max; }
+  // The floor level ONE signal implies, given its {wrap,hold} thresholds (absent thresholds ⇒ ignored).
+  function levelFor(value, th) {
+    if (!th) return 'go';
+    if (typeof th.hold === 'number' && value >= th.hold) return 'hold';
+    if (typeof th.wrap === 'number' && value >= th.wrap) return 'wrap';
+    return 'go';
+  }
+  function maxLevel(a, b) { return FLOOR_STATES.indexOf(a) >= FLOOR_STATES.indexOf(b) ? a : b; }
+  // Broadcast the floor cue to clients — the would-be speakers RENDER "please hold"/"wrap up" + gate
+  // capture on it (stub-tier; the SERVER decides, the client shows). Never silent.
+  function broadcastFloor(state) { for (const ws of conns.keys()) send(ws, { t: 'floor', state }); }
+  // Recompute the floor from current load; on a CHANGE, emit the cue. Called on every load-changing event
+  // (input arrival, turn settle, queue mutation, speaker start/stop, situation read). Cheap + idempotent.
+  function evaluateFloor() {
+    const k = floorKnobs();
+    let next = 'go';
+    if (k.enabled) {
+      next = maxLevel(next, levelFor(voiceSessions, k.speakers));
+      next = maxLevel(next, levelFor(pendingCount(), k.queue));
+      next = maxLevel(next, levelFor(consumerBacklog(), k.backlog));
+    }
+    if (next !== floorState) {
+      floorState = next;
+      log.info('floor', 'state', { state: floorState, speakers: voiceSessions, pending: pendingCount(), backlog: consumerBacklog() });
+      broadcastFloor(effectiveFloor());
+    }
+    return floorState;
+  }
+  // PROACTIVE gate at the SOURCE: would a NEW segment right now be gated? True only under HOLD (enabled +
+  // overloaded) — the server refuses to accept fresh audio only to shed it. (Explicit moderation would
+  // override via effectiveFloor.) No-op when the floor is disabled (solo wearable).
+  function floorGated() { return floorKnobs().enabled && effectiveFloor() === 'hold'; }
 
   const api = {
     url: () => `http://127.0.0.1:${httpServer.address().port}`,
@@ -1378,6 +1469,13 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     // Plan 0473 P4 — WORK-QUEUE operator surface (server-tracked status/owner; the agent holds nothing).
     // workItems(): the current ACTIONABLE queue (pending + claimed), prioritized + bounded (aged pruned).
     workItems: () => queueView(),
+    // Plan 0473 P6 — floor + backstop observability.
+    // floorState(): the current EFFECTIVE floor ('go'|'wrap'|'hold') — proactive overload state.
+    floorState: () => effectiveFloor(),
+    // backpressure(): the reactive backstop total ({sheddedCount, floor}) — a shed is never silent.
+    backpressure: () => ({ sheddedCount, floor: effectiveFloor() }),
+    // voiceSessionCount(): active voice sessions (used to prove a gated seg-start started NO capture).
+    voiceSessionCount: () => voiceSessions,
     // workItem(id): the SERVER's full record for one item incl. terminal statuses (resolved/expired/shed)
     // + note/owner — proves the server, not the agent, tracks the state. null if unknown/pruned.
     workItem: (id) => { expireStale(); const it = workItemsMap.get(id); return it ? itemView(it) : null; },
@@ -1389,6 +1487,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       const it = workItemsMap.get(id);
       if (!it || (it.status !== 'pending' && it.status !== 'claimed')) return null;
       it.status = 'claimed'; it.owner = owner || 'agent'; it.claimedTs = Date.now();
+      evaluateFloor();   // Plan 0473 P6: queue depth changed — reassess the floor
       log.info('queue', 'claim', { id, owner: it.owner });
       return itemView(it);
     },
@@ -1400,6 +1499,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       if (!it || it.status === 'resolved') return null;
       it.status = 'resolved'; it.resolvedTs = Date.now(); if (note != null) it.note = String(note).slice(0, QUEUE_TEXT_MAX);
       pruneTerminal();
+      evaluateFloor();   // Plan 0473 P6: work resolved lowers the load — reassess the floor (may clear to 'go')
       log.info('queue', 'resolve', { id });
       return itemView(it);
     },
@@ -1410,6 +1510,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       const it = workItemsMap.get(id);
       if (!it || (it.status !== 'pending' && it.status !== 'claimed')) return null;
       it.status = 'pending'; it.owner = null; it.priority = PRIORITY_DEFERRED; it.createdTs = Date.now(); it.deferred = true;
+      evaluateFloor();   // Plan 0473 P6: PROACTIVE-FIRST — reassess the floor before any reactive shed
       enforceQueueBounds();
       log.info('queue', 'defer', { id });
       return itemView(it);
