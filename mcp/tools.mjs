@@ -12,6 +12,10 @@ import { assemble } from '../harness/assemble.mjs';
 let server = null;
 const need = () => { if (!server) throw new Error('presenter not started — call presenter_start first'); return server; };
 
+// STANDARD Argus Presenter port — pinned in code so the MCP-driven URL is ALWAYS the same
+// (http://127.0.0.1:4300). Never let presenter_start default to a random port again.
+const AP_STANDARD_PORT = 4300;
+
 // Plan 0473 P3 — the consumer identity for presenter_situation's SERVER-HELD cursor. This process is
 // ONE MCP stdio connection = ONE consumer, so a stable per-process key identifies it; the server
 // tracks this consumer's last-read position (the agent never passes a cursor). Other consumers (a
@@ -24,8 +28,8 @@ export const coreTools = [
   {
     name: 'presenter_start',
     description: 'Start the Argus Presenter server. Returns the URL participants/presenter open.',
-    input: { type: 'object', properties: { port: { type: 'number', description: 'Port (0 = random)' } } },
-    handler: async ({ port = 0 } = {}) => { if (server) return { url: server.url(), already: true }; server = await createServer({ port }); return { url: server.url() }; }
+    input: { type: 'object', properties: { port: { type: 'number', description: 'Port (default 4300 — the STANDARD, pinned AP port)' }, voice: { type: 'boolean', description: 'Enable inbound voice + ASR (default true when driven via MCP)' } } },
+    handler: async ({ port = AP_STANDARD_PORT, voice = true } = {}) => { if (server) return { url: server.url(), already: true }; server = await createServer({ port, voiceEnabled: voice }); return { url: server.url() }; }
   },
   {
     name: 'presenter_stop',

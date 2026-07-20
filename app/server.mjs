@@ -34,7 +34,7 @@ import { deriveTrust, annotate as annotateTrust } from './untrusted.mjs';
 
 // X6 resilience caps.
 const MAX_CONNS = 200;              // connection cap
-const MAX_PAYLOAD = 256 * 1024;     // per-frame byte cap (S6)
+const MAX_PAYLOAD = 1024 * 1024;    // per-frame byte cap. S206: raised 256KB→1MB so a whole-utterance voice burst (VOICE_SEG_MAX_BYTES ≈937KB) is never rejected by ws with a 1009 close.
 const DURABLE_OPS_PER_SEC = 50;     // per-conn durable-op rate (ephemeral is coalesced, not capped)
 
 // Plan 0468: the dot means CONNECTION LIVENESS only. A real heartbeat keeps a silent-but-
@@ -1231,6 +1231,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     v.lastRefill = now;
     if (v.tokens < buf.length) { log.warn('voice', 'rate-drop', { socketId: c.id, seq: v.seq }); send(ws, { t: 'voice_dropped', seq: v.seq, reason: 'rate' }); return; }
     v.tokens -= buf.length;
+    if (v.bytes === 0) log.info('voice', 'S6 srv-binary-first', { socketId: c.id, seq: v.seq, bytes: buf.length });   // S206 tracer: first PCM frame of a segment reached the server
     v.chunks.push(Buffer.from(buf)); v.bytes += buf.length;
     voiceArmTimeout(c, ws);
     if (v.bytes >= VOICE_SEG_MAX_BYTES) { log.warn('voice', 'seg-forcecut', { socketId: c.id, bytes: v.bytes }); voiceSegFinalize(c, ws, {}); }   // RT-8
@@ -1248,8 +1249,11 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     const wavDir = join(tmpdir(), 'ap-asr'); try { mkdirSync(wavDir, { recursive: true }); } catch (e) {}
     const wavPath = join(wavDir, `seg-${c.id}-${seq}-${Date.now()}.wav`);
     try { writeFileSync(wavPath, pcm16ToWav(pcm)); } catch (e) { log.warn('voice', 'wav-fail', { msg: String(e && e.message || e) }); return; }
+    log.info('voice', 'S8 wav-written', { socketId: c.id, seq, bytes: pcm.length });   // S206 tracer
+    log.info('voice', 'S9 asr-call', { socketId: c.id, seq });                          // S206 tracer
     const result = await ensureAsr().recognize(wavPath, seq);
     try { unlinkSync(wavPath); } catch (e) {}
+    log.info('voice', 'S10 asr-result', { socketId: c.id, seq, text: String((result && result.text) || '').slice(0, 60) });   // S206 tracer
     if (!result || !result.text) { log.info('voice', 'no-text', { socketId: c.id, seq }); return; }
     emitTranscript({ userId: c.userId, userName: c.userName, role: c.role, text: result.text, conf: result.conf, isGuest: !!c.isGuest });
   }
