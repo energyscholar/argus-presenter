@@ -26,6 +26,7 @@ import * as log from './log.mjs';
 import { createStore, isEphemeral, validOp } from './state.mjs';
 import { validate, summarize } from './validate.mjs';
 import { createAsr } from './asr.mjs';
+import { verifyCapability, mintCapability } from '../lib/capability.mjs';
 
 // X6 resilience caps.
 const MAX_CONNS = 200;              // connection cap
@@ -107,7 +108,7 @@ function sendStatic(res, req, absPath, contentType) {
   } catch (e) { res.writeHead(404); res.end('not found'); }
 }
 
-export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined } = {}) {
+export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null } = {}) {
   // Plan 0473 P0: audio-in is OPTIONAL, DEFAULT OFF. Explicit boolean wins; else the env flag; else off.
   // When off, the served presenter.html carries ZERO voice code (strip below) — the audience display
   // is byte-clean of voice. The unified inbox + typed chat are NOT voice and stay on regardless.
@@ -123,6 +124,15 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   const ROLE_SEED = roleSeed || process.env.PRESENTER_ROLE_SEED || 'argus-presenter';
   const ROLE_PW = rolePassword || process.env.PRESENTER_ROLE_PASSWORD || null;
   const ROLE_HASH = ROLE_PW ? sha256hex(ROLE_SEED + ROLE_PW) : null;
+  // Plan 0472 P4 (SECURITY): the HMAC secret for permissioned GUEST capability links (/?cap=…).
+  // From the option or PRESENTER_CAP_SECRET. There is NO insecure default and an empty string is
+  // treated as UNSET — when null, capability links are DISABLED and every presented `cap` is rejected.
+  // NEVER logged or echoed. Independent of the control-token / role-password gate (a cap never grants
+  // a control role; that gate alone governs presenter/ai).
+  const CAP_SECRET = capSecret || process.env.PRESENTER_CAP_SECRET || null;
+  // In-memory revoked-nonce set. api.revokeCap(nonce) adds; a revoked nonce is rejected on hello even
+  // if its HMAC + exp are still valid. In-memory by design (short-lived tokens; a restart = new session).
+  const revokedNonces = new Set();
   const conns = new Map();     // ws -> {id,userId,userName,role}
   const byUser = new Map();    // userId -> ws
   let connSeq = 0;             // per-server connection counter -> stable socketId (S5-ready)
@@ -411,29 +421,62 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       if (m.t === 'hello') {
         c.userId = m.userId || ('anon-' + Math.random().toString(36).slice(2, 8));
         c.userName = m.userName || c.userId;
-        // AUTH-1 / AUTH-ROLE: control roles require a credential when one is configured.
-        // GRANTED iff: ungated (no token AND no password hash) OR the hello token matches
-        // CONTROL_TOKEN (when set) OR it matches ROLE_HASH (the seeded password hash, when
-        // set). Otherwise downgrade to participant. CONTROL_TOKEN-only behaves exactly as
-        // before; neither configured ⇒ ungated (LAN-open back-compat).
-        let reqRole = m.role || 'participant';
-        if (reqRole === 'presenter' || reqRole === 'ai') {
-          const gated = !!(CONTROL_TOKEN || ROLE_HASH);
-          const ok = !gated
-            || (CONTROL_TOKEN && m.token === CONTROL_TOKEN)
-            || (ROLE_HASH && m.token === ROLE_HASH);
-          if (!ok) {
-            log.warn('auth', 'control-denied', { userId: c.userId, role: reqRole });
-            reqRole = 'participant';
+        // Plan 0472 P4 (SECURITY): a signed, scoped, revocable GUEST capability link (?cap=<token>).
+        // The HMAC is verified over the RAW payload bytes BEFORE any field is trusted; exp + revocation
+        // are enforced; the rejection reason stays INTERNAL (a generic warn only — never the reason or
+        // any secret/nonce is surfaced). A presented cap makes this connection a GUEST: role is
+        // HARD-FORCED to participant (never presenter/ai, whatever the payload/hello claims), identity +
+        // scope come from the (authentic) token, and the client CANNOT widen either. Disabled entirely
+        // when no secret is configured. A cap NEVER bypasses the control gate below — it is a separate,
+        // guest-only path.
+        let capGrant = null;
+        if (m.cap) {
+          if (CAP_SECRET) {
+            try {
+              const v = verifyCapability(m.cap, CAP_SECRET, { now: Date.now(), isRevoked: (n) => revokedNonces.has(n) });
+              if (v.ok) capGrant = v.payload;
+              else log.warn('cap', 'invalid-capability', { socketId: c.id });   // GENERIC: no reason, no secret material
+            } catch (e) { log.warn('cap', 'invalid-capability', { socketId: c.id }); }   // never let a bad token crash the conn
+          } else {
+            log.warn('cap', 'capability-disabled', { socketId: c.id });   // links disabled: no secret configured
           }
         }
-        c.role = reqRole;
+        if (capGrant) {
+          // GUEST identity: participant only. Attribution is bound to the token nonce (not client-claimed),
+          // so a guest can neither impersonate another userId nor promote itself.
+          c.role = 'participant';
+          c.isGuest = true;
+          c.capScope = capGrant.scope;
+          c.capNonce = capGrant.nonce;
+          c.userId = 'guest:' + capGrant.nonce;
+          if (capGrant.name) c.userName = capGrant.name;
+        } else {
+          // AUTH-1 / AUTH-ROLE: control roles require a credential when one is configured.
+          // GRANTED iff: ungated (no token AND no password hash) OR the hello token matches
+          // CONTROL_TOKEN (when set) OR it matches ROLE_HASH (the seeded password hash, when
+          // set). Otherwise downgrade to participant. CONTROL_TOKEN-only behaves exactly as
+          // before; neither configured ⇒ ungated (LAN-open back-compat).
+          let reqRole = m.role || 'participant';
+          if (reqRole === 'presenter' || reqRole === 'ai') {
+            const gated = !!(CONTROL_TOKEN || ROLE_HASH);
+            const ok = !gated
+              || (CONTROL_TOKEN && m.token === CONTROL_TOKEN)
+              || (ROLE_HASH && m.token === ROLE_HASH);
+            if (!ok) {
+              log.warn('auth', 'control-denied', { userId: c.userId, role: reqRole });
+              reqRole = 'participant';
+            }
+          }
+          c.role = reqRole;
+        }
         byUser.set(c.userId, ws);
         // welcome.role = the EFFECTIVE granted role, so the client learns if it was
         // silently downgraded (wrong/absent password) and can surface feedback.
         // RT-26 consent surface: tell every client whether recognized speech is being written to
         // disk. Default false (ephemeral-only) — saving people's words silently is a consent violation.
-        send(ws, { t: 'welcome', userId: c.userId, socketId: c.id, role: c.role, transcriptPersisting: TRANSCRIPT_PERSIST });
+        // For a GUEST (capability link), surface guest:true + the granted scope so the client knows
+        // exactly what it may do (talk/type) — the same consent/transparency surface as any participant.
+        send(ws, { t: 'welcome', userId: c.userId, socketId: c.id, role: c.role, transcriptPersisting: TRANSCRIPT_PERSIST, ...(c.isGuest ? { guest: true, scope: c.capScope } : {}) });
         // C4/X1: converge the (re)connecting client. If it reports a lastVersion we
         // can still replay from the op-log, send only the MISSED ops (resync);
         // otherwise a full role-filtered snapshot (Memento).
@@ -514,6 +557,9 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         // Plan 0472: typed text is FIRST-CLASS input. Land it in the unified inbox attributed to the
         // SERVER-AUTHORITATIVE connection identity (never the client payload). D5 = DUAL-WRITE: also
         // drive the chat STORE slice so the existing read-perm'd chat display (P3) keeps working.
+        // Plan 0472 P4: a GUEST may type ONLY if its capability scope includes 'type' (the scope is
+        // token-signed, so it cannot be widened by the client). Non-guests are unaffected.
+        if (c && c.isGuest && !(c.capScope || []).includes('type')) { log.warn('cap', 'type-out-of-scope', { socketId: c.id }); return; }
         if (c && typeof m.text === 'string' && m.text.length) {
           c.lastActive = Date.now();   // ATT: typing = deliberate human interaction
           emitInbox({ kind: 'text', userId: c.userId, userName: c.userName, role: c.role, text: m.text, conf: null, final: true });
@@ -852,6 +898,9 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   }
   function voiceSegStart(c, ws, m) {
     if (!c) return;
+    // Plan 0472 P4: a GUEST may open a voice segment ONLY if its capability scope includes 'speak'
+    // (token-signed; not client-widenable). Surface the refusal (never silent). Non-guests unaffected.
+    if (c.isGuest && !(c.capScope || []).includes('speak')) { log.warn('cap', 'speak-out-of-scope', { socketId: c.id }); send(ws, { t: 'voice_rejected', reason: 'not permitted' }); return; }
     if (!c.voice) c.voice = { active: false, seq: 0, chunks: [], bytes: 0, startedAt: 0, timer: null, tokens: VOICE_TB_CAPACITY, lastRefill: Date.now() };
     const v = c.voice;
     if (v.active) { if (v.timer) clearTimeout(v.timer); v.active = false; voiceSessions = Math.max(0, voiceSessions - 1); v.chunks = []; v.bytes = 0; }   // drop a stray-open prior segment
@@ -981,6 +1030,29 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       });
     },
     getInboxWaiters: () => inboxWaiters.size,   // test/observability hook: assert no waiter leak
+    // Plan 0472 P4 — permissioned guest capability link operator surface.
+    // capEnabled: are guest links configured at all (a secret present)?
+    capEnabled: () => !!CAP_SECRET,
+    // mintCap: sign a guest link payload with THIS server's secret. Returns the token, or null when
+    // links are disabled. Caller supplies { sid, scope:['speak','type'], name?, exp (epoch s), nonce };
+    // role is irrelevant (the server always forces participant). Keep exp SHORT. NEVER exposes the secret.
+    mintCap: (payload = {}) => {
+      if (!CAP_SECRET) return null;
+      const nonce = payload.nonce || ('g-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10));
+      const exp = (typeof payload.exp === 'number') ? payload.exp : (Math.floor(Date.now() / 1000) + 3600);   // default 1h
+      const scope = Array.isArray(payload.scope) ? payload.scope.filter((s) => typeof s === 'string') : ['speak', 'type'];
+      return mintCapability({ v: 1, sid: payload.sid != null ? payload.sid : SESSION_ID, role: 'participant', scope, name: payload.name || null, exp, nonce }, CAP_SECRET);
+    },
+    // revokeCap: revoke a guest link by nonce. Future hellos presenting that nonce are rejected even if
+    // the HMAC + exp are still valid. Also closes any live connection currently holding that nonce.
+    revokeCap: (nonce) => {
+      if (!nonce) return false;
+      revokedNonces.add(nonce);
+      for (const [ws, c] of conns.entries()) if (c.isGuest && c.capNonce === nonce) { try { ws.close(); } catch (e) {} }
+      log.info('cap', 'revoked', { nonce: String(nonce).slice(0, 8) });   // only a short prefix, for audit; not the token
+      return revokedNonces.has(nonce);
+    },
+    isCapRevoked: (nonce) => revokedNonces.has(nonce),
     // Clear the display back to idle/branding. Sends {t:'clear'} to live clients AND drops the stored
     // display descriptor so a RECONNECTING client converges to idle branding, not the stale last content
     // (fixes "stuck on the end card, never reverts to branding"). Use as the standard session-end primitive.

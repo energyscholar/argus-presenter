@@ -143,7 +143,11 @@
     role: q.get('role') || savedRole || 'participant',
     // Token pass-through: when a PRESENTER_CONTROL_TOKEN is configured server-side,
     // ?token=… in the URL satisfies the AUTH-1 gate for a control role. Default: none (open).
-    token: q.get('token') || null
+    token: q.get('token') || null,
+    // Plan 0472 P4: a permissioned GUEST capability link (?cap=<signed token>). Pass it through on the
+    // hello; the server verifies the HMAC + expiry + revocation and grants a scoped guest identity
+    // (participant only). No client-side trust — the client just forwards the bearer token.
+    cap: q.get('cap') || null
   };
   function renderWho(){ document.getElementById('who').textContent = identity.role + ' · ' + identity.userName + ' (' + identity.userId + ')'; }
   renderWho();
