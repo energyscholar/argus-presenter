@@ -83,6 +83,10 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // be shown. A descriptor is re-rendered per connection on hello.
   const displayByRole = {};    // role -> descriptor
   const displayByUser = new Map(); // userId -> descriptor (per-user override)
+  // ATT (Plan 0466, decision 1): presenter-gated "roster visible to attendees", DEFAULT OFF.
+  // Presenter/ai always see the full roster; a participant attendance-request is answered
+  // self-only until the presenter turns this ON. In-memory session state (v0.1).
+  let rosterVisibleToAttendees = false;
   const everSeen = new Set();  // userIds seen (to count reconnects)
   let contentModule = null;    // Group I: the current content module { title?, beats:[{component,opts,requires?}] }
   let currentBeat = -1;        // index of the displayed beat
@@ -323,7 +327,11 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     // Capture client IP (x-forwarded-for through a proxy, else the socket peer). Shown ONLY to
     // presenter/ai in the user list — never broadcast to participants.
     const ip = ((req && (req.headers['x-forwarded-for'] || (req.socket && req.socket.remoteAddress))) || '').toString().split(',')[0].trim() || null;
-    conns.set(ws, { id: 'c' + (++connSeq), userId: null, userName: null, role: 'participant', lastSeen: Date.now(), ip });
+    // ATT (Plan 0466): connectedAt = this connection's start (connectedSec; RESETS on reconnect —
+    // a reconnect is a NEW connection record). lastActive = last DELIBERATE human interaction,
+    // seeded to 0/epoch so a brand-new OR reconnected connection reads `afk` until it actually
+    // interacts (idleSec = now − lastActive ≫ afkSec). lastSeen (keepalive) is separate.
+    conns.set(ws, { id: 'c' + (++connSeq), userId: null, userName: null, role: 'participant', lastSeen: Date.now(), connectedAt: Date.now(), lastActive: 0, ip });
     ws.on('message', (buf) => {
       let m; try { m = JSON.parse(buf.toString()); } catch (e) { return; }
       const c = conns.get(ws);
@@ -363,6 +371,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         updateChatListeners();   // P3
         emit('presence', presence()); pushPresence();
       } else if (m.t === 'result') {
+        if (c) c.lastActive = Date.now();   // ATT: beat answer/continue + poll vote = deliberate human interaction
         // Authoritative identity from the connection, NOT the client payload.
         const r = Object.assign({}, m.msg, { userId: c.userId, userName: c.userName, channel: c.userId });
         shimAnswer(c, r);      // D2: poll vote (and generic answer) -> store op
@@ -392,11 +401,31 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         // Eyes-on acknowledgement: the viewer clicked CONFIRM on a requireAck chime.
         const ackId = (m && m.ackId) || 'ready';
         c.eyesOn = Date.now();                              // this connection is confirmed watching (not AFK)
+        c.lastActive = Date.now();                          // ATT: eyes-on CONFIRM click = deliberate interaction
         let a = acks.get(ackId);
         if (!a) { a = { message: null, requestedAt: null, target: 'all', by: new Map() }; acks.set(ackId, a); }
         a.by.set(c.userId, { userName: c.userName, at: c.eyesOn });
         log.info('ack', 'eyes-on', { ackId, userId: c.userId });
         pushPresence();                                    // control user-list reflects eyes-on immediately
+      } else if (m.t === 'attendance-request') {
+        // ATT (Plan 0466 §2.5): request/reply — NO standing push. Redaction is SERVER-SIDE,
+        // keyed on the CONNECTION's authoritative role. Control/ai always get the full roster;
+        // a participant gets the redacted roster ONLY when the presenter gate is ON, else self-only.
+        const control = (c.role === 'presenter' || c.role === 'ai');
+        if (control) {
+          const att = api.attendance({ activeSec: m.activeSec, afkSec: m.afkSec, viewerRole: c.role });
+          send(ws, { t: 'attendance', roster: att.roster, summary: att.summary, rosterVisible: rosterVisibleToAttendees });
+        } else if (rosterVisibleToAttendees) {
+          const att = api.attendance({ activeSec: m.activeSec, afkSec: m.afkSec, viewerRole: 'participant' });
+          send(ws, { t: 'attendance', roster: att.roster, summary: att.summary });
+        } else {
+          // gate OFF ⇒ deny = self-only (decision 1). Reuse the redacted build, filter to self.
+          const att = api.attendance({ activeSec: m.activeSec, afkSec: m.afkSec, viewerRole: 'participant' });
+          const self = att.roster.filter((r) => r.userId === c.userId);
+          const summary = { active: 0, idle: 0, afk: 0, total: self.length };
+          for (const r of self) summary[r.status]++;
+          send(ws, { t: 'attendance', roster: self, summary });
+        }
       }
     });
     ws.on('close', () => { const c = conns.get(ws); if (c && c.userId) byUser.delete(c.userId); conns.delete(ws); updateChatListeners(); emit('presence', presence()); });
@@ -407,6 +436,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // client cannot forge/suppress another's dedup. Diffs are read-perm filtered per
   // recipient (S7). Broadcast-all v1 (§7 Q1).
   function handleOp(c, m) {
+    if (c) c.lastActive = Date.now();   // ATT: any store op (chat/slider/form/pointer/vote) = deliberate human interaction
     // X6 per-conn rate limit on DURABLE ops (ephemeral is coalesced/uncapped).
     if (!isEphemeral(m && m.path)) {
       const now = Date.now();
@@ -515,6 +545,8 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         break;
       }
       case 'op': handleOp(c, { path: a.path, verb: a.verb, value: a.value, opId: a.opId }); break;   // drive an op as the presenter
+      // ATT (Plan 0466, decision 1): presenter toggles whether attendees may see the roster.
+      case 'set_roster_visible': rosterVisibleToAttendees = !!a.value; log.info('att', 'roster-visible', { value: rosterVisibleToAttendees }); break;
       case 'set_module': api.setModule(a.module || { beats: a.beats || [] }); break;   // Group I
       case 'show_beat': api.showBeat(a.id != null ? a.id : (a.index | 0)); break;   // by id (branch nav) or index
       case 'show_default': api.showDefault(); break;   // DEF-1: Home → module title page (or branding fallback)
@@ -707,6 +739,34 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       const by = a ? [...a.by.entries()].map(([userId, v]) => ({ userId, userName: v.userName, at: v.at })) : [];
       const acked = new Set(by.map((b) => b.userId));
       return { ackId, message: a ? a.message : null, requestedAt: a ? a.requestedAt : null, acked: by.length > 0, count: by.length, by, pending: viewerIds.filter((u) => u && !acked.has(u)) };
+    },
+    // ATT (Plan 0466 §2.4): passive/continuous liveness roster + summary, redacted per viewerRole.
+    // idleSec = now − lastActive (the headline number: seconds since the last DELIBERATE interaction);
+    // status derives from thresholds (active < activeSec · idle · afk ≥ afkSec). A connection that has
+    // never interacted this session (lastActive = 0) reads a huge idleSec ⇒ afk (fresh/reconnect = afk).
+    attendance: ({ activeSec = 30, afkSec = 120, viewerRole = 'participant' } = {}) => {
+      const now = Date.now();
+      const control = (viewerRole === 'presenter' || viewerRole === 'ai');
+      // TODO(opsec): throttle control-view info exposure — see plan 0466 §Deferred
+      const full = [...conns.values()].map((c) => {
+        const idleSec = Math.floor((now - (c.lastActive || 0)) / 1000);
+        const status = idleSec < activeSec ? 'active' : (idleSec < afkSec ? 'idle' : 'afk');
+        return {
+          userId: c.userId, userName: c.userName, role: c.role,
+          connectedSec: Math.floor((now - (c.connectedAt || now)) / 1000),
+          idleSec, status,
+          everActive: (c.lastActive || 0) > 0,               // false ⇒ never interacted this connection (idleSec is nominal)
+          eyesOnAgoSec: c.eyesOn ? Math.floor((now - c.eyesOn) / 1000) : null,
+          display: displayIdFor(c),
+          ip: c.ip, socketId: c.id,                          // CONTROL-ONLY (stripped below for participants)
+        };
+      });
+      const summary = { active: 0, idle: 0, afk: 0, total: full.length };
+      for (const r of full) summary[r.status]++;
+      // Redaction is SERVER-SIDE (global invariant): participants get names + role + status ONLY —
+      // no ip/socketId/display/idle. Control/ai get the full rows (usable by the overlay's per-row buttons).
+      const roster = control ? full : full.map((r) => ({ userId: r.userId, userName: r.userName, role: r.role, status: r.status }));
+      return { roster, summary };
     },
     closePoll: (promptId) => { const p = polls.get(promptId); if (p) p.open = false; serverApply({ path: 'polls/' + promptId + '/open', verb: 'set', value: false }); return { promptId, ...tally(promptId) }; },
     // Debug snapshot for the ?debug overlay + the presenter_debug MCP tool.
