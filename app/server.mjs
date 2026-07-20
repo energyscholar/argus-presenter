@@ -27,6 +27,7 @@ import { createStore, isEphemeral, validOp } from './state.mjs';
 import { validate, summarize } from './validate.mjs';
 import { createAsr } from './asr.mjs';
 import { verifyCapability, mintCapability } from '../lib/capability.mjs';
+import { selectProfile, DEFAULT_PROFILE } from './profiles.mjs';
 
 // X6 resilience caps.
 const MAX_CONNS = 200;              // connection cap
@@ -108,7 +109,12 @@ function sendStatic(res, req, absPath, contentType) {
   } catch (e) { res.writeHead(404); res.end('not found'); }
 }
 
-export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null } = {}) {
+export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null, profile = DEFAULT_PROFILE } = {}) {
+  // Plan 0473 P1 — SESSION-TYPE PROFILE (the config-knob spine). Selected ONCE at session start;
+  // its knobs are DATA the working-set engine will READ (settling/shedding/budget/floor/digest/queue).
+  // Unknown/absent name falls back cleanly to the default (wearable). NO knob is consumed in P1 — this
+  // just establishes the config + selection + readability (api.profile()). Profiles are data, not forks.
+  const SESSION_PROFILE = selectProfile(profile);
   // Plan 0473 P0: audio-in is OPTIONAL, DEFAULT OFF. Explicit boolean wins; else the env flag; else off.
   // When off, the served presenter.html carries ZERO voice code (strip below) — the audience display
   // is byte-clean of voice. The unified inbox + typed chat are NOT voice and stay on regardless.
@@ -955,6 +961,10 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   const api = {
     url: () => `http://127.0.0.1:${httpServer.address().port}`,
     port: () => httpServer.address().port,
+    // Plan 0473 P1 — READ the active session profile's knobs (settling/shedding/budget/floor/digest/
+    // queue). The engine/tools call this to configure behaviour; they must consume knobs, never the
+    // profile NAME (drift guard). No knob is consumed yet in P1 — this only exposes the config.
+    profile: () => SESSION_PROFILE,
     presence,
     on: (ev, cb) => { if (listeners[ev]) listeners[ev].push(cb); },
     pushContent(target, html, contentId) {
