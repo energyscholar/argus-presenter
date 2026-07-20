@@ -482,7 +482,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       }
       } catch (e) { try { log.warn('ws', 'dispatch-error', { err: String(e && e.message || e) }); } catch {} }   // Plan 0471 C2: defense-in-depth
     });
-    ws.on('close', () => { const c = conns.get(ws); if (c && c.userId) byUser.delete(c.userId); conns.delete(ws); updateChatListeners(); emit('presence', presence()); });
+    ws.on('close', () => { const c = conns.get(ws); if (c && c.userId) byUser.delete(c.userId); conns.delete(ws); updateChatListeners(); emit('presence', presence()); pushPresence(); });   // Plan 0471 M4: refresh the control user-list on disconnect (connect already does)
   });
 
   // ---- Op protocol (Plan 0435 C3): {t:'op'} -> store.apply -> broadcast diff ----
