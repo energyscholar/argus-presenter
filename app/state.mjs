@@ -60,6 +60,9 @@ export function validOp(op) {
 const OPLOG_MAX = 1000;
 // Bound on remembered opIds for dedup (B6).
 const SEEN_MAX = 4000;
+// Plan 0471 L1: max items in a participant-writable id-keyed collection (chat, map/markers,
+// crud/*/items). The rate limiter caps additions/sec; this caps TOTAL — evict oldest (FIFO).
+const COLLECTION_MAX = 1000;
 
 export function createStore({ permissions } = {}) {
   const perms = permissions || createPermissions();
@@ -147,6 +150,20 @@ export function createStore({ permissions } = {}) {
         if (id == null) return null;               // add requires an id-bearing item
         const p = path + '/' + id;
         _setPath(p, clone(value));
+        // Plan 0471 L1: cap the collection's TOTAL size — evict oldest (FIFO by insertion order).
+        // The diff carries the evictions (null = removed) so clients drop them too.
+        const coll = get(path);
+        if (coll && typeof coll === 'object' && !Array.isArray(coll)) {
+          const keys = Object.keys(coll);
+          if (keys.length > COLLECTION_MAX) {
+            const diff = { [p]: clone(value) };
+            for (let i = 0; i < keys.length - COLLECTION_MAX; i++) {
+              if (keys[i] === id) continue;        // never evict the just-added item
+              delete coll[keys[i]]; diff[path + '/' + keys[i]] = null;
+            }
+            return diff;
+          }
+        }
         return { [p]: clone(value) };
       }
       case 'remove': {

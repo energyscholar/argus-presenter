@@ -96,6 +96,8 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // self-only until the presenter turns this ON. In-memory session state (v0.1).
   let rosterVisibleToAttendees = false;
   const everSeen = new Set();  // userIds seen (to count reconnects)
+  const everSeenOrder = [];    // Plan 0471 L2: FIFO to bound everSeen (client controls userId)
+  const EVER_SEEN_MAX = 5000;
   let contentModule = null;    // Group I: the current content module { title?, beats:[{component,opts,requires?}] }
   let currentBeat = -1;        // index of the displayed beat
   // X3 telemetry sink (controller-read-only). Feedback from stress points.
@@ -399,7 +401,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         // otherwise a full role-filtered snapshot (Memento).
         resyncOrSnapshot(ws, c, m.lastVersion);
         redisplayFor(ws, c);   // C6: re-push the currently-displayed content module
-        if (everSeen.has(c.userId)) telem.reconnects++; else everSeen.add(c.userId);
+        if (everSeen.has(c.userId)) telem.reconnects++; else { everSeen.add(c.userId); everSeenOrder.push(c.userId); if (everSeenOrder.length > EVER_SEEN_MAX) everSeen.delete(everSeenOrder.shift()); }   // Plan 0471 L2: bounded
         send(ws, { t: 'ping', ts: Date.now() });   // X3 RTT probe
         log.info('conn', 'hello', { socketId: c.id, userId: c.userId, role: c.role, lastVersion: m.lastVersion || 0 });
         updateChatListeners();   // P3
