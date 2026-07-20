@@ -513,11 +513,11 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       send(ws, { t: 'resync', from: lv, to: store.version(), count: missed.length });
       for (const e of missed) {
         const visible = {};
-        for (const p of Object.keys(e.diff)) if (store.perms.canRead(c.role, p)) visible[p] = e.diff[p];
+        for (const p of Object.keys(e.diff)) if (store.perms.canRead({ role: c.role, userId: c.userId }, p)) visible[p] = e.diff[p];   // Plan 0471 C3: actor-aware read
         if (Object.keys(visible).length) send(ws, { t: 'host', msg: { source: 'argus-host', type: 'diff', diff: visible, by: e.by, version: e.version } });
       }
     } else {
-      send(ws, { t: 'snapshot', state: store.snapshot(c.role).state, version: store.version() });
+      send(ws, { t: 'snapshot', state: store.snapshot({ role: c.role, userId: c.userId }).state, version: store.version() });   // Plan 0471 C3: actor-aware snapshot
     }
   }
 
@@ -596,7 +596,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     let recipients = 0;
     for (const [ws, c] of conns.entries()) {
       const visible = {};
-      for (const p of Object.keys(diff)) if (store.perms.canRead(c.role, p)) visible[p] = diff[p];
+      for (const p of Object.keys(diff)) if (store.perms.canRead({ role: c.role, userId: c.userId }, p)) visible[p] = diff[p];   // Plan 0471 C3: actor-aware read (per-recipient vote redaction)
       if (Object.keys(visible).length) {
         send(ws, { t: 'host', msg: { source: 'argus-host', type: 'diff', diff: visible, by: meta.by, version: meta.version } });
         recipients++;
@@ -685,7 +685,14 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     if (poll) {
       if (!poll.open) return;   // closed -> denied
       const res = serverApply({ path: 'polls/' + pid + '/votes/' + c.userId, verb: 'set', value: r.value }, { userId: c.userId, role: c.role });
-      if (res && res.diff) emit('poll', { type: 'update', promptId: pid, ...tally(pid) });   // diff broadcast (serverApply) drives poll-results
+      if (res && res.diff) {
+        emit('poll', { type: 'update', promptId: pid, ...tally(pid) });   // controllers (presenter/ai) get raw vote diffs (override) → live poll-results
+        // Plan 0471 D1: raw per-user votes are ALWAYS controller-only (C3 default-deny). The
+        // AGGREGATE tally is what resultsMode governs. 'all' (public) → publish counts-only to a
+        // readable slice so EVERYONE gets the aggregate (never per-user rows). 'control' (default,
+        // private) → skip it; only controllers see the tally.
+        if (poll.resultsMode === 'all') { const t = tally(pid); serverApply({ path: 'polls/' + pid + '/results', verb: 'set', value: { tally: t.tally, count: t.count } }); }
+      }
     } else {
       serverApply({ path: 'answers/' + pid + '/' + c.userId, verb: 'set', value: r.value }, { userId: c.userId, role: c.role });
     }
@@ -723,12 +730,16 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       for (const ws of targets(target)) { sendComponentTo(ws, conns.get(ws), desc); count++; }
       return count;
     },
-    openPoll({ promptId, prompt, options, target = 'participant', resultsTarget = null }) {
-      log.info('poll', 'open', { promptId, options: (options || []).length });
-      polls.set(promptId, { spec: { prompt, options }, open: true });
+    openPoll({ promptId, prompt, options, target = 'participant', resultsTarget = null, resultsMode = 'control' }) {
+      // Plan 0471 D1: resultsMode 'control' (default, private — matches OPSEC) | 'all' (public aggregate).
+      const mode = resultsMode === 'all' ? 'all' : 'control';
+      log.info('poll', 'open', { promptId, options: (options || []).length, resultsMode: mode });
+      polls.set(promptId, { spec: { prompt, options }, open: true, resultsMode: mode });
       // D1: seed the store so the poll is a first-class state slice.
       serverApply({ path: 'polls/' + promptId + '/spec', verb: 'set', value: { prompt, options } });
       serverApply({ path: 'polls/' + promptId + '/open', verb: 'set', value: true });
+      serverApply({ path: 'polls/' + promptId + '/resultsMode', verb: 'set', value: mode });   // controllers act on it (participants: denied, harmless)
+      if (mode === 'all') serverApply({ path: 'polls/' + promptId + '/results', verb: 'set', value: { tally: {}, count: 0 } });   // seed readable aggregate
       // C6: remember the poll display so late joiners see the choice / live results.
       setDisplay(target, { kind: 'poll-choice', promptId });
       // Assemble a per-channel `choice` stamped with that channel's identity.
@@ -810,14 +821,14 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       }));
       return { roster, summary };
     },
-    closePoll: (promptId) => { const p = polls.get(promptId); if (p) p.open = false; serverApply({ path: 'polls/' + promptId + '/open', verb: 'set', value: false }); return { promptId, ...tally(promptId) }; },
+    closePoll: (promptId) => { const p = polls.get(promptId); if (p) p.open = false; serverApply({ path: 'polls/' + promptId + '/open', verb: 'set', value: false }); const t = tally(promptId); if (p && p.resultsMode === 'all') serverApply({ path: 'polls/' + promptId + '/results', verb: 'set', value: { tally: t.tally, count: t.count } }); return { promptId, ...t }; },   // Plan 0471 D1: publish final aggregate in public mode
     // Debug snapshot for the ?debug overlay + the presenter_debug MCP tool.
     // state = current authoritative view (proto: polls; the core store extends this
     // in group C); opLog = the structured-log tail (role-redacted for the viewer).
     debugDump: (role = 'presenter') => ({
       presence: presence(),
       connections: [...conns.values()].map((c) => ({ socketId: c.id, userId: c.userId, role: c.role })),
-      state: { polls: [...polls.entries()].map(([id, p]) => ({ promptId: id, open: p.open, ...tally(id) })), store: store.snapshot(role).state },
+      state: { polls: [...polls.entries()].map(([id, p]) => ({ promptId: id, open: p.open, ...tally(id) })), store: store.snapshot({ role, userId: null }).state },
       version: store.version(),
       opLog: log.view(role, { max: 50 }),
       // Telemetry is controller-read-only (S7): only presenter/ai see the operational sink.
@@ -905,7 +916,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       const entries = store.oplogSince(0);
       const total = entries.length;
       const CONTROLLERS = new Set(['ai', 'presenter']);
-      const peerVisible = entries.filter((e) => e.role === 'participant' && store.perms.canRead('participant', e.path)).length;
+      const peerVisible = entries.filter((e) => e.role === 'participant' && store.perms.canRead({ role: 'participant', userId: null }, e.path)).length;   // Plan 0471 C3
       const teacher = entries.filter((e) => CONTROLLERS.has(e.role)).length;
       // Peer->peer response edges: a participant op preceded (within windowMs) by a
       // DIFFERENT participant's op = a peer responding to a peer.

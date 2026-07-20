@@ -1,0 +1,545 @@
+
+> argus-presenter@0.1.0 test
+> node harness/test.mjs
+
+  ok   click YES emits answer=yes
+  ok   answer carries promptId=p1
+  ok   answer carries userId=u1
+  ok   answer carries userName=Alice
+  ok   ready event emitted
+  ok   ArrowRight selects+emits NO
+  ok   two answers on change
+  ok   last answer wins = yes
+PASS  rep 01 — choice: click / keyboard / change-of-mind / identity / ready
+  ok   choice emitted good
+  ok   text emitted value
+  ok   both identity-stamped u1
+  ok   two distinct components on one surface
+  ok   empty required submit blocked
+PASS  rep 03 — scene: multi-component surface + validation
+  ok   yes count -> 3
+  ok   no count -> 2
+  ok   total shows 5 votes
+  ok   yes bar wider than no bar
+  ok   yes bar at 60%
+PASS  rep 04 — poll-results: vote-slice diffs update bars + counts
+  ok   slider emitted answer
+  ok   slider aria-valuenow=100
+  ok   slider aria-valuetext has unit
+  ok   SVG reacted to 100
+  ok   ArrowLeft steps slider to 15
+  ok   SVG followed to 15
+PASS  rep 06 — slider -> svg-reactive via in-page bus
+  ok   narration continue emitted
+  ok   card reveal emitted
+  ok   reveal content now shown
+  ok   narration text rendered
+  ok   card title rendered
+  ok   two images present (card + image)
+PASS  rep 08 — display: narration + card reveal + image
+  ok   dice rolled + emitted answer
+  ok   dice total in 2d6+2 range (4-14)
+  ok   dice success flag matches target
+  ok   choice approach=observe
+  ok   dice result displayed
+PASS  rep 09 — gm scene: narration + card + dice + choice
+  ok   visited steps 0,1,2
+  ok   concept reveal fired
+  ok   knowledge check answered = shared
+  ok   flow completed
+PASS  rep 10 — teaching stepper: lesson -> concept -> knowledge check
+  ok   plugin component weather rendered
+  ok   weather-update raised humidity to 100%
+  ok   forecast choice = umbrella
+  ok   checkpoint answered = yes
+  ok   checkpoint hint revealed
+PASS  rep 11 — plugins: example forecast + train-the-trainer checkpoint
+  ok   empty form submit blocked
+  ok   form emitted answer with name
+  ok   email captured
+  ok   select role captured (default instructor)
+PASS  rep 12 — form: validation + multi-field submit
+  ok   map viewport renders
+  ok   neutral grid drawn (>=8 lines)
+  ok   no preset art in neutral default
+  ok   no domain labels (no Market)
+PASS  A1 — core map default is a neutral grid (no preset art)
+  ok   preset renders 8 blocks
+  ok   preset renders the plaza
+  ok   preset labels include Market
+PASS  A1 — city-grid renders ONLY via the example preset
+  ok   map.js has no cityGrid()
+  ok   map.js has no block names
+  ok   map.css has no preset classes
+  ok   plugin provides cityGrid + registers city-grid
+PASS  A1 — core map source contains no domain art; the plugin does
+  ok   choice renders a neutral default
+  ok   text-input renders a neutral default
+  ok   slider renders a neutral default
+  ok   dice renders a neutral default
+  ok   form renders a neutral default
+  ok   poll-results renders a neutral default
+  ok   narration renders a neutral default
+  ok   card renders a neutral default
+  ok   image renders a neutral default
+  ok   map renders a neutral default
+  ok   svg-reactive renders a neutral default
+  ok   stepper renders a neutral default
+  ok   scene renders a neutral default
+  ok   crud renders a neutral default
+PASS  A2 — each core component renders with empty opts (neutral default, no crash)
+  ok   choice default offers Yes
+  ok   choice default offers No
+PASS  A2 — choice neutral default is Yes/No
+  ok   yes = 3 from slice
+  ok   no = 2 from slice
+  ok   total shows 5 votes
+  ok   yes bar at 60%
+  ok   change-of-mind recomputes: yes=2 no=0
+PASS  D3 — poll-results recomputes tally from polls/{pid}/votes diffs
+  ok   after add+remove, 2 rows
+  ok   rows are the seeded b + added c (a removed)
+PASS  F1 — crud renders seeded items; diffs add/remove rows
+  ok   add op emitted
+  ok   add carries the field value + id
+PASS  F2 — add emits an add op with the field values
+  ok   merge op emitted for the edited item
+  ok   merge carries the field
+PASS  F2 — editing a field emits a merge op
+  ok   remove op emitted
+  ok   remove targets item a
+PASS  F2 — remove emits a remove op with the item id
+  ok   field disabled when locked by another
+  ok   remove disabled when locked by another
+PASS  F3 — an item locked by ANOTHER user blocks this user's edit
+  ok   owner can edit their locked item
+PASS  F3 — the lock OWNER may edit their locked item
+  ok   presenter can edit despite another user's lock
+PASS  F3 — a PRESENTER overrides another user's lock
+  ok   lock op emitted with owner
+PASS  F3 — clicking lock on an unlocked item emits a lock op
+  ok   ArrowRight advances curBeat
+  ok   Space advances curBeat
+  ok   ArrowLeft goes back
+  ok   digit 1 jumps to section 1 first beat
+  ok   keys ignored while typing in an input
+  ok   showing content before Escape (not idle)
+  ok   Escape with config open closed it WITHOUT stopping
+  ok   Escape with config closed fires STOP
+PASS  KBD1 — keyboard transport: arrows/Space/digit jump/Escape + typing guard
+  ok   exactly ONE visible connectivity-LED element on /control
+  ok   the survivor is #led2 (upper-right settings dot)
+  ok   old header #led element is GONE from the DOM
+  ok   #led2 lives inside the #led-btn settings button
+  ok   #led2 reflects the live socket (.on while connected)
+PASS  LED1 — /control shows exactly ONE visible connectivity LED (#led2 in #led-btn)
+  ok   outline column is scrolled well down before the push
+  ok   window.scrollY unchanged by the autofocus push
+  ok   outline column scrollTop unchanged by the autofocus push
+  ok   focus-steal neutralized — iframe does not hold focus
+  ok   preview dock is position:fixed
+  ok   preview sits geometrically LEFT of #led-btn
+  ok   preview fully visible in the viewport while scrolled down
+  ok   dock z-index stays below the config overlay
+PASS  PV1 — Live Preview: autofocus push does not scroll; dock is fixed left of #led-btn
+  ok   quick-switch button present + visible for a presenter-granted connection
+  ok   button sits in the top-left corner
+  ok   button does not occlude the green dot
+  ok   button z-index is below the config overlay
+  ok   button called window.open once
+  ok   window.open uses the NAMED target presenter-control
+  ok   opened URL is same-origin
+  ok   opened URL targets /control
+  ok   opened URL carries role=presenter
+  ok   opened URL carries THIS page's token (not hardcoded)
+PASS  QS1 — presenter-granted: button visible, named window.open to /control with page token
+  ok   quick-switch button absent for participant
+PASS  QS1 — participant: button hidden
+  ok   quick-switch button hidden when welcome downgrades the role
+PASS  QS1 — silent downgrade (gated server, wrong token): button hidden despite ?role=presenter
+  ok   shared tooltip exists and starts hidden
+  ok   mouseenter shows instantly
+  ok   multiline: one div per line (3)
+  ok   first line text is the first data-tip line
+  ok   first line is bold
+  ok   mousemove repositions the tooltip
+  ok   mouseleave hides the tooltip
+  ok   no tooltip on nodes without data-tip
+  ok   <title> child removed when data-tip present
+  ok   aria-label keeps the old title text
+  ok   tooltip works for the second node
+  ok   zero new ops (purely client-side)
+PASS  T1 — data-tip nodes drive the shared styled tooltip
+  ok   tooltip shown before zoom
+  ok   tooltip hidden on zoom start
+PASS  T1 — tooltip hides on pan/zoom start
+  ok   content box is the scaled 800px box
+  ok   click op emitted
+  ok   click px is the content fraction (0.05)
+  ok   click py is the content fraction (0.10)
+  ok   non-presenter pointer op emitted (cursors default all)
+  ok   pointer px/py are content fractions
+  ok   pointer op carries the user name
+PASS  T2 — click + pointer emit CONTENT-space fractions under pan+zoom
+  ok   exactly two cursor elements
+  ok   cursors keyed by the op path suffix
+  ok   name tags rendered
+  ok   tints differ per user
+  ok   self cursor NOT rendered
+  ok   cursors live inside the content layer
+PASS  T2 — per-user cursors: two peers render tinted + named, self suppressed
+  ok   no cursor elements with cursors:off
+  ok   no pointer emission with cursors:off
+PASS  T2 — cursors:"off" renders none and skips non-presenter emission
+  ok   marker rendered
+  ok   marker is a child of the content layer
+  ok   marker x tracks the content point after zoom
+  ok   marker y tracks the content point after zoom
+  ok   marker dot apparent size constant under zoom (counter-scale)
+  ok   marker keeps the clicker name
+PASS  T2 — markers stay pinned to the content point under pan/zoom, constant size
+  ok   fixture: >=15 data-tip nodes wired
+  ok   fixture: sampled first node shows a tooltip
+  ok   fixture: sampled last node shows a tooltip
+  ok   fixture: sampled tooltip first line matches
+PASS  T3 — dense data-tip overlay wires every node (neutral fixture)
+  ok   (skip) no local modules/arabus.json
+PASS  T3 — local dev module beat wires its overlay (skips when absent)
+  ok   host content container is full-bleed for the map
+  ok   viewport width >= 98% of the window
+  ok   viewport height >= 92% of the window
+PASS  T4 — map viewport fills the display (full-bleed host, label bar only)
+  ok   whole content box inside the viewport (contain)
+  ok   content keeps the intrinsic 1.6 aspect
+  ok   at least one axis ~fills the viewport
+  ok   fit is centered
+PASS  T4 — initial view is zoom-to-fit (contain): whole SVG visible at intrinsic aspect
+  ok   neutral grid drawn (>=8 lines)
+  ok   grid content box is square
+  ok   grid contained in the viewport
+PASS  T4 — neutralGrid fallback still renders, sized square, contained
+  ok   two pings rendered (one per user)
+  ok   each ping has 2-3 rings
+  ok   rings run the radar keyframes
+  ok   ring animation repeats for the lifetime
+  ok   ring tints differ per user
+  ok   name tags rendered
+  ok   bright center dot present
+  ok   pings live inside the content layer (T2 anchoring)
+  ok   ping x anchors the content point
+  ok   ping y anchors the content point
+PASS  T5 — a marker op renders an animated radar ping, tinted per user, content-anchored
+  ok   ping still present at ~3.5 s
+  ok   ping not yet fading at ~3.5 s
+PASS  T5 — ping still at full strength at ~3.5 s
+  ok   ping fading at ~4.7 s
+  ok   ping removed by ~6 s
+PASS  T5 — ping fades over the last second and is removed by ~6 s
+  ok   presenter-screen button called window.open once
+  ok   window.open uses the NAMED target presenter-display
+  ok   opened URL is same-origin
+  ok   opened URL targets the display page root
+  ok   opened URL carries role=presenter
+  ok   opened URL carries the page's name
+  ok   opened URL carries THIS page's token (not hardcoded)
+  ok   presenter-screen button sits LEFT of the preview dock
+  ok   preview enlarged to ≥280px wide
+  ok   preview still geometrically LEFT of #led-btn
+  ok   live-preview checkbox sits UNDER the green dot (below its bottom edge)
+  ok   live-preview checkbox horizontally overlaps the dot column
+  ok   Now Playing block lives in the top frame
+  ok   Module Validate&Load lives in the top frame
+  ok   series nav stays OUT of the top frame (lower-left)
+  ok   outline stays OUT of the top frame (lower-left)
+PASS  TF1 — presenter-screen button: named window.open, same-origin URL, page token; geometry
+  ok   Now Playing visible by default
+  ok   config checkbox reflects the visible state (checked)
+  ok   Now Playing hidden after toggling off
+  ok   config overlay stayed open across the toggle click
+  ok   Now Playing STAYS hidden after reload
+  ok   config checkbox unchecked after reload
+  ok   Now Playing visible again after toggling on
+PASS  TF1 — Now Playing toggle: hides via config overlay, persists across reload, default visible
+  ok   Sec 1 details open before jump click
+  ok   Sec 1 details open-state unchanged by jump click
+  ok   Seq B details open-state unchanged by jump click
+  ok   summary click still collapses the section
+  ok   summary click still re-expands the section
+  ok   unresolvable-only section has no jump button
+  ok   empty section has no jump button
+PASS  TOC1 — outline section/sequence jump buttons: show_beat + details state untouched + empty tiers
+  ok   5 participants connected
+  ok   tally yes=3
+  ok   tally no=2
+  ok   after flip yes=4
+  ok   after flip no=1
+  ok   count still 5
+  ok   vote after close ignored
+  ok   tally unchanged after close
+PASS  rep 02 — poll: 5-user aggregation, change-of-mind LWW, close guard
+PASS  T3 overlay: conn open + socketId + captured content message; state inspector present
+  ok   presenter results yes=2
+  ok   presenter results no=1
+  ok   presenter total 3 votes
+PASS  rep 05 — live poll: presenter results update as participants vote
+  ok   presenter_start returns url
+  ok   presenter_status shows 3 users
+  ok   MCP get_poll tally a=2
+  ok   push_component reached 1 channel
+  ok   reload_clients reached 3
+  ok   close_poll returns final tally a=2
+PASS  rep 07 — mcp surface drives a full poll + push + reload + close
+  ok   player sees public intel
+  ok   player does NOT see GM secret
+  ok   GM sees public intel
+  ok   GM sees GM secret
+PASS  rep 13 — visibility: GM-only content stripped from player channel
+  ok   Bob sees Alice's named click (peer-to-peer)
+  ok   Alice sees her own click echoed
+PASS  rep 14 — map: peer-to-peer named click (user -> all)
+  ok   user A add propagates to user B
+  ok   server store holds the item
+  ok   presenter lock blocks user B's edit
+PASS  rep 15 — shared-list: user A add propagates to B; presenter lock blocks B
+  ok   core push loads NO plugin (0 blocks)
+  ok   example push loads city-grid preset (8 blocks)
+PASS  A7 — core push = no plugin; example push = city-grid preset
+PASS  C1 — a >256KB frame does NOT kill the server; other clients keep working
+PASS  C2 — a bare `null` frame does NOT kill the server
+  ok   card renders non-blank for a participant
+  ok   choice renders non-blank for a participant
+  ok   crud renders non-blank for a participant
+  ok   dice renders non-blank for a participant
+  ok   form renders non-blank for a participant
+  ok   image renders non-blank for a participant
+  ok   map renders non-blank for a participant
+  ok   narration renders non-blank for a participant
+  ok   poll-results renders non-blank for a participant
+  ok   scene renders non-blank for a participant
+  ok   slider renders non-blank for a participant
+  ok   stepper renders non-blank for a participant
+  ok   svg-reactive renders non-blank for a participant
+  ok   text-input renders non-blank for a participant
+PASS  INV-COMPONENTS — all 14 components render (non-blank) for a participant under default-deny read
+PASS  C3 — a peer never sees another's vote (live); voter sees own; controller sees all
+PASS  C4 — hostile userName renders inert in the control user-list (no live img)
+PASS  D1 — control mode: only controllers get the tally; participants get no aggregate
+PASS  D1 — all mode: everyone gets the AGGREGATE; still no raw peer votes
+PASS  AUT-1 — POST writes a module; it then appears in the registry + fetchable
+PASS  AUT-1 — AUTH gate: no token → 403; correct token → 200
+PASS  AUT-1 — path traversal id → 400, nothing written outside MODULES_DIR
+  ok   presenter received {t:module-changed, id:_hot_test}
+PASS  AUT-2 — a new module file on disk pushes {t:module-changed} to control roles
+PASS  AUT-3 — creator: in-browser validate flags unknown component + preview renders via the server pipeline
+PASS  AUT-3-save — creator save() writes to the registry; load() re-populates the editor (round-trip)
+PASS  AUTH-1 — token configured, no token in hello → control role denied (participant)
+PASS  AUTH-1 — token configured, correct token in hello → control role granted
+PASS  AUTH-1 — no token configured → control role granted (backward-compat / LAN-open)
+  ok   idle renders branding img
+  ok   branding route 200 + svg content-type
+  ok   svg has a viewBox
+  ok   svg carries ARGUS branding
+  ok   branding svg has no HTML comment block (paths stripped)
+PASS  B1 — idle shows the branding SVG; /branding route serves it
+  ok   late-mounted poll-results shows yes=1 (seeded from live state)
+  ok   total shows 1 vote
+PASS  B2 — poll-results pushed after a vote seeds the real tally (not 0)
+PASS  C3 — permitted op applies and broadcasts a diff to clients
+PASS  C4 — a fresh client receives a snapshot carrying current state + version
+PASS  C4 — browser client applies the snapshot (overlay state inspector populated)
+FAIL  C5 — component op reaches the store; diff returns into the component  — Attempted to use detached Frame 'B07452C69747A198244B4DD8DE732103'.
+    at CdpFrame.<anonymous> (file:///home/bruce/software/argus-presenter/node_modules/puppeteer-core/lib/esm/puppeteer/util/decorators.js:99:23)
+    at Object.fn (file:///tmp/ap-0471/test/live/C5-client-op-relay.test.mjs:23:13)
+  ok   late joiner sees the current component
+PASS  C6 — a late client renders the currently pushed component
+  ok   late participant sees the poll choice options
+PASS  C6 — a late participant renders the open poll choice
+PASS  CTRL-auth — gated: control downgraded (no users) → password unlock → presenter → users visible
+PASS  D1 — openPoll seeds polls/{pid} spec + open in the store
+PASS  D2 — vote shim writes the store; another user's vote is denied (self)
+PASS  D4 — closePoll sets open=false; a later vote is denied
+PASS  D5 — re-delivered vote op is idempotent (count unchanged)
+  ok   alice content contains ALICE-LAYER
+  ok   alice content does NOT contain BASE
+  ok   bob content contains BASE
+  ok   bob content does NOT contain ALICE-LAYER
+PASS  DEL1 — a targeted layer overrides base opts for its user only
+  ok   auto-follow checkbox is ON
+  ok   server module/current === 2 (beat b)
+  ok   panel curBeat === 2 (beat b)
+PASS  DEL2 — auto-follow advances the panel via the branch table (right → beat b)
+  ok   two nested .seq elements under the section
+  ok   three .beat rows total across the sequences
+  ok   sequence beat split is [2,1]
+PASS  DEL3 — a section with sequences renders a nested .seq tier with all beats split across sequences
+  ok   no .seq elements for a plain section
+  ok   two .beat rows directly under the section
+PASS  DEL3 — a plain section (no sequences) still renders beats directly (no .seq)
+FAIL  E1 — map/view op mirrors the presenter pan/zoom to a viewer  — Attempted to use detached Frame 'E65C20995F0ADF24C76A6F110BA061F9'.
+    at CdpFrame.<anonymous> (file:///home/bruce/software/argus-presenter/node_modules/puppeteer-core/lib/esm/puppeteer/util/decorators.js:99:23)
+    at until.label (file:///tmp/ap-0471/test/live/E1-map-view.test.mjs:25:38)
+  ok   marker stored with clicker name
+  ok   peer sees the attributed marker
+PASS  E2 — a click writes an attributed marker to the store; peer sees it
+FAIL  E3 — presenter pointer op shows on a viewer; pointer op is not logged  — Attempted to use detached Frame '73007C1878D95BA952068066B1F66779'.
+    at CdpFrame.<anonymous> (file:///home/bruce/software/argus-presenter/node_modules/puppeteer-core/lib/esm/puppeteer/util/decorators.js:99:23)
+    at until.label (file:///tmp/ap-0471/test/live/E3-map-pointer.test.mjs:26:38)
+  ok   late viewer mirrors the stored view from the snapshot
+PASS  E4 — a late viewer seeds the current map view from the snapshot
+FAIL  E4 — a peer marker auto-expires client-side (is-fading)  — Attempted to use detached Frame 'FF4699DFA1481A74D1244C69F1C2E453'.
+    at CdpFrame.<anonymous> (file:///home/bruce/software/argus-presenter/node_modules/puppeteer-core/lib/esm/puppeteer/util/decorators.js:99:23)
+    at until.label (file:///tmp/ap-0471/test/live/E4-map-subscribe.test.mjs:40:38)
+PASS  G1 — a gm/ slice diff is broadcast to the presenter, never to a player
+PASS  G1 — a late player's snapshot omits the gm/ slice; presenter's includes it
+PASS  HAR — CSP on HTML routes; ETag/304 on static assets
+PASS  I1 — step a 3-beat module; viewer advances in lockstep
+PASS  I2 — a human builds a 2-beat module from the pick-list and displays it
+PASS  I3 — AI appends a beat; human displays the merged module
+PASS  I4 — save a module, reload it in a fresh session, display it
+  ok   alice sees the per-user override
+  ok   alice follows the role display after reset_user
+PASS  MON-1 — reset_user retargets a user to the role display, not branding
+PASS  MON2 — view-as thumbnail renders the target user's live display
+PASS  P1 — /control pushes a component + opens a poll (same store effect as MCP)
+PASS  P1 — a non-presenter control message is ignored (S1/S2)
+PASS  P2 — presenter B and the AI observe presenter A's copresent signal; participant does not
+PASS  P3 — chat disabled with no listener, enabled + delivered when a listener attaches; not to non-listeners
+PASS  P4 — role picker: participant → presenter via Config overlay (client + server)
+PASS  P4 — token pass-through: control token gates presenter, ?token= grants it
+PASS  P5 — expand /control overlay from Config, then collapse back to Config
+PASS  P5 — a participant gets NO Show-Control button
+PASS  P5.5 — presenter password gate: prompt → denied (wrong) → granted (correct)
+  ok   mirror frame carries alice html
+  ok   unknown userId mirror -> html:null
+PASS  PRIM-mirror — target user display html is pushed back to the requesting control client
+  ok   presenter received t:result with value=right
+  ok   result frame carries userName
+  ok   OPSEC — participant received NO t:result frame
+PASS  PRIM-results — result reaches presenter/ai/gm only; participant gets none
+PASS  OPSEC — a participant NEVER receives presence with IPs; a presenter does
+PASS  delivery — showBeat routes by target and merges promptId into opts
+PASS  registry — /api/modules discovers + validates; path-traversal id is rejected
+  ok   module total line present ("est. ~4 min")
+  ok   section summary shows "~4 min"
+  ok   a dedicated .outline-est total line exists
+PASS  SCH1 — timed beats roll up a module total and a per-section estimate
+  ok   no "~" estimate text without durations
+  ok   no .outline-est total line
+PASS  SCH1 — a module with no durations shows no "~…min" estimate text
+PASS  SCH2 — /api/series lists series; series file is NOT listed as a module
+PASS  SCH2 — /api/series/:id resolves its modules in order (with titles)
+PASS  SCH2 — GM panel: choosing a series queues module 1; "Next in series" advances to module 2
+PASS  SHAKE-1a — default-page cascade: branding → title → beat → Home → STOP→branding
+PASS  X1 — fresh connect gets a full snapshot; reconnect replays only missed ops
+PASS  X2 — 100 pointer ops: 0 op-log growth, no version bump, bounded broadcast
+PASS  X3 — presenter_debug surfaces RTT, fan-out, and denial counts
+PASS  X4 — health green when live; reports throughput and sizes
+PASS  X4 — a silent connection shows stale within N s
+PASS  X5 — peer-reactive session: peer-catalysis > teacher-dependency; density > 0
+PASS  X6 — durable-op flood is throttled; server stays responsive
+PASS  X7 — proto pollution / default-deny / oversized / malformed all rejected; server responsive
+PASS  X7 — S5: conn-namespaced opId — a reused client opId cannot suppress a peer
+  ok   client received a content push (not branding) on load
+  ok   the pushed content is the TITLE beat
+  ok   title beat is NOT a content beat (b-one stays index 0 for Start)
+  ok   module/current points at the title beat (index 2)
+PASS  DEF-1 — setModule auto-shows the manifest default (title) beat to a live client
+  ok   no content pushed → client stays on branding
+  ok   currentBeat stays -1 (no auto-show)
+PASS  DEF-1 — a module WITHOUT a default stays on branding at load (cascade fallback)
+  ok   advanced to first content beat
+  ok   module/current === 0 after Start
+  ok   Home re-shows the TITLE beat
+  ok   module/current back at title (index 2)
+  ok   STOP sends a t:clear (branding) to the client
+PASS  DEF-1 — show_default (Home) re-shows the title after advancing; clear (STOP) → branding
+PASS  T0 own package.json declares ws dependency
+FAIL  T0 node_modules is a real directory, not a symlink  — expect failed: node_modules is not a symlink
+PASS  T0 no local/linked dependencies (fully self-contained)
+PASS  T0 ws resolves standalone
+PASS  T1 expect(true) passes; expect(false) throws an assertion
+PASS  T1 runRegistered tallies pass/fail + per-tier over an isolated list
+PASS  T1 --only filters by name substring
+PASS  T2 server: below-threshold lines suppressed, at/above recorded
+PASS  T2 server OPSEC: gm-only field value redacted from participant view, shown to presenter
+PASS  T2 client (lib/log.mjs): AP_LOG flag suppresses below-threshold
+PASS  T3 server.debugDump() has presence, connections, state.polls, opLog
+PASS  T3 MCP presenter_debug returns a state snapshot + op-log tail
+PASS  A2 — zero domain-content tokens in components/ and lib/
+PASS  A3 — zero domain-content tokens across app/harness/mcp/lib/components
+PASS  A4 — example manifest parses; components + requires + preset correct
+PASS  A4 — ai-train-the-trainer manifest parses; pure content (no components)
+PASS  A4 — loadManifests() returns both plugins keyed by name
+PASS  A5 — manifest lists ALL core components, each with fields
+PASS  A5 — regenerates deterministically and matches the committed file
+PASS  A6 — pure-core assemble has ZERO plugin bytes
+PASS  A6 — requires:[example] bundles core + exactly that closure
+PASS  A6 — resolveClosure: [] -> pure core; [example] -> only example
+PASS  B1 — _setPath creates nested nodes; get reads them
+PASS  B1 — tree uses null-proto nodes (no inherited keys)
+PASS  B1 — S4: unsafe paths rejected, no prototype pollution
+PASS  B2 set — last-write-wins + idempotent
+PASS  B2 merge — shallow merge + idempotent
+PASS  B2 add — id-keyed; add-twice-same-id == one
+PASS  B2 remove — id-keyed; remove-twice == gone (no throw)
+PASS  B2 lock/unlock — owner set/cleared; idempotent
+PASS  B2 clear — resets a subtree; terminal + idempotent
+PASS  B2 unknown verb / bad path -> null diff, no mutation
+PASS  B3 — participant may set OWN vote (self), not another's
+PASS  B3 — participant default-DENY on ungated paths/verbs
+PASS  B3 — participant allowed on explicitly-gated paths
+PASS  B3 — controllers (presenter, ai) OVERRIDE
+PASS  B3 — S4: unsafe path denied even for controllers
+PASS  B3 — canRead (Plan 0471 C3): default-DENY; self vote readable; controllers read all
+PASS  B4 — permitted op applies, returns diff + authoritative by
+PASS  B4 — denied op returns null and does NOT mutate
+PASS  B4 — presenter override applies control ops
+PASS  B4 — malformed ops rejected (S10)
+PASS  B4 — identity from actor, not payload (S1)
+PASS  B5 — apply increments version and records the op-log
+PASS  B5 — replay the op-log into a fresh store reproduces state
+PASS  B5 — snapshot(actor) filters unreadable slices (S7, Plan 0471 C3 default-deny), keeps arrays intact
+PASS  B5 — op-log is bounded
+PASS  B6 — duplicate opId is a no-op (state + version unchanged)
+PASS  B6 — apply-twice-same-opId == apply-once, for every verb
+PASS  B6 — add same id twice (distinct opIds) = one item
+PASS  B6 — concurrent same-path sets: last-by-arrival wins, both logged
+PASS  C1 — Argus.op emits a well-formed op message
+PASS  C1 — each op gets a distinct opId
+PASS  C2 — subscribeState fires for in-prefix paths only
+PASS  C2 — non-diff host messages are ignored; unsubscribe stops delivery
+PASS  C2 — empty prefix subscribes to all paths
+PASS  D5 — server.mjs has zero recordResult / pushUpdate
+PASS  D5 — poll-results.js no longer handles poll-update
+PASS  E5 — server.mjs has no relayMap and no map-* relay message types
+PASS  G2 — canSeeVisibility gates gm items to controllers
+PASS  G2 — server no longer strips via an ad-hoc visibility literal
+PASS  H1 — server has no dead relay identifiers
+PASS  H1 — no legacy relay message literals remain
+PASS  V — a clean module yields zero warnings and zero info
+PASS  V — a bad module trips the expected WARN codes and never throws
+PASS  V — an empty module warns V2 and still returns (never blocks)
+PASS  V — driver-owned concerns are INFO not WARN (terminal-clear, gate-timeout)
+PASS  V — V12 flags a branch target that is not a beat id (dead-end typo)
+PASS  V — V5 does NOT flag declared variants sharing a promptId
+PASS  V — a terminal clear beat is clean (V7 satisfied, not V3-unknown)
+PASS  V — V14 flags a section beatId with no matching beat
+PASS  V19 — a module with beats but no durationSec gets the advisory info
+PASS  V19 — any beat carrying a numeric durationSec suppresses the advisory
+PASS  AUTH-ROLE — rolePassword gates presenter: correct seeded hash granted, wrong denied
+PASS  AUTH-ROLE — /api/auth advertises {gated,seed} and NEVER leaks the hash or password
+PASS  AUTH-ROLE — /api/auth reports ungated when no credential configured
+PASS  AUTH-ROLE — back-compat: no rolePassword ⇒ ungated, presenter granted with NO token
+PASS  branch: choice value routes
+PASS  branch: dice OK meets target
+PASS  branch: dice FAIL below target
+PASS  branch: ifFlag precedence and default
+PASS  branch: linear next
+PASS  branch: no branch returns null
+PASS  CLI-1 — /api/modules lists real modules only; parses-but-not-a-module is filtered out
+PASS  CLI-1 — `node app/server.mjs 0` prints the three entry URLs (control line present)
+PASS  V20 — a module with beats but no manifest.defaultBeatId gets the advisory info
+PASS  V20 — declaring manifest.defaultBeatId suppresses the advisory
+PASS  NEUTRAL — gm role gets NO presence feed and is NOT counted as a controller; presenter/ai still are
+
+216 passed / 5 failed   [component:46/46  live:83/87  unit:87/88]

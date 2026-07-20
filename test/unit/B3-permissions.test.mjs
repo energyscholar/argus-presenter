@@ -38,7 +38,18 @@ test('B3 — S4: unsafe path denied even for controllers', () => {
   expect(P.can(pres, { path: '__proto__/x', verb: 'set', value: 1 }) === false, 'unsafe path denied for presenter');
 });
 
-test('B3 — canRead: default-open; controllers always read', () => {
-  expect(P.canRead('participant', 'polls/p1/votes/u2') === true, 'default-open read');
-  expect(P.canRead('presenter', 'anything') === true, 'controller reads all');
+test('B3 — canRead (Plan 0471 C3): default-DENY; self vote readable; controllers read all', () => {
+  // A voter reads its OWN vote; a peer's vote is DENIED (ballot secrecy).
+  expect(P.canRead(part('u2'), 'polls/p1/votes/u2') === true, 'own vote readable (self)');
+  expect(P.canRead(part('u2'), 'polls/p1/votes/u3') === false, 'peer vote DENIED (default-deny)');
+  // Shared surfaces readable by all; unlisted / controller-only paths denied.
+  expect(P.canRead(part('u2'), 'polls/p1/spec') === true, 'poll spec readable by all');
+  expect(P.canRead(part('u2'), 'map/view') === true, 'map view readable by all');
+  expect(P.canRead(part('u2'), 'crud/board/items/i1') === true, 'crud subtree readable by all (prefix)');
+  expect(P.canRead(part('u2'), 'random/thing') === false, 'unlisted path DENIED');
+  expect(P.canRead(part('u2'), 'answers/p1/u9') === false, 'peer answer DENIED');
+  expect(P.canRead(part('u2'), 'gm/secret') === false, 'gm slice DENIED to participant');
+  // Controllers override.
+  expect(P.canRead(pres, 'anything') === true, 'presenter reads all');
+  expect(P.canRead(ai, 'polls/p1/votes/u3') === true, 'ai reads all');
 });

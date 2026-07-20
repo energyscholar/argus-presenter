@@ -12,8 +12,11 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 test('C4 — a fresh client receives a snapshot carrying current state + version', async () => {
   const server = await createServer({ port: 0 });
   try {
-    // Seed state authoritatively (as a controller) BEFORE the client connects.
+    // Seed state authoritatively (as a controller) BEFORE the client connects:
+    // a shared readable slice (spec), a PEER's vote (u9), and the joiner's OWN vote (late).
+    server.store.apply({ path: 'polls/p1/spec', verb: 'set', value: { prompt: 'Ship it?' } }, { userId: 'gm', role: 'presenter' });
     server.store.apply({ path: 'polls/p1/votes/u9', verb: 'set', value: 'yes' }, { userId: 'gm', role: 'presenter' });
+    server.store.apply({ path: 'polls/p1/votes/late', verb: 'set', value: 'no' }, { userId: 'gm', role: 'presenter' });
 
     const url = server.url().replace('http', 'ws');
     const ws = new WebSocket(url);
@@ -23,8 +26,12 @@ test('C4 — a fresh client receives a snapshot carrying current state + version
 
     const snap = inbox.find((m) => m.t === 'snapshot');
     expect(!!snap, 'snapshot delivered on hello', JSON.stringify(inbox.map((m) => m.t)));
-    expect(snap.state && snap.state.polls && snap.state.polls.p1.votes.u9 === 'yes', 'snapshot carries current state', JSON.stringify(snap.state));
-    expect(snap.version === 1, 'snapshot carries the version', String(snap.version));
+    // Plan 0471 C3: the snapshot carries readable state (spec) + the joiner's OWN vote,
+    // and REDACTS the peer's vote (u9) — ballot secrecy in the snapshot too.
+    expect(snap.state && snap.state.polls && snap.state.polls.p1.spec && snap.state.polls.p1.spec.prompt === 'Ship it?', 'snapshot carries readable current state (spec)', JSON.stringify(snap.state));
+    expect(snap.state.polls.p1.votes && snap.state.polls.p1.votes.late === 'no', 'snapshot carries the joiner\'s OWN vote', JSON.stringify(snap.state.polls.p1.votes));
+    expect(!(snap.state.polls.p1.votes && 'u9' in snap.state.polls.p1.votes), 'snapshot REDACTS a peer\'s vote (C3)', JSON.stringify(snap.state.polls.p1.votes));
+    expect(snap.version === 3, 'snapshot carries the version', String(snap.version));
     ws.close();
   } finally { await server.close(); }
 });
@@ -33,12 +40,13 @@ test('C4 — browser client applies the snapshot (overlay state inspector popula
   const server = await createServer({ port: 0 });
   const browser = await launch();
   try {
-    server.store.apply({ path: 'polls/p1/votes/u9', verb: 'set', value: 'yes' }, { userId: 'gm', role: 'presenter' });
+    // Plan 0471 C3: seed the JOINER'S OWN vote (readable to it) — a peer's would be redacted.
+    server.store.apply({ path: 'polls/p1/votes/late', verb: 'set', value: 'yes' }, { userId: 'gm', role: 'presenter' });
     const page = await browser.newPage();
     await page.goto(`${server.url()}/?userId=late&role=participant&debug=1`, { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('#ap-debug', { timeout: 5000 });
     await wait(300);
-    const val = await page.evaluate(() => window.__apDebug.get('polls/p1/votes/u9'));
+    const val = await page.evaluate(() => window.__apDebug.get('polls/p1/votes/late'));
     expect(val === 'yes', 'client applied the snapshot into its state view', String(val));
   } finally { await browser.close(); await server.close(); }
 });
