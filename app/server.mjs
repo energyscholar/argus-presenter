@@ -428,7 +428,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         // keyed on the CONNECTION's authoritative role. Control/ai always get the full roster;
         // a participant gets the redacted roster ONLY when the presenter gate is ON, else self-only.
         const control = (c.role === 'presenter' || c.role === 'ai');
-        // Plan 0468: no activeSec/afkSec — connection liveness only. Pass optional staleMs; else default.
+        // Plan 0468: no activity thresholds — connection liveness only. Pass optional staleMs; else default.
         if (control) {
           const att = api.attendance({ staleMs: m.staleMs, viewerRole: c.role });
           send(ws, { t: 'attendance', roster: att.roster, summary: att.summary, rosterVisible: rosterVisibleToAttendees });
@@ -764,9 +764,9 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     // ATT (Plan 0466 §2.4, reworked Plan 0468): the roster dot means CONNECTION LIVENESS ONLY,
     // uniform in every display. `connected` = lastSeen fresh within staleMs (kept fresh by the Part A0
     // heartbeat) ⇒ GREEN; stale ⇒ RED (present-but-stale; a CLEAN close removes the row entirely, G3).
-    // NO idle-derived status (active/idle/afk) and NO idleSec — dropped (D2). Attention is a SEPARATE,
-    // explicit signal: `eyesOn` is a prior verify_watching CONFIRM only (D3) — never set by polling/content.
-    // lastSeenAgoSec replaces idleSec: bounded (heartbeat-refreshed), never epoch-sized (INV-5).
+    // NO idle-derived status and NO time-since-interaction number — both dropped (D2). Attention is a
+    // SEPARATE explicit signal: `eyesOn` is a prior verify_watching CONFIRM only (D3) — never polling/content.
+    // lastSeenAgoSec replaces the old idle number: bounded (heartbeat-refreshed), never epoch-sized (INV-5).
     attendance: ({ staleMs = STALE_MS, viewerRole = 'participant' } = {}) => {
       const now = Date.now();
       const control = (viewerRole === 'presenter' || viewerRole === 'ai');
@@ -778,7 +778,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
           userId: c.userId, userName: c.userName, role: c.role,
           connected,                                             // <-- the dot (liveness only)
           connectedSec: Math.floor((now - (c.connectedAt || now)) / 1000),
-          lastSeenAgoSec,                                        // replaces idleSec; bounded, never epoch-sized
+          lastSeenAgoSec,                                        // replaces old idle number; bounded, never epoch-sized
           eyesOn: !!c.eyesOn,                                    // explicit attendance (verify_watching CONFIRM)
           eyesOnAgoSec: c.eyesOn ? Math.floor((now - c.eyesOn) / 1000) : null,
           display: displayIdFor(c),

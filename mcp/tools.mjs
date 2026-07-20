@@ -141,12 +141,11 @@ export const tools = [
   },
   {
     name: 'presenter_attendance',
-    description: 'Passive/continuous room liveness: roster + summary of connected users. Per user: idleSec (seconds since their last DELIBERATE interaction — the headline number), status (active/idle/afk from thresholds), connectedSec, eyes-on age, current display, ip, socketId. The AI is a controller → UNREDACTED view. Poll on demand (no push). Fresh/reconnected users read afk until they interact.',
+    description: 'Room roster + summary keyed on CONNECTION LIVENESS (Plan 0468). Per user: connected (heartbeat fresh within staleMs ⇒ true; a frozen/half-open socket goes false — a CLEAN disconnect drops the row entirely), lastSeenAgoSec (bounded seconds since last ping/pong), connectedSec, and a SEPARATE explicit attention signal eyesOn / eyesOnAgoSec (true ONLY after a presenter_verify_watching CONFIRM — never from polling, voting, or receiving content), plus current display, ip, socketId. Summary: {connected, offline, eyesOn, total}. The AI is a controller → UNREDACTED view. Poll on demand (no push).',
     input: { type: 'object', properties: {
-      activeSec: { type: 'number', default: 30, description: 'idle < this ⇒ active' },
-      afkSec: { type: 'number', default: 120, description: 'idle ≥ this ⇒ afk (between ⇒ idle)' }
+      staleMs: { type: 'number', default: 15000, description: 'lastSeen older than this ⇒ connected:false (default STALE_MS)' }
     } },
-    handler: async ({ activeSec = 30, afkSec = 120 } = {}) => need().attendance({ activeSec, afkSec, viewerRole: 'ai' })
+    handler: async ({ staleMs } = {}) => need().attendance({ staleMs, viewerRole: 'ai' })
   },
   {
     name: 'presenter_raf',
