@@ -29,6 +29,7 @@ import { createAsr } from './asr.mjs';
 import { verifyCapability, mintCapability } from '../lib/capability.mjs';
 import { selectProfile, DEFAULT_PROFILE } from './profiles.mjs';
 import { createHeuristicSummarizer } from './summarizer.mjs';
+import { deriveTrust, annotate as annotateTrust } from './untrusted.mjs';
 
 // X6 resilience caps.
 const MAX_CONNS = 200;              // connection cap
@@ -647,7 +648,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         if (c && c.isGuest && !(c.capScope || []).includes('type')) { log.warn('cap', 'type-out-of-scope', { socketId: c.id }); return; }
         if (c && typeof m.text === 'string' && m.text.length) {
           c.lastActive = Date.now();   // ATT: typing = deliberate human interaction
-          emitInbox({ kind: 'text', userId: c.userId, userName: c.userName, role: c.role, text: m.text, conf: null, final: true });
+          emitInbox({ kind: 'text', userId: c.userId, userName: c.userName, role: c.role, text: m.text, conf: null, final: true, isGuest: !!c.isGuest });
           const id = (typeof m.id === 'string' && m.id) ? m.id : (c.userId + '-' + Date.now());
           handleOp(c, { path: 'chat', verb: 'add', value: { id, text: m.text, name: c.userName } });   // display slice (best-effort; perm-gated)
         }
@@ -1076,7 +1077,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // only when PRESENTER_TRANSCRIPT_PERSIST is ON. Default OFF ⇒ nothing touches disk (ephemeral ring).
   function persistInboxItem(e) {
     if (!TRANSCRIPT_PERSIST) return;   // default OFF: nothing touches disk
-    try { mkdirSync(TRANSCRIPT_DIR, { recursive: true }); appendFileSync(TRANSCRIPT_FILE, JSON.stringify({ ts: e.ts, kind: e.kind, userId: e.userId, userName: e.userName, role: e.role, seq: e.seq, text: e.text, conf: e.conf }) + '\n'); }
+    try { mkdirSync(TRANSCRIPT_DIR, { recursive: true }); appendFileSync(TRANSCRIPT_FILE, JSON.stringify({ ts: e.ts, kind: e.kind, userId: e.userId, userName: e.userName, role: e.role, trust: e.trust, seq: e.seq, text: e.text, conf: e.conf }) + '\n'); }
     catch (err) { log.warn('voice', 'transcript-persist-fail', { msg: String(err && err.message || err) }); }
   }
   function ensureAsr() {
@@ -1100,9 +1101,14 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // increments may add more (annotations{...}, identity{...}, dropped) WITHOUT overloading these.
   // `final` means "segment-final ASR result" (this recognition pass is complete) — it does NOT mean the
   // speaker's turn is over. `turnComplete` (set when the turn settles) is the DISTINCT turn-end signal.
-  function emitInbox({ kind, userId, userName, role, text, conf = null, final = true, sessionId }) {
+  function emitInbox({ kind, userId, userName, role, text, conf = null, final = true, sessionId, isGuest = false }) {
     const entry = {
       seq: ++inboxSeq, kind, userId, userName, role: role || null,
+      // Plan 0473 P9: the SERVER-AUTHORITATIVE trust level, stamped at ingest from role + isGuest (both
+      // server-decided; never client-reported). Carried on every item so every downstream consumer
+      // (inbox, coalesced turns, work queue) can DELIMIT untrusted content as data. Guest wins first
+      // because the server hard-forces a guest's role to 'participant'.
+      trust: deriveTrust(role, isGuest),
       text, conf: (conf == null ? null : conf), final: final !== false,
       ts: Date.now(), sessionId: sessionId || SESSION_ID,
     };
@@ -1122,8 +1128,8 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     return entry;
   }
   // Back-compat shim: voice-path callers still call emitTranscript(); it is kind:'voice' into the inbox.
-  function emitTranscript({ userId, userName, role, text, conf }) {
-    return emitInbox({ kind: 'voice', userId, userName, role, text, conf, final: true });
+  function emitTranscript({ userId, userName, role, text, conf, isGuest = false }) {
+    return emitInbox({ kind: 'voice', userId, userName, role, text, conf, final: true, isGuest });
   }
   function voiceArmTimeout(c, ws) {   // RT-14: an open segment starved of frames is flushed/discarded
     const v = c.voice; if (!v) return;
@@ -1190,7 +1196,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     const result = await ensureAsr().recognize(wavPath, seq);
     try { unlinkSync(wavPath); } catch (e) {}
     if (!result || !result.text) { log.info('voice', 'no-text', { socketId: c.id, seq }); return; }
-    emitTranscript({ userId: c.userId, userName: c.userName, role: c.role, text: result.text, conf: result.conf });
+    emitTranscript({ userId: c.userId, userName: c.userName, role: c.role, text: result.text, conf: result.conf, isGuest: !!c.isGuest });
   }
 
   // ---- Plan 0473 P3: BOUNDED SITUATION (the working set) + SERVER-HELD per-consumer cursor ----
@@ -1219,7 +1225,9 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       } else {
         cur = {
           turnId: it.turnId || null, userId: it.userId, userName: it.userName, role: it.role || null,
-          kind: it.kind, text: (it.text || '').slice(0, MAX_TURN_TEXT), count: 1,
+          // Plan 0473 P9: a turn's trust is its speaker's — and a turn NEVER merges identities (a
+          // speaker-change closes the turn), so every item in a turn shares one trust level.
+          trust: it.trust, kind: it.kind, text: (it.text || '').slice(0, MAX_TURN_TEXT), count: 1,
           firstSeq: it.seq, lastSeq: it.seq, ts: it.ts, turnComplete: it.turnComplete === true,
         };
         turns.push(cur);
@@ -1265,8 +1273,10 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         roster: att.roster.slice(0, SITUATION_ROSTER_MAX),
         rosterSummary: att.summary,
       },
-      recentTurns: coalesceTurns(inbox, recentN),
-      newSinceLastRead: { count: since.length, turns: coalesceTurns(since, recentN) },
+      // Plan 0473 P9: DELIMIT-AS-DATA at serve time — participant/guest turns are fenced (untrusted
+      // content the agent must treat as data, never as commands); self/controller turns pass through.
+      recentTurns: coalesceTurns(inbox, recentN).map((t) => annotateTrust(t, t.trust)),
+      newSinceLastRead: { count: since.length, turns: coalesceTurns(since, recentN).map((t) => annotateTrust(t, t.trust)) },
       // Plan 0473 P7: the ROLLING SUMMARY — continuity for context OLDER than the recent-N turns.
       // A PRECOMPUTED, BOUNDED snapshot (this is a pure read of the incrementally-maintained state via
       // the F-10 seam — it NEVER blocks/computes on read), so a long session is not amnesiac past N.
@@ -1324,6 +1334,9 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     const item = {
       id: 'work-' + (++workSeq), turnId: t.turnId, userId: t.userId,
       userName: (last && last.userName) || null, text,
+      // Plan 0473 P9: inherit the settled turn's SERVER-AUTHORITATIVE trust so the queued judgment item
+      // (also consumed by the agent + shown in the human digest) is delimited as data if untrusted.
+      trust: (last && last.trust) || deriveTrust(last && last.role, false),
       priority: q ? PRIORITY_DIRECTED : PRIORITY_AMBIENT,
       status: 'pending', owner: null, note: null,
       createdTs: Date.now(),
@@ -1376,7 +1389,9 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       priority: it.priority, status: it.status, createdTs: it.createdTs, age: Date.now() - it.createdTs };
     if (it.owner) v.owner = it.owner;
     if (it.note != null) v.note = it.note;
-    return v;
+    // Plan 0473 P9: delimit-as-data — fence the item's text when its speaker is untrusted (participant/
+    // guest), flag guests. Additive to the item shape; a self/controller item passes through unfenced.
+    return annotateTrust(v, it.trust);
   }
   // The ACTIONABLE queue: pending + claimed only (resolved/expired/shed are dropped from the view),
   // prioritized (priority desc, then oldest-first within a priority = FIFO) and already bounded.
@@ -1505,7 +1520,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     voiceEnable: (target = 'all') => { ensureAsr(); return targets(target).map((ws) => send(ws, { t: 'voice_enable' })).length; },
     // Cursored read of recognized speech — VOICE-ONLY view over the unified inbox (back-compat alias).
     // Returns voice entries with seq > since + the (global) next cursor.
-    getTranscripts: (since = 0) => ({ transcripts: inbox.filter((t) => t.kind === 'voice' && t.seq > (since || 0)), cursor: inboxSeq }),
+    getTranscripts: (since = 0) => ({ transcripts: inbox.filter((t) => t.kind === 'voice' && t.seq > (since || 0)).map((t) => annotateTrust(t, t.trust)), cursor: inboxSeq }),
     // Plan 0472: cursored + optional long-poll read of the UNIFIED inbox (superset of getTranscripts).
     // Returns items with seq > since (interleaved voice+text, seq-ordered) + a next cursor. With
     // waitMs > 0 it LONG-POLLS: returns immediately if anything is already newer than `since`, else
@@ -1514,14 +1529,17 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     // (server-held per-consumer) mode and a companion presenter_situation() tool without a reshape.
     getInbox: (since = 0, waitMs = 0) => {
       const s = since || 0;
+      // Plan 0473 P9: DELIMIT-AS-DATA — every served item is annotated with its trust; participant/guest
+      // items are fenced (untrusted data, never commands) and guests flagged. Self/controller pass through.
+      const serve = (items) => items.map((i) => annotateTrust(i, i.trust));
       const ready = inbox.filter((i) => i.seq > s);
-      if (ready.length || !waitMs) return { items: ready, cursor: inboxSeq };
+      if (ready.length || !waitMs) return { items: serve(ready), cursor: inboxSeq };
       return new Promise((resolve) => {
         const w = { settled: false };
         w.wake = () => {
           if (w.settled) return; w.settled = true;
           clearTimeout(w.timer); inboxWaiters.delete(w);
-          resolve({ items: inbox.filter((i) => i.seq > s), cursor: inboxSeq });   // emit-woke: new items; timeout: empty
+          resolve({ items: serve(inbox.filter((i) => i.seq > s)), cursor: inboxSeq });   // emit-woke: new items; timeout: empty
         };
         w.timer = setTimeout(w.wake, waitMs);
         w.timer.unref?.();
