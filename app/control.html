@@ -140,8 +140,9 @@
   <div class="row"><button id="cfg-attendance">👁 Show attendance</button></div>
   <div class="row" style="margin-top:8px"><button id="cfg-close">Close</button></div>
 </div>
-<!-- ATT (Plan 0466 §2.7): attendance overlay — control render = full columns + per-row ↺/👁/🔔
-     buttons + summary footer. Presenter-gated "roster visible to attendees" toggle lives here. -->
+<!-- ATT (Plan 0466 §2.7, reworked Plan 0468): attendance overlay — control render = full columns
+     (conn = liveness dot, last-seen, eyes-on, sees, ip, socketId) + per-row ↺/👁/🔔 buttons + summary
+     footer. Presenter-gated "roster visible to attendees" toggle lives here. -->
 <div id="ap-attendance" role="dialog" aria-label="Attendance">
   <div id="att-bar"><span>Attendance</span>
     <label id="att-gate-lbl" title="let attendees see the room roster (default off)"><input type="checkbox" id="att-gate"> roster visible to attendees</label>
@@ -574,8 +575,9 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   function closeAttendance(){ $('ap-attendance').classList.remove('open');
     if(attReqTimer){ clearInterval(attReqTimer); attReqTimer=null; }
     if(attTickTimer){ clearInterval(attTickTimer); attTickTimer=null; } }
-  function attDot(status){ var c=status==='active'?'var(--ok)':(status==='idle'?'var(--warn)':'var(--danger)'); return '<span class="att-dot" style="background:'+c+'" title="'+esc(status)+'"></span>'; }
-  function attFmtIdle(r,extra){ if(!r.everActive) return '—'; return ((r.idleSec||0)+extra)+'s'; }   // never-active ⇒ nominal huge idleSec → show "—"
+  // Plan 0468: dot = CONNECTION LIVENESS only (green connected / red present-but-stale). No idle/yellow.
+  function attDot(connected){ var c=connected?'var(--ok)':'var(--danger)'; return '<span class="att-dot" style="background:'+c+'" title="'+(connected?'connected':'offline')+'"></span>'; }
+  function attFmtLastSeen(r,extra){ var s=(r.lastSeenAgoSec||0)+extra; return s<=0?'—':(s+'s'); }   // Plan 0468: seconds since last heartbeat/pong; fresh → "—"
   function onAttendance(m){ attLast=m; attAt=Date.now(); attRecvCount++;
     if(typeof m.rosterVisible==='boolean') $('att-gate').checked=m.rosterVisible;
     renderAttendance(m);
@@ -590,11 +592,12 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     var roster=(m&&m.roster)||[], sm=(m&&m.summary)||{};
     var rows=roster.map(function(r){
       var eyes=(r.eyesOnAgoSec!=null)?((r.eyesOnAgoSec+extra)+'s'):'—';
+      // Plan 0468: conn column (liveness dot + connected/offline) + last-seen column replace status/idle.
       return '<tr>'
-        +'<td>'+attDot(r.status)+esc(r.userName||r.userId)+'</td>'
+        +'<td>'+attDot(r.connected)+esc(r.userName||r.userId)+'</td>'
         +'<td>'+esc(r.role)+'</td>'
-        +'<td>'+esc(r.status)+'</td>'
-        +'<td>'+attFmtIdle(r,extra)+'</td>'
+        +'<td>'+(r.connected?'connected':'offline')+'</td>'
+        +'<td>'+attFmtLastSeen(r,extra)+'</td>'
         +'<td>'+eyes+'</td>'
         +'<td>'+esc(r.display||'—')+'</td>'
         +'<td>'+esc(r.ip||'—')+'</td>'
@@ -605,8 +608,8 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
           +'<button data-att-ring="'+esc(r.userId)+'" title="ring bell (notify)">🔔</button>'
         +'</td></tr>';
     }).join('');
-    $('att-table').innerHTML='<table><thead><tr><th>name</th><th>role</th><th>status</th><th>idle</th><th>eyes-on</th><th>sees</th><th>ip</th><th>socketId</th><th>actions</th></tr></thead><tbody>'+(rows||'')+'</tbody></table>';
-    $('att-summary').textContent='🟢 '+(sm.active||0)+' active · 🟡 '+(sm.idle||0)+' idle · 🔴 '+(sm.afk||0)+' afk · '+(sm.total||0)+' total';
+    $('att-table').innerHTML='<table><thead><tr><th>name</th><th>role</th><th>conn</th><th>last seen</th><th>eyes-on</th><th>sees</th><th>ip</th><th>socketId</th><th>actions</th></tr></thead><tbody>'+(rows||'')+'</tbody></table>';
+    $('att-summary').textContent='🟢 '+(sm.connected||0)+' connected · 🔴 '+(sm.offline||0)+' offline · 👁 '+(sm.eyesOn||0)+' confirmed · '+(sm.total||0)+' total';
     var t=$('att-table');
     [].forEach.call(t.querySelectorAll('[data-att-reset]'),function(b){ b.onclick=function(){ control('reset_user',{userId:b.getAttribute('data-att-reset')}); }; });
     [].forEach.call(t.querySelectorAll('[data-att-verify]'),function(b){ b.onclick=function(){ control('bell',{requireAck:true,target:b.getAttribute('data-att-verify')}); }; });
