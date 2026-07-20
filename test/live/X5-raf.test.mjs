@@ -25,7 +25,9 @@ test('X5 — peer-reactive session: peer-catalysis > teacher-dependency; density
     expect(raf.totalOps === 5, 'five ops logged', String(raf.totalOps));
     expect(raf.peerCatalysisRatio > raf.teacherDependencyRatio, 'peer-catalysis > teacher-dependency',
       JSON.stringify({ peer: raf.peerCatalysisRatio, teacher: raf.teacherDependencyRatio }));
-    expect(Math.abs(raf.peerCatalysisRatio - 0.8) < 1e-6, 'peer-catalysis = 4/5', String(raf.peerCatalysisRatio));
+    // Plan 0471 C3: private votes are NO LONGER peer-visible (ballot secrecy), so only the 2
+    // shared map/markers count as peer-catalysis: 2/5 = 0.4 (was 0.8 under default-open read).
+    expect(Math.abs(raf.peerCatalysisRatio - 0.4) < 1e-6, 'peer-catalysis = 2/5 (markers; votes now private)', String(raf.peerCatalysisRatio));
     expect(Math.abs(raf.teacherDependencyRatio - 0.2) < 1e-6, 'teacher-dependency = 1/5', String(raf.teacherDependencyRatio));
     expect(raf.peerResponseEdges === 3 && raf.interactionDensity > 0, 'peer->peer response edges counted',
       JSON.stringify({ edges: raf.peerResponseEdges, density: raf.interactionDensity }));
