@@ -966,13 +966,20 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // CLOSED/yielded and the speaker NOTIFIED — the captured content is PRESERVED (settled), never cut.
   const DEFAULT_TURN_BUDGET_MS = 120000;   // fallback when a profile/role sets no budget (generous, soft)
   const WRAP_AT_FRACTION = 0.8;            // default: wrap-up cue fires at 80% of the budget (lead = 20%)
-  // The budget (ms) for a speaker's role: an injected uniform override wins; else the profile's per-role
-  // value; else the participant default; else the module default. Consumes the knob, never the name.
-  function perTurnBudgetFor(role) {
+  // The budget (ms) for a speaker's role/TRUST: an injected uniform override wins; else the profile's
+  // per-role value; else — CRUCIALLY for a GUEST — the per-TRUST value; else the participant default; else
+  // the module default. The TRUST fallback (Plan 0473 P12) is what makes the guest's TIGHT budget engage:
+  // the server hard-forces a guest's role to 'participant', so a budget keyed only by role would miss the
+  // guest's tight leash and silently hand it the generous default. The guest profile deliberately authors
+  // its tight ms under byRole.GUEST (a trust key) and NO byRole.participant, so the role lookup cleanly
+  // misses and the trust fallback engages — DATA, never a profile-NAME fork (every existing role lookup is
+  // unchanged: role resolves first, so wearable/rpg/teaching behaviour is untouched).
+  function perTurnBudgetFor(role, trust) {
     const ptb = api.profile().perTurnBudget || {};
     if (typeof ptb.overrideMs === 'number' && ptb.overrideMs >= 0) return ptb.overrideMs;
     const byRole = ptb.byRole || {};
     if (typeof byRole[role] === 'number') return byRole[role];
+    if (typeof trust === 'string' && typeof byRole[trust] === 'number') return byRole[trust];   // P12: guest tight budget routes by trust
     if (typeof byRole.participant === 'number') return byRole.participant;
     return DEFAULT_TURN_BUDGET_MS;
   }
@@ -989,8 +996,8 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // Arm the budget timers for a FRESHLY-OPENED turn. Measured from turn-open and NOT reset when the turn
   // is extended (it bounds total turn duration — the whole point for a non-stop speaker). Cleared in
   // closeTurn. budgetMs <= 0 ⇒ no proactive budget (the hard backstop still applies).
-  function armTurnBudget(t, role) {
-    const budgetMs = perTurnBudgetFor(role || 'participant');
+  function armTurnBudget(t, role, trust) {
+    const budgetMs = perTurnBudgetFor(role || 'participant', trust);
     if (!(budgetMs > 0)) return;
     t.budgetMs = budgetMs; t.startedAt = Date.now();
     const wrapAt = perTurnWrapAt(budgetMs);
@@ -1055,7 +1062,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       entry.turnId = turnId;
       entry.turnComplete = false;
       openTurn = { turnId, userId: entry.userId, items: [entry], timer: null };
-      armTurnBudget(openTurn, entry.role);          // Plan 0473 P5: start the per-turn budget clock (from open)
+      armTurnBudget(openTurn, entry.role, entry.trust);   // Plan 0473 P5/P12: budget clock keyed by role + TRUST (guest = tight)
     }
     if (openTurn.timer) clearTimeout(openTurn.timer);
     if (settlingMs > 0) {                           // (re)arm: settle after settlingMs of silence
@@ -1673,6 +1680,10 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     // Plan 0473 P4 — WORK-QUEUE operator surface (server-tracked status/owner; the agent holds nothing).
     // workItems(): the current ACTIONABLE queue (pending + claimed), prioritized + bounded (aged pruned).
     workItems: () => queueView(),
+    // Plan 0473 P12 — the resolved per-turn budget (ms) a speaker of {role, trust} gets under the active
+    // profile. Observability hook proving the guest's TIGHT budget ROUTES BY TRUST (role=participant,
+    // trust=guest → the tight leash), tighter than a trusted 'self' speaker — deterministic, no timers.
+    turnBudgetFor: ({ role = 'participant', trust } = {}) => perTurnBudgetFor(role, trust),
     // Plan 0473 P6 — floor + backstop observability.
     // floorState(): the current EFFECTIVE floor ('go'|'wrap'|'hold') — proactive overload state (explicit
     // moderation, if set, wins over the automatic level here).
