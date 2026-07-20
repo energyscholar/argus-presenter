@@ -1330,17 +1330,86 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       enqueue: qp.enqueue || 'all',                                            // 'all' | 'questions'
       maxPending: (typeof qp.maxPending === 'number' && qp.maxPending >= 0) ? qp.maxPending : DEFAULT_QUEUE_MAX,
       ttlMs: (typeof qp.ttlMs === 'number' && qp.ttlMs > 0) ? qp.ttlMs : DEFAULT_QUEUE_TTL_MS,
+      cluster: qp.cluster === true,                                            // F-6: dedupe/cluster similar questions (teaching)
     };
   }
+
+  // ---- Plan 0473 P11 (F-6): CHEAP question DEDUPE/CLUSTER (NO ML / NO LLM / NO new deps) ----
+  // At CLASS scale the work queue ITSELF overloads: 20 near-simultaneous questions is its own overload,
+  // even though each is a legitimate judgment item. So similar questions are CLUSTERED into ONE queue
+  // item ("N students asked about X" — a count + the contributing askers) instead of 20 rows, keeping the
+  // queue bounded + glanceable. The similarity metric is a NORMALIZED-KEYWORD JACCARD overlap: strip
+  // punctuation, lowercase, drop stopwords + very short tokens, light-stem a trailing plural 's', and
+  // compare the resulting keyword SETS. Purely lexical + O(words) — no model, no dependency. Gated on the
+  // profile's `queuePolicy.cluster` knob (DATA), so wearable/rpg leave it OFF.
+  const CLUSTER_THRESHOLD = 0.4;        // Jaccard >= this ⇒ "the same question" (tuned for near-duplicates)
+  const CLUSTER_VARIANTS_MAX = 12;      // bound the retained variant phrasings per cluster
+  const STOPWORDS = new Set(('a an the is are am was were be been being do does did done how what why when '
+    + 'where which who whom whose this that these those i you we they he she it me us them my your our their '
+    + 'to of in on for and or but with about as at by can could would should shall will may might if then '
+    + 'than so up out off over under again just only also very not no yes here there').split(/\s+/));
+  function keywordSet(text) {
+    const out = new Set();
+    for (let w of String(text || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/)) {
+      if (w.length > 3 && w.endsWith('s')) w = w.slice(0, -1);   // light plural stem (closures→closure)
+      if (w.length >= 3 && !STOPWORDS.has(w)) out.add(w);
+    }
+    return out;
+  }
+  function jaccard(a, b) {
+    if (!a.size || !b.size) return 0;
+    let inter = 0; for (const w of a) if (b.has(w)) inter++;
+    return inter / (a.size + b.size - inter);
+  }
+  // Find the best-matching PENDING directed (question) item whose keywords clear the threshold — the
+  // cluster the new question should fold into, or null to start a new item.
+  function findClusterTarget(kw) {
+    let best = null, bestSim = 0;
+    for (const it of workItemsMap.values()) {
+      if (it.status !== 'pending' || it.priority < PRIORITY_DIRECTED) continue;
+      const sim = jaccard(kw, it._kw || (it._kw = keywordSet(it.text)));
+      if (sim > bestSim) { bestSim = sim; best = it; }
+    }
+    return bestSim >= CLUSTER_THRESHOLD ? best : null;
+  }
+
+  // ---- Plan 0473 P11 (F-7): EXPLICIT MODERATION state (teacher gates WHO reaches the queue) ----
+  // The teacher/presenter can MUTE a student (their input produces NO work items) — an explicit
+  // moderation decision. This is DATA-gated on the profile's `floorThresholds.moderationOverrides` knob
+  // (teaching); other profiles refuse the mute (no-op) so there is no behaviour fork on the profile name.
+  const mutedParticipants = new Set();
   // DERIVE a work item from a settled turn `t` (its `last` item carries role). Cheap + profile-read.
   function deriveWorkFromTurn(t, last) {
     const knobs = queueKnobs();
     const text = t.items.map((i) => i.text || '').join(' ').trim().slice(0, QUEUE_TEXT_MAX);
     if (!text) return null;                                   // nothing to act on
+    // Plan 0473 P11 (F-7): explicit moderation — a MUTED student produces NO work item (their input never
+    // reaches the queue). The turn is still recorded in the inbox/recent-turns (continuity is not silently
+    // dropped); it is the teacher's explicit decision to keep it out of the actionable queue.
+    if (mutedParticipants.has(String(t.userId))) return null;
     const q = isQuestion(text);
     // Honour the profile knob: 'questions' ⇒ only questions/requests enqueue (ambient shed); 'all' ⇒
     // every directed turn is a work item (wearable — solo, all turns are directed at the agent).
     if (knobs.enqueue === 'questions' && !q) return null;
+    // Plan 0473 P11 (F-6): at class scale, FOLD a similar question into an existing cluster item instead
+    // of adding a 20th row — the queue stays bounded + glanceable. Cheap keyword-Jaccard, gated on the
+    // `cluster` knob (DATA). A clustered item carries a `count` + the contributing `askers`.
+    if (q && knobs.cluster) {
+      const kw = keywordSet(text);
+      const target = findClusterTarget(kw);
+      if (target) {
+        target.cluster = true;
+        target.count = (target.count || 1) + 1;
+        if (!target.askers) target.askers = [{ userId: target.userId, userName: target.userName }];
+        target.askers.push({ userId: t.userId, userName: (last && last.userName) || null });
+        if (!target.variants) target.variants = [target.text];
+        if (target.variants.length < CLUSTER_VARIANTS_MAX && target.variants.indexOf(text) < 0) target.variants.push(text);
+        for (const w of kw) target._kw.add(w);   // grow the cluster's vocabulary so later variants still match
+        log.info('queue', 'cluster', { id: target.id, count: target.count });
+        evaluateFloor();   // a fold does not add a pending item, but load awareness stays fresh
+        return target;
+      }
+    }
     const item = {
       id: 'work-' + (++workSeq), turnId: t.turnId, userId: t.userId,
       userName: (last && last.userName) || null, text,
@@ -1351,6 +1420,9 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       status: 'pending', owner: null, note: null,
       createdTs: Date.now(),
     };
+    // Plan 0473 P11: cache the question's keyword set so later similar questions can cluster onto it
+    // without recomputing (non-enumerable working field; NEVER copied into the served itemView).
+    if (q && knobs.cluster) item._kw = keywordSet(text);
     workItemsMap.set(item.id, item);
     // Plan 0473 P6 — PROACTIVE-FIRST: reassess load + engage the floor (wrap/hold) BEFORE the reactive
     // shed. The floor gates NEW input at the source; only input that STILL exceeds capacity below hits
@@ -1399,6 +1471,15 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       priority: it.priority, status: it.status, createdTs: it.createdTs, age: Date.now() - it.createdTs };
     if (it.owner) v.owner = it.owner;
     if (it.note != null) v.note = it.note;
+    // Plan 0473 P11 (F-6): a CLUSTERED item carries how many students asked the same thing + the askers,
+    // so the queue stays glanceable ("N students asked about X") instead of N rows. Additive; a singleton
+    // item omits these (a plain 1-asker question).
+    if (it.cluster) {
+      v.cluster = true;
+      v.count = it.count || 1;
+      v.askers = (it.askers || []).slice(0, 50);
+      if (it.variants) v.variants = it.variants.slice(0, 50);
+    }
     // Plan 0473 P9: delimit-as-data — fence the item's text when its speaker is untrusted (participant/
     // guest), flag guests. Additive to the item shape; a self/controller item passes through unfenced.
     return annotateTrust(v, it.trust);
@@ -1424,11 +1505,24 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // resort — secondary to, and always after, this proactive floor.
   const FLOOR_STATES = ['go', 'wrap', 'hold'];
   let floorState = 'go';
-  // SEAM (F-7): explicit teacher moderation (a later TEACHING feature) will OVERRIDE the automatic floor.
-  // NOT built here — this is the clean precedence hook: when a moderation floor is set it wins over the
-  // auto floor everywhere the floor is consumed (broadcast + gate). Left null; no setter is wired yet.
+  // SEAM (F-7), WIRED in P11: explicit teacher moderation OVERRIDES the automatic load-based floor. When a
+  // moderation floor is set it WINS over the auto floor everywhere the floor is consumed (effectiveFloor →
+  // the broadcast cue + floorGated + the situation view). `moderationFloor` is the teacher's explicit
+  // decision; `floorState` is the automatic (load-derived) level. Precedence: moderation first, auto second.
   let moderationFloor = null;
   function effectiveFloor() { return moderationFloor || floorState; }
+  // Set (or clear, with null) the explicit moderation floor. DATA-gated on the profile's
+  // `floorThresholds.moderationOverrides` knob (teaching) so it is not a profile-NAME fork: a profile that
+  // does not grant moderation refuses the override (no-op). The override wins immediately via effectiveFloor;
+  // broadcast the resulting cue so it is never silent. Returns {ok, floor(effective), auto}.
+  function setModerationFloor(state) {
+    if (!floorKnobs().moderationOverrides) return { ok: false, reason: 'moderation-not-permitted', floor: effectiveFloor(), auto: floorState };
+    if (state !== null && !FLOOR_STATES.includes(state)) return { ok: false, reason: 'bad-state', floor: effectiveFloor(), auto: floorState };
+    moderationFloor = state;
+    log.info('floor', 'moderation', { moderationFloor, auto: floorState });
+    broadcastFloor(effectiveFloor());   // the explicit decision wins over auto; never silent
+    return { ok: true, floor: effectiveFloor(), auto: floorState };
+  }
   // Read the floor knobs from the ACTIVE PROFILE (consume knobs, never the profile NAME — drift guard).
   function floorKnobs() {
     const ft = (ACTIVE_PROFILE.floorThresholds) || {};
@@ -1580,8 +1674,33 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     // workItems(): the current ACTIONABLE queue (pending + claimed), prioritized + bounded (aged pruned).
     workItems: () => queueView(),
     // Plan 0473 P6 — floor + backstop observability.
-    // floorState(): the current EFFECTIVE floor ('go'|'wrap'|'hold') — proactive overload state.
+    // floorState(): the current EFFECTIVE floor ('go'|'wrap'|'hold') — proactive overload state (explicit
+    // moderation, if set, wins over the automatic level here).
     floorState: () => effectiveFloor(),
+    // Plan 0473 P11 (F-7) — the AUTOMATIC (load-derived) floor level, BEFORE any moderation override. Used
+    // to prove that explicit moderation OVERRIDES the auto floor (auto='go' but effective='hold', or vice-versa).
+    autoFloor: () => floorState,
+    // floorGated(): would a NEW voice segment be gated right now (effective floor = hold, floor enabled)?
+    floorGated: () => floorGated(),
+    // Plan 0473 P11 (F-7) — EXPLICIT MODERATION control surface (teacher). All DATA-gated on the profile's
+    // floorThresholds.moderationOverrides knob (teaching) — a profile that does not grant it no-ops.
+    // moderate({floor}): set/clear the explicit moderation floor that OVERRIDES the automatic load floor.
+    setModerationFloor: (state) => setModerationFloor(state),
+    // muteParticipant(id)/unmuteParticipant(id): gate WHOSE input reaches the queue — a muted student
+    // produces NO work items. Returns {ok, muted:[...]} (ok:false when moderation is not permitted).
+    muteParticipant: (userId) => {
+      if (!floorKnobs().moderationOverrides) return { ok: false, reason: 'moderation-not-permitted', muted: [...mutedParticipants] };
+      mutedParticipants.add(String(userId));
+      log.info('floor', 'mute', { userId: String(userId) });
+      return { ok: true, muted: [...mutedParticipants] };
+    },
+    unmuteParticipant: (userId) => {
+      if (!floorKnobs().moderationOverrides) return { ok: false, reason: 'moderation-not-permitted', muted: [...mutedParticipants] };
+      mutedParticipants.delete(String(userId));
+      log.info('floor', 'unmute', { userId: String(userId) });
+      return { ok: true, muted: [...mutedParticipants] };
+    },
+    isMuted: (userId) => mutedParticipants.has(String(userId)),
     // backpressure(): the reactive backstop total ({sheddedCount, floor}) — a shed is never silent.
     backpressure: () => ({ sheddedCount, floor: effectiveFloor() }),
     // voiceSessionCount(): active voice sessions (used to prove a gated seg-start started NO capture).

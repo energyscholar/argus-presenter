@@ -67,17 +67,23 @@ export const PROFILES = {
     queuePolicy: { mode: 'actions-to-gm', enqueue: 'questions' },   // ambient narrative shed from the queue (P4/P10)
   },
 
-  // teaching (many): ambient shed→summary, questions kept; explicit moderation overrides auto-floor;
-  // question dedupe/cluster at scale.
+  // teaching (many students + teacher): ambient shed→summary, questions kept; explicit moderation
+  // OVERRIDES auto-floor (F-7); similar questions DEDUPE/CLUSTER at class scale (F-6).
+  // WIRED in P11 — every knob below is CONSUMED by the generic engine (shedding→enqueue policy,
+  // queuePolicy.cluster→the cheap dedupe/cluster path, floorThresholds.moderationOverrides→the
+  // moderation-floor precedence seam, digestContent='class'→the digest seam), so this is DATA, not a
+  // per-name code fork.
   teaching: {
     name: 'teaching',
-    wired: false,
+    wired: true,
     shedding: 'summarize',
     settlingMs: SETTLING.MEDIUM,
     perTurnBudget: { mode: 'soft', byRole: { self: GENEROUS_MS, presenter: GENEROUS_MS, participant: 45000 } },
-    floorThresholds: { enabled: true, moderationOverrides: true },   // F-7
+    floorThresholds: { enabled: true, moderationOverrides: true },   // F-7: teacher moderation wins over auto floor
     digestContent: 'class',                             // hands/quiz/poll state
-    queuePolicy: { mode: 'dedupe-cluster', enqueue: 'questions' },   // F-6; only questions enqueue (P4/P11)
+    // F-6: only questions enqueue (ambient shed→summary), and at class scale SIMILAR questions cluster into
+    // ONE queue item (`cluster:true`) — 20 near-simultaneous "same" questions stay glanceable, not 20 rows.
+    queuePolicy: { mode: 'dedupe-cluster', enqueue: 'questions', cluster: true },
   },
 
   // guest (scoped, untrusted): as host session, but TIGHT budget + aggressive floor; guest items
