@@ -176,12 +176,15 @@
   function dbgRender() {
     if (!DEBUG) return;
     if (!dbgEl) { dbgEl = document.createElement('div'); dbgEl.id = 'ap-debug'; document.body.appendChild(dbgEl); }
-    var last = dbg.msgs.slice(-8).map(function (m) { return '<div class="msg"><span class="k">' + m.t + '</span> ' + (m.brief || '') + '</div>'; }).join('');
+    // Plan 0471 M1: HTML-escape every value before innerHTML. JSON.stringify escapes " but
+    // not <>, so peer-authored state (a marker label / answer of `</pre><img onerror=…>`,
+    // reachable via a diff) would otherwise execute JS in the ?debug overlay.
+    var last = dbg.msgs.slice(-8).map(function (m) { return '<div class="msg"><span class="k">' + attEscape(m.t) + '</span> ' + attEscape(m.brief || '') + '</div>'; }).join('');
     dbgEl.innerHTML =
       '<h4>Argus Debug</h4>' +
-      '<div><span class="k">conn</span> ' + (dbg.open ? 'open' : 'closed') + ' · <span class="k">socket</span> ' + (dbg.socketId || '—') + '</div>' +
-      '<div><span class="k">role</span> ' + identity.role + ' · <span class="k">user</span> ' + identity.userId + '</div>' +
-      '<h4 style="margin-top:6px">state</h4><pre>' + JSON.stringify(dbg.state, null, 1).slice(0, 1200) + '</pre>' +
+      '<div><span class="k">conn</span> ' + (dbg.open ? 'open' : 'closed') + ' · <span class="k">socket</span> ' + attEscape(dbg.socketId || '—') + '</div>' +
+      '<div><span class="k">role</span> ' + attEscape(identity.role) + ' · <span class="k">user</span> ' + attEscape(identity.userId) + '</div>' +
+      '<h4 style="margin-top:6px">state</h4><pre>' + attEscape(JSON.stringify(dbg.state, null, 1).slice(0, 1200)) + '</pre>' +
       '<h4>last messages</h4>' + last;
   }
   function dbgLog(m) {
