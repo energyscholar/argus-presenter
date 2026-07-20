@@ -295,6 +295,9 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     } else { res.writeHead(404); res.end('not found'); }
   });
   const wss = new WebSocketServer({ server: httpServer, maxPayload: MAX_PAYLOAD });
+  // Plan 0471 C1: a server-level socket error (bad handshake, etc.) must never reach
+  // Node's default "Unhandled 'error'" path (which terminates the process).
+  wss.on('error', (e) => { try { log.warn('wss', 'error', { err: String(e && e.message || e) }); } catch {} });
 
   function send(ws, msg) { try { ws.send(JSON.stringify(msg)); } catch (e) {} }
   // Plan 0468 (Part A0): the heartbeat. The server pings every open socket every PING_MS; the
@@ -348,8 +351,16 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     // heartbeat's pong) drives the connection-liveness dot. lastActive stays in the struct (still set on
     // deliberate interaction) but Plan 0468 no longer surfaces it or anything derived from it (G5).
     conns.set(ws, { id: 'c' + (++connSeq), userId: null, userName: null, role: 'participant', lastSeen: Date.now(), connectedAt: Date.now(), lastActive: 0, ip });
+    // Plan 0471 C1: a socket-level 'error' (frame > MAX_PAYLOAD → ws RangeError 1009, invalid
+    // UTF-8, bad RSV bits, ECONNRESET) must NOT hit Node's default handler and kill the process.
+    ws.on('error', (e) => {
+      try { log.warn('ws', 'socket-error', { socketId: (conns.get(ws) || {}).id, err: String(e && e.message || e) }); } catch {}
+      try { ws.close(1011); } catch {}
+    });
     ws.on('message', (buf) => {
       let m; try { m = JSON.parse(buf.toString()); } catch (e) { return; }
+      if (m === null || typeof m !== 'object') return;   // Plan 0471 C2: null/primitive frame → no dispatch (null.t would throw)
+      try {
       const c = conns.get(ws);
       if (c) c.lastSeen = Date.now();   // liveness (X4)
       if (m.t === 'hello') {
@@ -448,6 +459,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
           send(ws, { t: 'attendance', roster: self, summary });
         }
       }
+      } catch (e) { try { log.warn('ws', 'dispatch-error', { err: String(e && e.message || e) }); } catch {} }   // Plan 0471 C2: defense-in-depth
     });
     ws.on('close', () => { const c = conns.get(ws); if (c && c.userId) byUser.delete(c.userId); conns.delete(ws); updateChatListeners(); emit('presence', presence()); });
   });
