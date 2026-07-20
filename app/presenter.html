@@ -96,8 +96,9 @@
   <div class="rd" id="cfg-readout"></div>
   <div class="row" style="margin-top:8px"><button id="cfg-close">Close</button></div>
 </div>
-<!-- ATT (Plan 0466 §2.7): attendance overlay — participant render = names · role · colored status dot
-     (🟢 active / 🟡 idle / 🔴 afk). Read-only "who's in the room". Hidden until opened; request/reply. -->
+<!-- ATT (Plan 0466 §2.7, reworked Plan 0468): attendance overlay — participant render = names · role ·
+     connection-liveness dot (🟢 connected / 🔴 offline) + 👁 when confirmed watching. Read-only "who's in
+     the room". Hidden until opened; request/reply. -->
 <div id="ap-attendance" role="dialog" aria-label="Attendance">
   <div id="att-bar"><span>Who's here</span><button id="att-close">✕ Close</button></div>
   <div id="att-list"></div>
@@ -357,13 +358,14 @@
     dbg.lastChime = (m && m.message) || 'ready';
   }
 
-  // ---- ATT (Plan 0466 §2.7): attendance overlay (participant render — names/role/dot only) ----
+  // ---- ATT (Plan 0466 §2.7, reworked Plan 0468): attendance overlay (participant render — name/role/dot) ----
   // Request/reply, NO standing feed: on open we ask, then re-request every ~2s; closing stops it.
-  // The server redacts by our role — participants get names + role + status; the whole overlay
-  // stays hidden until opened. Gate OFF ⇒ the server answers self-only (handled server-side).
+  // The server redacts by our role — participants get names + role + connected + eyesOn; the whole
+  // overlay stays hidden until opened. Gate OFF ⇒ the server answers self-only (handled server-side).
   var attEl = document.getElementById('ap-attendance');
   var attReqTimer = null;
-  function attDotColor(status){ return status === 'active' ? '#22e5a0' : (status === 'idle' ? '#ffb454' : '#ff6b6b'); }
+  // Plan 0468: the dot is CONNECTION LIVENESS only — green connected, red present-but-stale. No yellow/idle.
+  function attDotColor(connected){ return connected ? '#22e5a0' : '#ff6b6b'; }
   function attEscape(s){ return (s == null ? '' : ('' + s)).replace(/[&<>"]/g, function(ch){ return ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' })[ch]; }); }
   function attRequest(){ if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t:'attendance-request' })); }
   function openAttendance(){
@@ -377,12 +379,14 @@
     if (!attEl.classList.contains('open')) return;   // ignore late replies after close
     var roster = (m && m.roster) || [], sm = (m && m.summary) || {};
     document.getElementById('att-list').innerHTML = roster.map(function(r){
-      return '<div class="att-row"><span class="att-dot" style="background:' + attDotColor(r.status) + '" title="' + attEscape(r.status) + '"></span>'
+      // Plan 0468: dot from r.connected; 👁 badge when r.eyesOn (explicit verify_watching CONFIRM). No r.status.
+      var eyes = r.eyesOn ? ' <span class="att-eyes" title="confirmed watching">👁</span>' : '';
+      return '<div class="att-row"><span class="att-dot" style="background:' + attDotColor(r.connected) + '" title="' + (r.connected ? 'connected' : 'offline') + '"></span>'
         + '<span class="att-name">' + attEscape(r.userName || r.userId) + '</span>'
-        + '<span class="att-role">' + attEscape(r.role) + '</span></div>';
+        + '<span class="att-role">' + attEscape(r.role) + '</span>' + eyes + '</div>';
     }).join('') || '<div style="opacity:.6">(no one else visible)</div>';
     document.getElementById('att-summary').textContent =
-      '🟢 ' + (sm.active || 0) + ' active · 🟡 ' + (sm.idle || 0) + ' idle · 🔴 ' + (sm.afk || 0) + ' afk · ' + (sm.total || 0) + ' total';
+      '🟢 ' + (sm.connected || 0) + ' connected · 🔴 ' + (sm.offline || 0) + ' offline · 👁 ' + (sm.eyesOn || 0) + ' confirmed · ' + (sm.total || 0) + ' total';
   }
   (function(){
     var open = document.getElementById('cfg-attendance'); if (open) open.addEventListener('click', function(e){ e.stopPropagation(); openAttendance(); });
