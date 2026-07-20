@@ -24,7 +24,7 @@ async function until(pred, label, { timeout = 5000 } = {}) { const t0 = Date.now
 test('T-TRANSCRIPT-ALIAS presenter_transcript stays voice-only (back-compat) over the unified inbox', async () => {
   process.env.PRESENTER_ASR_CMD = 'node ' + STUB;
   delete process.env.AP_ASR_COUNT_FILE;
-  const T = toolMap();
+  const T = toolMap({ voiceEnabled: true });
   await T.presenter_start.handler({ port: 0 });
   try {
     const c = await client((await T.presenter_status.handler({})).url, { userId: 'u1', userName: 'Bruce', role: 'participant' });

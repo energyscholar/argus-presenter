@@ -12,7 +12,9 @@ import { assemble } from '../harness/assemble.mjs';
 let server = null;
 const need = () => { if (!server) throw new Error('presenter not started — call presenter_start first'); return server; };
 
-export const tools = [
+// Plan 0473 P0 — CORE tools: the instrument itself. ALWAYS registered — they serve text +
+// session state (unified inbox, chat, polls, display) even with no mic. NOT gated on voice.
+export const coreTools = [
   {
     name: 'presenter_start',
     description: 'Start the Argus Presenter server. Returns the URL participants/presenter open.',
@@ -148,18 +150,6 @@ export const tools = [
     handler: async ({ staleMs } = {}) => need().attendance({ staleMs, viewerRole: 'ai' })
   },
   {
-    name: 'presenter_voice_enable',
-    description: 'Plan 0470 (inbound voice): REQUEST that a target enable microphone capture. Sends a voice_enable signal to the target; the human still passes the browser mic-permission prompt (uncoerceable) and sees an on-air badge with one-click stop. Recognized speech flows back — poll presenter_transcript to read it. This can NEVER silently hot a mic.',
-    input: { type: 'object', properties: { target: { type: 'string', default: 'all', description: 'userId | all | participant | presenter | ai' } } },
-    handler: async ({ target = 'all' } = {}) => ({ requested: need().voiceEnable(target), target })
-  },
-  {
-    name: 'presenter_transcript',
-    description: 'Plan 0470 (inbound voice): cursored poll of recognized speech. Returns transcript entries {seq,userId,userName,text,final,ts,conf} with seq > since, plus a next cursor. Call with since=0 first, then pass the returned cursor to get only new entries.',
-    input: { type: 'object', properties: { since: { type: 'number', default: 0, description: 'Return entries with seq greater than this cursor (0 = from the start of the ring)' } } },
-    handler: async ({ since = 0 } = {}) => need().getTranscripts(since)
-  },
-  {
     name: 'presenter_inbox',
     description: 'Plan 0472 (unified inbox): cursored + optional long-poll read of the ONE voice+text input stream — the standing consumer surface for a wearable/orchestration loop. Returns items {seq,kind:"voice"|"text",userId,userName,role,text,conf,final,ts,sessionId} with seq > since, interleaved by arrival seq, plus a next cursor. Call with since=0 first, then pass the returned cursor to get only new items. With waitMs>0 it LONG-POLLS: returns immediately if anything is newer than since, else blocks server-side until the next item arrives or waitMs elapses (near-real-time, no polling storm; one server-side waiter, always cleaned up). NOTE: `final` = segment-final ASR result (this recognition pass is done), NOT that the speaker finished their turn. Superset of presenter_transcript (which is the voice-only view).',
     input: { type: 'object', properties: {
@@ -176,6 +166,37 @@ export const tools = [
   }
 ];
 
-export function toolMap() { const m = {}; for (const t of tools) m[t.name] = t; return m; }
+// Plan 0473 P0 — VOICE-CONDITIONAL tools (audio-in capture). Registered ONLY when voice is
+// enabled; ABSENT from the tool surface when off ⇒ zero surface clutter + zero selection load.
+// presenter_transcript is the voice-only VIEW; presenter_inbox (core) is its text+voice superset.
+export const voiceTools = [
+  {
+    name: 'presenter_voice_enable',
+    description: 'Plan 0470 (inbound voice): REQUEST that a target enable microphone capture. Sends a voice_enable signal to the target; the human still passes the browser mic-permission prompt (uncoerceable) and sees an on-air badge with one-click stop. Recognized speech flows back — poll presenter_transcript to read it. This can NEVER silently hot a mic.',
+    input: { type: 'object', properties: { target: { type: 'string', default: 'all', description: 'userId | all | participant | presenter | ai' } } },
+    handler: async ({ target = 'all' } = {}) => ({ requested: need().voiceEnable(target), target })
+  },
+  {
+    name: 'presenter_transcript',
+    description: 'Plan 0470 (inbound voice): cursored poll of recognized speech. Returns transcript entries {seq,userId,userName,text,final,ts,conf} with seq > since, plus a next cursor. Call with since=0 first, then pass the returned cursor to get only new entries.',
+    input: { type: 'object', properties: { since: { type: 'number', default: 0, description: 'Return entries with seq greater than this cursor (0 = from the start of the ring)' } } },
+    handler: async ({ since = 0 } = {}) => need().getTranscripts(since)
+  }
+];
+
+// Plan 0473 P0: audio-in is OPTIONAL, DEFAULT OFF. Truthy env flag (1/true/on/yes) turns it on.
+function envVoiceEnabled() { return /^(1|true|on|yes)$/i.test(String(process.env.PRESENTER_VOICE_ENABLED || '').trim()); }
+
+// The ACTIVE tool surface: core always; voice-conditional only when enabled. Explicit
+// {voiceEnabled} wins (tests pass it for clean isolation); else the PRESENTER_VOICE_ENABLED env; else off.
+export function activeTools({ voiceEnabled } = {}) {
+  const on = (typeof voiceEnabled === 'boolean') ? voiceEnabled : envVoiceEnabled();
+  return on ? coreTools.concat(voiceTools) : coreTools.slice();
+}
+
+// Back-compat: `tools` = the CORE (always-on) surface. Voice tools are in voiceTools / activeTools().
+export const tools = coreTools;
+
+export function toolMap(opts) { const m = {}; for (const t of activeTools(opts)) m[t.name] = t; return m; }
 export function _resetForTests() { server = null; }
 export function _server() { return server; }

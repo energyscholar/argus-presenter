@@ -13,7 +13,7 @@ import { launchVoice } from '../../harness/voice-browser.mjs';
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 test('T-LAZY zero voice/wasm bytes while disabled; Tier-1 loads only after enable()', async () => {
-  const s = await createServer({ port: 0 });
+  const s = await createServer({ port: 0, voiceEnabled: true });
   const b = await launchVoice({});
   try {
     const page = await b.newPage();

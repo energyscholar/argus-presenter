@@ -13,7 +13,7 @@ const q = (page, sel, fn) => page.$eval(sel, fn);
 
 test('T-VOICE-UI voice toggle lives in #ap-config; grant flips it ON + shows badge; deny reverts', async () => {
   // --- grant path ---
-  let s = await createServer({ port: 0 });
+  let s = await createServer({ port: 0, voiceEnabled: true });
   let b = await launchVoice({});
   try {
     const page = await b.newPage();
@@ -43,7 +43,7 @@ test('T-VOICE-UI voice toggle lives in #ap-config; grant flips it ON + shows bad
   } finally { await b.close(); await s.close(); }
 
   // --- deny path ---
-  s = await createServer({ port: 0 });
+  s = await createServer({ port: 0, voiceEnabled: true });
   b = await launchVoice({});
   try {
     const page = await b.newPage();

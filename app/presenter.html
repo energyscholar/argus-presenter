@@ -93,10 +93,13 @@
   <div class="row" id="cfg-role-pwgroup" style="display:none"><input id="cfg-role-pw" type="password" placeholder="presenter password" autocomplete="off"> <button id="cfg-role-go">Unlock</button><span id="cfg-role-msg"></span></div>
   <div class="row" id="cfg-control-row" style="display:none"><button id="cfg-open-control">▮ Show Presenter Control</button></div>
   <div class="row" style="margin-top:8px"><button id="cfg-attendance">👁 Show attendance</button></div>
+  <!-- AP-VOICE:BEGIN -->
   <!-- Plan 0470 (RT-27): the ONLY voice on/off control lives here in Settings — never as
        standalone chrome. Default OFF (Tier-0 stub only, nothing loaded). ON => APVoice.enable()
-       => browser mic prompt; Tier-1 + capture begin only on grant. Deny => reverts to OFF + msg. -->
+       => browser mic prompt; Tier-1 + capture begin only on grant. Deny => reverts to OFF + msg.
+       Plan 0473 P0: this whole block is STRIPPED server-side when PRESENTER_VOICE_ENABLED is off. -->
   <div class="row" id="cfg-voice-row" style="margin-top:8px"><span class="k">Voice</span> <button id="cfg-voice-toggle" aria-pressed="false">🎙 Mic: off</button><span id="cfg-voice-msg" style="color:#f97;font-size:11px;flex-basis:100%;margin:0"></span></div>
+  <!-- AP-VOICE:END -->
   <div class="rd" id="cfg-readout"></div>
   <div class="row" style="margin-top:8px"><button id="cfg-close">Close</button></div>
 </div>
@@ -118,9 +121,13 @@
 <div id="stage"><div id="idle"><img class="ap-idle-brand" src="/branding/argus-presenter.svg" alt="Argus Presenter — awaiting content"></div></div>
 <div id="who"></div>
 <div id="ap-chat"><input id="ap-chat-input" disabled placeholder="chat (disabled until a listener is attached)"><button id="ap-chat-send" disabled>Send</button></div>
+<!-- AP-VOICE:BEGIN -->
 <!-- Plan 0470 Tier 0: the ONLY voice code loaded by default (~sub-1KB). It does nothing until
-     enable(), which dynamic-imports the Tier-1 capture engine on demand (T-LAZY). -->
+     enable(), which dynamic-imports the Tier-1 capture engine on demand (T-LAZY).
+     Plan 0473 P0: this <script> is STRIPPED server-side when PRESENTER_VOICE_ENABLED is off,
+     so the audience page pulls ZERO voice bytes and runs no always-on voice runtime. -->
 <script src="/lib/voice-stub.js"></script>
+<!-- AP-VOICE:END -->
 <script>
 (function(){
   var NS = 'argus-presenter';
@@ -224,9 +231,12 @@
     ws.onerror = function(){ /* onclose handles reconnect */ };
     ws.onmessage = onMessage;
   }
+  /* AP-VOICE:BEGIN */
   // Plan 0470: hand the live socket to the voice stub so Tier-1 capture shares THIS WebSocket
   // for the binary PCM lane (no second connection). getSocket() always returns the current ws.
+  // Plan 0473 P0: stripped server-side when PRESENTER_VOICE_ENABLED is off.
   window.APVoiceHost = { getSocket: function(){ return ws; }, onTranscript: null };
+  /* AP-VOICE:END */
 
   var lastSnapshot = null;   // most recent server snapshot (relayed into new content frames)
   // F1: keep lastSnapshot CURRENT by merging live diffs into it, so a late-mounted
@@ -269,6 +279,7 @@
     else if (m.t === 'reload') setTimeout(function(){ location.reload(); }, m.delay || 0);
     else if (m.t === 'chime') { onChime(m); }
     else if (m.t === 'attendance') { onAttendance(m); }
+    /* AP-VOICE:BEGIN */
     else if (m.t === 'voice_enable') {
       // Plan 0470 (RT-9): a REQUEST only. enable() triggers the browser mic-permission prompt
       // (uncoerceable) and, on grant, shows the on-air badge + one-click stop. We never capture
@@ -289,6 +300,7 @@
     }
     else if (m.t === 'voice_status') { dbgLog(m); /* recognizer ready / status */ }
     else if (m.t === 'transcript') { if (window.APVoiceHost && typeof window.APVoiceHost.onTranscript === 'function') window.APVoiceHost.onTranscript(m); }
+    /* AP-VOICE:END */
     else if (m.t === 'host') {
       if (m.msg && m.msg.type === 'diff') {
         if (typeof m.msg.version === 'number') lastVersion = Math.max(lastVersion, m.msg.version);
@@ -483,9 +495,11 @@
     document.getElementById('cfg-contrast').addEventListener('click', function(){ cfg.contrast = !cfg.contrast; apply(); });
     document.getElementById('cfg-close').addEventListener('click', function(){ toggle(false); });
 
+    /* AP-VOICE:BEGIN */
     // Plan 0470 (RT-27): voice on/off row. Default OFF. ON => APVoice.enable() (mic prompt);
     // Tier-1 loads + capture start ONLY on grant. Deny/error => revert to OFF + inline message.
     // The transient on-air badge + one-click stop (RT-9) is the ONLY voice affordance outside here.
+    // Plan 0473 P0: stripped server-side when PRESENTER_VOICE_ENABLED is off (the row it binds is gone too).
     (function(){
       var vbtn = document.getElementById('cfg-voice-toggle');
       var vmsg = document.getElementById('cfg-voice-msg');
@@ -502,6 +516,7 @@
       });
       paint();
     })();
+    /* AP-VOICE:END */
 
     // ---- Role picker (P4): become presenter/user without editing the URL.
     // Reflects identity.role in the .sel classes; on change persists to localStorage
