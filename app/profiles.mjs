@@ -31,10 +31,10 @@ const GENEROUS_MS = 120000;   // 2 min — "generous" for the solo wearable
 
 export const DEFAULT_PROFILE = 'wearable';
 
-// The profile table. `wearable` is FULLY populated (the wearable-instrument milestone). The other
-// three are DATA PLACEHOLDERS with their plan-table knob values filled in so they are already
-// data-selectable, but `wired:false` marks them as NOT yet driving behaviour — their scenario tests
-// land failing-first in P10/P11/P12 as those use cases come online. They are config, not code.
+// The profile table. `wearable` (P1–P8) and `rpg` (P10) are FULLY WIRED — every knob is consumed by
+// the generic engine. `teaching`/`guest` are DATA PLACEHOLDERS with their plan-table knob values filled
+// in so they are already data-selectable, but `wired:false` marks them as NOT yet driving behaviour —
+// their scenario tests land failing-first in P11/P12 as those use cases come online. Config, not code.
 export const PROFILES = {
   // wearable (solo, trusted): every directed turn is a work item — never shed. Snappy turns. Soft,
   // generous budget (wrap-up cue only). No floor (one speaker). The digest IS the conversation.
@@ -54,9 +54,11 @@ export const PROFILES = {
   // --- DATA PLACEHOLDERS (wired:false) — knobs from the plan table; NOT wired to behaviour in P1. ---
 
   // rpg (~6 + GM): ambient = SUMMARIZE into continuity (never discard narrative); GM digest.
+  // WIRED in P10 — every knob below is CONSUMED by the generic engine (shedding→queue enqueue policy,
+  // digestContent→the digest seam, settling/budget/floor), so this is DATA, not a per-name code fork.
   rpg: {
     name: 'rpg',
-    wired: false,
+    wired: true,
     shedding: 'summarize',                              // F-4: shed = summarize-not-discard
     settlingMs: SETTLING.MEDIUM,
     perTurnBudget: { mode: 'soft', byRole: { self: GENEROUS_MS, gm: GENEROUS_MS, participant: 60000 } },
