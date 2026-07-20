@@ -30,6 +30,13 @@ const MAX_CONNS = 200;              // connection cap
 const MAX_PAYLOAD = 256 * 1024;     // per-frame byte cap (S6)
 const DURABLE_OPS_PER_SEC = 50;     // per-conn durable-op rate (ephemeral is coalesced, not capped)
 
+// Plan 0468: the dot means CONNECTION LIVENESS only. A real heartbeat keeps a silent-but-
+// connected client's lastSeen fresh (its pong is inbound traffic) so it stays GREEN; missing
+// STALE_MS worth of pings ⇒ present-but-stale ⇒ RED. PING_MS < STALE_MS/2 so a couple of dropped
+// pings don't flip the dot. Shared by the heartbeat, the attendance api default, and health().
+const PING_MS = 5000;               // heartbeat interval
+const STALE_MS = 15000;             // > 3 missed pings ⇒ red (present-but-stale)
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PAGE = join(__dirname, 'presenter.html');
 
@@ -290,6 +297,15 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   const wss = new WebSocketServer({ server: httpServer, maxPayload: MAX_PAYLOAD });
 
   function send(ws, msg) { try { ws.send(JSON.stringify(msg)); } catch (e) {} }
+  // Plan 0468 (Part A0): the heartbeat. The server pings every open socket every PING_MS; the
+  // client replies {t:'pong'} (inbound traffic ⇒ c.lastSeen refreshed at L~338), so a silent but
+  // connected client stays fresh (GREEN). A frozen/half-open socket stops ponging ⇒ lastSeen goes
+  // stale ⇒ RED within STALE_MS. Cleared in close() (INV-7). unref so it never keeps the loop alive.
+  const heartbeat = setInterval(() => {
+    const ts = Date.now();
+    for (const [ws] of conns) { if (ws.readyState === 1) { try { send(ws, { t: 'ping', ts }); } catch {} } }
+  }, PING_MS);
+  heartbeat.unref?.();
   function presence() { return [...conns.values()].map((c) => ({ userId: c.userId, userName: c.userName, role: c.role, eyesOn: c.eyesOn || null })); }
   // Full presence (incl. IP + socketId + current display id) pushed to CONTROL roles only, for the GM user list.
   function pushPresence() {
@@ -327,10 +343,10 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     // Capture client IP (x-forwarded-for through a proxy, else the socket peer). Shown ONLY to
     // presenter/ai in the user list — never broadcast to participants.
     const ip = ((req && (req.headers['x-forwarded-for'] || (req.socket && req.socket.remoteAddress))) || '').toString().split(',')[0].trim() || null;
-    // ATT (Plan 0466): connectedAt = this connection's start (connectedSec; RESETS on reconnect —
-    // a reconnect is a NEW connection record). lastActive = last DELIBERATE human interaction,
-    // seeded to 0/epoch so a brand-new OR reconnected connection reads `afk` until it actually
-    // interacts (idleSec = now − lastActive ≫ afkSec). lastSeen (keepalive) is separate.
+    // ATT (Plan 0466 / reworked 0468): connectedAt = this connection's start (connectedSec; RESETS on
+    // reconnect — a reconnect is a NEW connection record). lastSeen (keepalive, refreshed by the Part A0
+    // heartbeat's pong) drives the connection-liveness dot. lastActive stays in the struct (still set on
+    // deliberate interaction) but Plan 0468 no longer surfaces it or anything derived from it (G5).
     conns.set(ws, { id: 'c' + (++connSeq), userId: null, userName: null, role: 'participant', lastSeen: Date.now(), connectedAt: Date.now(), lastActive: 0, ip });
     ws.on('message', (buf) => {
       let m; try { m = JSON.parse(buf.toString()); } catch (e) { return; }
@@ -884,7 +900,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       };
     },
     store,
-    close: () => new Promise((res) => { if (ephTimer) clearTimeout(ephTimer); for (const t of hotTimers.values()) clearTimeout(t); hotTimers.clear(); watcher && watcher.close(); wss.clients.forEach((c) => c.close()); httpServer.close(() => res()); }),
+    close: () => new Promise((res) => { clearInterval(heartbeat); /* Plan 0468 (INV-7) */ if (ephTimer) clearTimeout(ephTimer); for (const t of hotTimers.values()) clearTimeout(t); hotTimers.clear(); watcher && watcher.close(); wss.clients.forEach((c) => c.close()); httpServer.close(() => res()); }),
     _http: httpServer,
   };
 
