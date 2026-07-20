@@ -109,7 +109,7 @@ function sendStatic(res, req, absPath, contentType) {
   } catch (e) { res.writeHead(404); res.end('not found'); }
 }
 
-export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null, profile = DEFAULT_PROFILE, settlingMs = null, queueMaxPending = null, queueTtlMs = null } = {}) {
+export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null, profile = DEFAULT_PROFILE, settlingMs = null, queueMaxPending = null, queueTtlMs = null, perTurnBudgetMs = null, perTurnWrapMs = null } = {}) {
   // Plan 0473 P1 — SESSION-TYPE PROFILE (the config-knob spine). Selected ONCE at session start;
   // its knobs are DATA the working-set engine will READ (settling/shedding/budget/floor/digest/queue).
   // Unknown/absent name falls back cleanly to the default (wearable). Profiles are data, not forks.
@@ -128,6 +128,18 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     if (typeof queueMaxPending === 'number') qp.maxPending = queueMaxPending;
     if (typeof queueTtlMs === 'number') qp.ttlMs = queueTtlMs;
     ACTIVE_PROFILE = { ...ACTIVE_PROFILE, queuePolicy: qp };
+  }
+  // Plan 0473 P5 — likewise `perTurnBudgetMs` (the cap) / `perTurnWrapMs` (when the wrap-up cue fires,
+  // ms from turn-open) OVERRIDE the active profile's perTurnBudget, threaded THROUGH the SAME knob shape
+  // (never a code branch). `overrideMs` is a UNIFORM (all-role) tuning/test cap; `wrapMs` an explicit
+  // wrap-lead time. The budget engine keeps reading these from api.profile().perTurnBudget, so tests can
+  // inject a short cap and the wearable's soft/generous per-role budget still governs by default.
+  if (typeof perTurnBudgetMs === 'number' || typeof perTurnWrapMs === 'number') {
+    const ptb = { ...(ACTIVE_PROFILE.perTurnBudget || {}) };
+    ptb.byRole = { ...(ptb.byRole || {}) };
+    if (typeof perTurnBudgetMs === 'number') ptb.overrideMs = perTurnBudgetMs;
+    if (typeof perTurnWrapMs === 'number') ptb.wrapMs = perTurnWrapMs;
+    ACTIVE_PROFILE = { ...ACTIVE_PROFILE, perTurnBudget: ptb };
   }
   // Plan 0473 P0: audio-in is OPTIONAL, DEFAULT OFF. Explicit boolean wins; else the env flag; else off.
   // When off, the served presenter.html carries ZERO voice code (strip below) — the audience display
@@ -862,13 +874,79 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // (0472 hygiene); `turnComplete` = the speaker's TURN has settled. An item can be final:true while its
   // turn is still open (turnComplete:false). Server-side; carried on the reserved item fields.
   let turnSeq = 0;
-  let openTurn = null;   // { turnId, userId, items:[entry...], timer } | null
+  let openTurn = null;   // { turnId, userId, items:[entry...], timer, wrapTimer, budgetTimer, budgetMs, startedAt } | null
+
+  // ---- Plan 0473 P5: PROACTIVE per-turn budget (transparent — never a silent truncation) ----
+  // A single conversational TURN is TIME-bounded by the ACTIVE PROFILE's perTurnBudget knob (per role/
+  // trust — read here, NEVER a name fork). This is the USER-FACING proactive layer that sits ABOVE the
+  // hard VOICE_SEG_MAX_BYTES backstop (which is kept). It matters most for VOICE ("talkative granny who
+  // won't yield the floor"), but the engine is turn-generic (voice OR text). As an open turn approaches
+  // its budget the speaker gets a visible WRAP-UP cue BEFORE the cap; AT the cap the turn is gracefully
+  // CLOSED/yielded and the speaker NOTIFIED — the captured content is PRESERVED (settled), never cut.
+  const DEFAULT_TURN_BUDGET_MS = 120000;   // fallback when a profile/role sets no budget (generous, soft)
+  const WRAP_AT_FRACTION = 0.8;            // default: wrap-up cue fires at 80% of the budget (lead = 20%)
+  // The budget (ms) for a speaker's role: an injected uniform override wins; else the profile's per-role
+  // value; else the participant default; else the module default. Consumes the knob, never the name.
+  function perTurnBudgetFor(role) {
+    const ptb = api.profile().perTurnBudget || {};
+    if (typeof ptb.overrideMs === 'number' && ptb.overrideMs >= 0) return ptb.overrideMs;
+    const byRole = ptb.byRole || {};
+    if (typeof byRole[role] === 'number') return byRole[role];
+    if (typeof byRole.participant === 'number') return byRole.participant;
+    return DEFAULT_TURN_BUDGET_MS;
+  }
+  // When (ms from turn-open) the WRAP-UP cue fires: an explicit injected wrapMs wins; else a fraction of
+  // the budget. Clamped strictly inside (0, budget) so wrap always precedes the cap.
+  function perTurnWrapAt(budgetMs) {
+    const ptb = api.profile().perTurnBudget || {};
+    const at = (typeof ptb.wrapMs === 'number' && ptb.wrapMs >= 0) ? ptb.wrapMs : Math.round(budgetMs * WRAP_AT_FRACTION);
+    return Math.max(0, Math.min(at, budgetMs - 1));
+  }
+  // Deliver a server→client signal to a SPEAKER by userId (their live socket). Never silent: this is how
+  // the wrap-up / close is surfaced to the person holding the floor.
+  function notifySpeaker(userId, msg) { const ws = byUser.get(userId); if (ws) send(ws, msg); }
+  // Arm the budget timers for a FRESHLY-OPENED turn. Measured from turn-open and NOT reset when the turn
+  // is extended (it bounds total turn duration — the whole point for a non-stop speaker). Cleared in
+  // closeTurn. budgetMs <= 0 ⇒ no proactive budget (the hard backstop still applies).
+  function armTurnBudget(t, role) {
+    const budgetMs = perTurnBudgetFor(role || 'participant');
+    if (!(budgetMs > 0)) return;
+    t.budgetMs = budgetMs; t.startedAt = Date.now();
+    const wrapAt = perTurnWrapAt(budgetMs);
+    if (wrapAt > 0) { t.wrapTimer = setTimeout(() => onTurnWrap(t), wrapAt); t.wrapTimer.unref?.(); }
+    t.budgetTimer = setTimeout(() => onTurnBudgetCap(t), budgetMs); t.budgetTimer.unref?.();
+  }
+  // Proactive WRAP-UP: the turn is nearing its budget — cue the speaker to wrap up. Fired ONCE, only while
+  // this turn is still the open one (a turn that already closed early is a no-op).
+  function onTurnWrap(t) {
+    if (openTurn !== t || t.budgetWrapped) return;
+    t.budgetWrapped = true;
+    const remainingMs = Math.max(0, t.budgetMs - (Date.now() - t.startedAt));
+    log.info('voice', 'turn-budget-wrap', { turnId: t.turnId, userId: t.userId, remainingMs });
+    notifySpeaker(t.userId, { t: 'turn_budget', state: 'wrap', turnId: t.turnId, budgetMs: t.budgetMs, remainingMs, mode: (api.profile().perTurnBudget || {}).mode || 'soft' });
+  }
+  // AT the cap: gracefully CLOSE/yield the turn and NOTIFY the speaker (never a silent cut). Finalize any
+  // active voice segment for that speaker so the mic YIELDS (the captured audio is still transcribed, not
+  // discarded), then settle the turn (turnComplete + work derivation) with reason 'budget'.
+  function onTurnBudgetCap(t) {
+    if (openTurn !== t) return;
+    const userId = t.userId, turnId = t.turnId;
+    log.warn('voice', 'turn-budget-cap', { turnId, userId, budgetMs: t.budgetMs });
+    notifySpeaker(userId, { t: 'turn_budget', state: 'closed', turnId, reason: 'budget', budgetMs: t.budgetMs, mode: (api.profile().perTurnBudget || {}).mode || 'soft' });
+    // Yield the floor: finalize (do NOT discard) any active voice segment for this speaker.
+    const ws = byUser.get(userId); const c = ws ? conns.get(ws) : null;
+    if (c && c.voice && c.voice.active) { try { voiceSegFinalize(c, ws, {}); } catch (e) {} }
+    closeTurn('budget');
+  }
+
   // Close the open turn: mark its items complete (ring update, so a later read sees a settled turn) and
   // fire ONE `turnComplete` signal (event). Idempotent when nothing is open.
   function closeTurn(reason = 'settle') {
     if (!openTurn) return null;
     const t = openTurn; openTurn = null;
     if (t.timer) { clearTimeout(t.timer); t.timer = null; }
+    if (t.wrapTimer) { clearTimeout(t.wrapTimer); t.wrapTimer = null; }         // P5: clear budget timers
+    if (t.budgetTimer) { clearTimeout(t.budgetTimer); t.budgetTimer = null; }
     for (const it of t.items) it.turnComplete = true;
     const last = t.items[t.items.length - 1];
     const signal = { turnId: t.turnId, userId: t.userId, role: last.role,
@@ -893,6 +971,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       entry.turnId = turnId;
       entry.turnComplete = false;
       openTurn = { turnId, userId: entry.userId, items: [entry], timer: null };
+      armTurnBudget(openTurn, entry.role);          // Plan 0473 P5: start the per-turn budget clock (from open)
     }
     if (openTurn.timer) clearTimeout(openTurn.timer);
     if (settlingMs > 0) {                           // (re)arm: settle after settlingMs of silence
