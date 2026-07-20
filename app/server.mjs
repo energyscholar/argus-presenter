@@ -243,12 +243,15 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         // AUT-1: module write-back. The Content Creator POSTs a module JSON; it lands in
         // MODULES_DIR so listModules()/the GM <select> discovers it. MUTATION → guarded:
         // AUTH-gated (when a control token is configured), path-safe id, hard size cap.
-        // AUTH: if a control token is set, require it (header or ?token=); else 403.
-        if (CONTROL_TOKEN) {
+        // Plan 0471 H1: gate on ANY control credential (was CONTROL_TOKEN-only, so a
+        // rolePassword/ROLE_HASH-gated deployment left this write endpoint OPEN). Mirror the
+        // WS control gate: require a token matching CONTROL_TOKEN OR ROLE_HASH when either is set.
+        if (CONTROL_TOKEN || ROLE_HASH) {
           const q = rawPath.split('?')[1] || '';
           const qtoken = new URLSearchParams(q).get('token');
           const token = req.headers['x-control-token'] || qtoken;
-          if (token !== CONTROL_TOKEN) { res.writeHead(403, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'forbidden' })); return; }
+          const ok = (CONTROL_TOKEN && token === CONTROL_TOKEN) || (ROLE_HASH && token === ROLE_HASH);
+          if (!ok) { res.writeHead(403, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'forbidden' })); return; }
         }
         // id guard: no path separators / traversal (reuse readModuleFile's rule).
         if (!/^[\w.-]+$/.test(id)) { res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'bad id' })); return; }
@@ -950,9 +953,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   // Real deployments are GATED out of the box: default the presenter password to
   // `password` (override via PRESENTER_ROLE_PASSWORD). This applies ONLY to the CLI
   // self-run — createServer() from tests stays ungated unless a credential is passed.
+  // Plan 0471 H1: default to a REAL control token (random when unset) so the module
+  // write-back never ships open — printed in the banner for the creator/writeback client.
+  const cliToken = process.env.PRESENTER_CONTROL_TOKEN || createHash('sha256').update('argus-cli-' + Date.now() + '-' + Math.random()).digest('hex').slice(0, 32);
   createServer({
     port: p,
-    controlToken: process.env.PRESENTER_CONTROL_TOKEN || null,
+    controlToken: cliToken,
     rolePassword: process.env.PRESENTER_ROLE_PASSWORD || 'password',
   }).then((s) => {
     const u = s.url();   // base like http://127.0.0.1:PORT (no trailing slash)
@@ -960,5 +966,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     console.log('  display :', u + '/');
     console.log('  control :', u + '/control');
     console.log('  creator :', u + '/creator');
+    console.log('  control token (x-control-token / ?token=):', cliToken);
   });
 }
