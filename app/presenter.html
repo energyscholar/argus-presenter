@@ -39,6 +39,9 @@
   #ap-control-frame{flex:1;width:100%;border:0;background:#040814;}
   #who{position:fixed;bottom:8px;left:12px;font-size:.65rem;opacity:.4;letter-spacing:.1em;}
   #ap-chat{position:fixed;bottom:0;left:0;right:0;display:flex;gap:6px;padding:6px 10px 6px 130px;background:rgba(6,10,24,.85);border-top:1px solid #1c2a44;z-index:40;}
+  /* Plan 0476 P4: echo line — one line of the speaker's own recognized words, above the input. */
+  #ap-echo{position:fixed;bottom:38px;left:0;right:0;padding:3px 10px 3px 130px;z-index:41;font:12px/1.35 'Courier New',monospace;color:#8fd6ff;background:linear-gradient(rgba(6,10,24,0),rgba(6,10,24,.72));white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:0;transition:opacity .18s ease;pointer-events:none;}
+  #ap-echo.show{opacity:.92;}
   #ap-chat input{flex:1 1 auto;background:#0d1633;color:#cfe9ff;border:1px solid #2a3a5a;border-radius:6px;padding:5px 8px;font:inherit;}
   #ap-chat input:disabled{opacity:.5;}
   #ap-chat button{background:#12234a;color:#cfe9ff;border:1px solid #2a3a5a;border-radius:6px;padding:5px 10px;font:inherit;cursor:pointer;}
@@ -120,6 +123,8 @@
 <div id="ap-ready" aria-live="polite"><div class="pill" role="status"><span class="bell">🔔</span><span><span class="msg">Ready to start?</span> <span class="sub">— bring me forward, then tell me to go.</span></span><button class="ap-ack" type="button" style="display:none">✓ I'm watching</button></div></div>
 <div id="stage"><div id="idle"><img class="ap-idle-brand" src="/branding/argus-presenter.svg" alt="Argus Presenter — awaiting content"></div></div>
 <div id="who"></div>
+<!-- Plan 0476 P4: single-line echo of the local speaker's OWN recognized words, just above the input. -->
+<div id="ap-echo" aria-live="polite"></div>
 <div id="ap-chat"><input id="ap-chat-input" disabled placeholder="chat (disabled until a listener is attached)"><button id="ap-chat-send" disabled>Send</button></div>
 <!-- AP-VOICE:BEGIN -->
 <!-- Plan 0470 Tier 0: the ONLY voice code loaded by default (~sub-1KB). It does nothing until
@@ -310,6 +315,18 @@
     }
     else if (m.t === 'voice_status') { dbgLog(m); /* recognizer ready / status */ }
     else if (m.t === 'transcript') { if (window.APVoiceHost && typeof window.APVoiceHost.onTranscript === 'function') window.APVoiceHost.onTranscript(m); }
+    else if (m.t === 'echo') {
+      // Plan 0476 P4: the server echoes THIS speaker's own recognized words. Render as a single line
+      // above the input. speakerLabel (biometric, null for now) would prefix it when present.
+      try {
+        var ee = document.getElementById('ap-echo');
+        if (ee && m.text) {
+          ee.textContent = (m.speakerLabel ? m.speakerLabel + ': ' : '🎙 ') + m.text;
+          ee.classList.add('show'); clearTimeout(ee.__apT);
+          ee.__apT = setTimeout(function(){ ee.classList.remove('show'); }, 6000);
+        }
+      } catch(e){}
+    }
     else if (m.t === 'turn_budget') {
       // Plan 0473 P5 (proactive per-turn budget, NEVER silent): the SERVER decides; the client only
       // RENDERS the cue (a display affordance) and, on 'closed', YIELDS the mic. No heavy logic here —

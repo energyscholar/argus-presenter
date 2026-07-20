@@ -640,6 +640,11 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         voiceSegStart(c, ws, m);
       } else if (m.t === 'voice_seg_end') {
         voiceSegFinalize(c, ws, {});   // finalize -> WAV -> WARM ASR -> transcript out
+      } else if (m.t === 'voicedbg') {
+        // Plan 0476 P1: client voice stage-tracer (S1..S10 + level meter). Logs to the voice-debug ring
+        // (visible via presenter_debug) — NEVER the inbox/transcript, so the transcript + echo line stay
+        // clean. Untrusted client content is confined to a bounded log field.
+        if (m && typeof m.tag === 'string') log.info('voicedbg', m.tag.slice(0, 48), { socketId: c && c.id, ...(m.data && typeof m.data === 'object' ? m.data : {}) });
       } else if (m.t === 'chat') {
         // Plan 0472: typed text is FIRST-CLASS input. Land it in the unified inbox attributed to the
         // SERVER-AUTHORITATIVE connection identity (never the client payload). D5 = DUAL-WRITE: also
@@ -1147,7 +1152,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // speaker's turn is over. `turnComplete` (set when the turn settles) is the DISTINCT turn-end signal.
   // Plan 0473 P13: `own` marks the AGENT's OWN outbound reply (role:'ai', trust:'self') so it joins the
   // conversation object but never barges in on itself and is never queued as a judgment item.
-  function emitInbox({ kind, userId, userName, role, text, conf = null, final = true, sessionId, isGuest = false, own = false }) {
+  function emitInbox({ kind, userId, userName, role, text, conf = null, final = true, sessionId, isGuest = false, own = false, voiceId = null, voiceIdConf = null, speakerLabel = null }) {
     const entry = {
       seq: ++inboxSeq, kind, userId, userName, role: role || null,
       // Plan 0473 P9: the SERVER-AUTHORITATIVE trust level, stamped at ingest from role + isGuest (both
@@ -1156,6 +1161,11 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       // because the server hard-forces a guest's role to 'participant'.
       trust: deriveTrust(role, isGuest),
       text, conf: (conf == null ? null : conf), final: final !== false,
+      // Biometric voice-ID hooks (Plan 0476 P0; impl DEFERRED). Nullable, decorate-only. voiceId =
+      // matched enrolled person (distinct from connection userId); speakerLabel SUPPLEMENTS userName,
+      // never overwrites; voiceIdConf may be set even when voiceId is null. NOT strong auth (a stored
+      // 16kHz segment is replayable) — never a sole credential. See project-presenter-biometric-voiceid.
+      voiceId, voiceIdConf, speakerLabel,
       ts: Date.now(), sessionId: sessionId || SESSION_ID,
     };
     if (own === true) entry.own = true;   // Plan 0473 P13: the agent's OWN outbound reply (never fenced/queued/self-barged)
@@ -1256,6 +1266,10 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     log.info('voice', 'S10 asr-result', { socketId: c.id, seq, text: String((result && result.text) || '').slice(0, 60) });   // S206 tracer
     if (!result || !result.text) { log.info('voice', 'no-text', { socketId: c.id, seq }); return; }
     emitTranscript({ userId: c.userId, userName: c.userName, role: c.role, text: result.text, conf: result.conf, isGuest: !!c.isGuest });
+    // Plan 0476 P4: echo the speaker's OWN recognized words back to THEIR client only (rendered as a
+    // single line above the input field). Participants never see peers' voice, but seeing your own words
+    // is your own data. voiceId hooks ride along (null until biometric ID lands).
+    send(ws, { t: 'echo', text: result.text, conf: result.conf, voiceId: null, voiceIdConf: null, speakerLabel: null });
   }
 
   // ---- Plan 0473 P3: BOUNDED SITUATION (the working set) + SERVER-HELD per-consumer cursor ----
