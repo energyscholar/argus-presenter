@@ -109,12 +109,17 @@ function sendStatic(res, req, absPath, contentType) {
   } catch (e) { res.writeHead(404); res.end('not found'); }
 }
 
-export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null, profile = DEFAULT_PROFILE } = {}) {
+export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null, profile = DEFAULT_PROFILE, settlingMs = null } = {}) {
   // Plan 0473 P1 — SESSION-TYPE PROFILE (the config-knob spine). Selected ONCE at session start;
   // its knobs are DATA the working-set engine will READ (settling/shedding/budget/floor/digest/queue).
-  // Unknown/absent name falls back cleanly to the default (wearable). NO knob is consumed in P1 — this
-  // just establishes the config + selection + readability (api.profile()). Profiles are data, not forks.
+  // Unknown/absent name falls back cleanly to the default (wearable). Profiles are data, not forks.
   const SESSION_PROFILE = selectProfile(profile);
+  // Plan 0473 P2 — an explicit `settlingMs` at session start OVERRIDES the active profile's settling
+  // knob. It is threaded THROUGH the profile object (a shallow clone of the same knob shape), NOT a
+  // code branch — so the turn engine still reads the window from api.profile().settlingMs, and the
+  // override is just tuning/testing config. Absent ⇒ the profile's own settlingMs governs.
+  const ACTIVE_PROFILE = (typeof settlingMs === 'number' && settlingMs >= 0)
+    ? { ...SESSION_PROFILE, settlingMs } : SESSION_PROFILE;
   // Plan 0473 P0: audio-in is OPTIONAL, DEFAULT OFF. Explicit boolean wins; else the env flag; else off.
   // When off, the served presenter.html carries ZERO voice code (strip below) — the audience display
   // is byte-clean of voice. The unified inbox + typed chat are NOT voice and stay on regardless.
@@ -174,7 +179,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   const polls = new Map();     // promptId -> {spec, votes:Map(userId->{value,userName,ts}), open}
   const acks = new Map();      // ackId -> { message, requestedAt, target, by:Map(userId->{userName,at}) } — eyes-on handshake
   const lastResults = {};      // PRIM-results: promptId -> { userId -> {type,value} } (last beat result per user)
-  const listeners = { presence: [], result: [], poll: [], transcript: [], inbox: [] };
+  const listeners = { presence: [], result: [], poll: [], transcript: [], inbox: [], turnComplete: [] };
   const emit = (ev, data) => listeners[ev].forEach((cb) => { try { cb(data); } catch (e) {} });
 
   const CONTROL = join(__dirname, 'control.html');
@@ -837,6 +842,55 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // registers ONE waiter here; it is resolved (and removed) on the next emit, at its timeout, or on
   // server close. Never left dangling — no leaked timers or promises.
   const inboxWaiters = new Set();
+  // ---- Plan 0473 P2: TURN COALESCING (fragments -> turns) ----
+  // A speaker's CONSECUTIVE inbox items (voice OR typed text) are grouped into a TURN by a per-speaker
+  // SETTLING WINDOW read from the ACTIVE PROFILE (api.profile().settlingMs — wearable = 400ms; consumed
+  // as a knob, never branched on the profile NAME). A new item from the SAME identity within the window
+  // EXTENDS the open turn (shared turnId, timer reset). A gap > settlingMs, OR an item from a DIFFERENT
+  // identity, CLOSES the open turn (fires `turnComplete`) and starts a fresh one. Single conversational
+  // floor (one open turn) — a speaker change is itself a close, so turns are NEVER merged across
+  // identities. `turnComplete` is DISTINCT from `final`: `final` = one ASR/segment result is complete
+  // (0472 hygiene); `turnComplete` = the speaker's TURN has settled. An item can be final:true while its
+  // turn is still open (turnComplete:false). Server-side; carried on the reserved item fields.
+  let turnSeq = 0;
+  let openTurn = null;   // { turnId, userId, items:[entry...], timer } | null
+  // Close the open turn: mark its items complete (ring update, so a later read sees a settled turn) and
+  // fire ONE `turnComplete` signal (event). Idempotent when nothing is open.
+  function closeTurn(reason = 'settle') {
+    if (!openTurn) return null;
+    const t = openTurn; openTurn = null;
+    if (t.timer) { clearTimeout(t.timer); t.timer = null; }
+    for (const it of t.items) it.turnComplete = true;
+    const last = t.items[t.items.length - 1];
+    const signal = { turnId: t.turnId, userId: t.userId, role: last.role,
+      seqs: t.items.map((i) => i.seq), lastSeq: last.seq, count: t.items.length,
+      ts: Date.now(), reason };
+    emit('turnComplete', signal);
+    log.info('voice', 'turn-complete', { turnId: t.turnId, userId: t.userId, items: signal.count, reason });
+    return signal;
+  }
+  // Attach turnId + turnComplete to a freshly-emitted inbox item, opening/extending/closing turns.
+  function assignTurn(entry) {
+    const settlingMs = api.profile().settlingMs;   // consume the profile knob (never the profile NAME)
+    if (openTurn && openTurn.userId !== entry.userId) closeTurn('speaker-change');   // never merge identities
+    if (openTurn) {                                 // same speaker within the window ⇒ extend the turn
+      entry.turnId = openTurn.turnId;
+      entry.turnComplete = false;
+      openTurn.items.push(entry);
+    } else {                                        // open a fresh turn
+      const turnId = 'turn-' + (++turnSeq);
+      entry.turnId = turnId;
+      entry.turnComplete = false;
+      openTurn = { turnId, userId: entry.userId, items: [entry], timer: null };
+    }
+    if (openTurn.timer) clearTimeout(openTurn.timer);
+    if (settlingMs > 0) {                           // (re)arm: settle after settlingMs of silence
+      openTurn.timer = setTimeout(() => closeTurn('settle'), settlingMs);
+      openTurn.timer.unref?.();
+    } else {                                        // settlingMs === 0 ⇒ every item is its own settled turn
+      closeTurn('settle');
+    }
+  }
   // RT-26 persistence policy. Recognized text is EPHEMERAL BY DEFAULT — it lives ONLY in the
   // bounded ring above; ring eviction / restart losing history is INTENDED. Disk persistence is
   // OPT-IN via PRESENTER_TRANSCRIPT_PERSIST; when ON, one JSONL line per FINAL transcript is
@@ -869,10 +923,11 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     h.write('data', 36); h.writeUInt32LE(pcm.length, 40);
     return Buffer.concat([h, pcm]);
   }
-  // Plan 0472: land ONE item into the unified inbox. The item is a FLAT, EXTENSIBLE object — a future
-  // increment adds fields (turnId, turnComplete, annotations{...}, identity{...}, dropped) WITHOUT
-  // overloading these. `final` means "segment-final ASR result" (this recognition pass is complete) —
-  // it does NOT mean the speaker's turn is over; a future `turnComplete` will signal turn-end.
+  // Plan 0472: land ONE item into the unified inbox. The item is a FLAT, EXTENSIBLE object. Plan 0473
+  // P2 now populates the reserved `turnId` + `turnComplete` fields via assignTurn (below); future
+  // increments may add more (annotations{...}, identity{...}, dropped) WITHOUT overloading these.
+  // `final` means "segment-final ASR result" (this recognition pass is complete) — it does NOT mean the
+  // speaker's turn is over. `turnComplete` (set when the turn settles) is the DISTINCT turn-end signal.
   function emitInbox({ kind, userId, userName, role, text, conf = null, final = true, sessionId }) {
     const entry = {
       seq: ++inboxSeq, kind, userId, userName, role: role || null,
@@ -880,6 +935,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       ts: Date.now(), sessionId: sessionId || SESSION_ID,
     };
     inbox.push(entry); if (inbox.length > TRANSCRIPT_RING) inbox.shift();
+    assignTurn(entry);   // Plan 0473 P2: attach turnId + turnComplete (may settle the prior turn) BEFORE emit
     persistInboxItem(entry);   // RT-26: no-op unless PRESENTER_TRANSCRIPT_PERSIST is ON (voice AND text)
     // Back-compat: voice items still surface to control roles as {t:'transcript'} (presenter voice host).
     if (kind === 'voice') {
@@ -963,8 +1019,8 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     port: () => httpServer.address().port,
     // Plan 0473 P1 — READ the active session profile's knobs (settling/shedding/budget/floor/digest/
     // queue). The engine/tools call this to configure behaviour; they must consume knobs, never the
-    // profile NAME (drift guard). No knob is consumed yet in P1 — this only exposes the config.
-    profile: () => SESSION_PROFILE,
+    // profile NAME (drift guard). P2 is the FIRST real consumer: it reads settlingMs from here.
+    profile: () => ACTIVE_PROFILE,
     presence,
     on: (ev, cb) => { if (listeners[ev]) listeners[ev].push(cb); },
     pushContent(target, html, contentId) {
@@ -1240,7 +1296,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       };
     },
     store,
-    close: () => new Promise((res) => { clearInterval(heartbeat); /* Plan 0468 (INV-7) */ if (ephTimer) clearTimeout(ephTimer); for (const t of hotTimers.values()) clearTimeout(t); hotTimers.clear(); for (const w of [...inboxWaiters]) w.wake(); /* Plan 0472: drain pending long-poll waiters (resolve, no dangling) */ for (const [, c] of conns) { if (c.voice && c.voice.timer) clearTimeout(c.voice.timer); } if (asr) { try { asr.close(); } catch (e) {} asr = null; } watcher && watcher.close(); wss.clients.forEach((c) => c.close()); httpServer.close(() => res()); }),
+    close: () => new Promise((res) => { clearInterval(heartbeat); /* Plan 0468 (INV-7) */ if (ephTimer) clearTimeout(ephTimer); for (const t of hotTimers.values()) clearTimeout(t); hotTimers.clear(); for (const w of [...inboxWaiters]) w.wake(); /* Plan 0472: drain pending long-poll waiters (resolve, no dangling) */ if (openTurn && openTurn.timer) { clearTimeout(openTurn.timer); openTurn.timer = null; } /* Plan 0473 P2: clear a pending turn-settling timer */ for (const [, c] of conns) { if (c.voice && c.voice.timer) clearTimeout(c.voice.timer); } if (asr) { try { asr.close(); } catch (e) {} asr = null; } watcher && watcher.close(); wss.clients.forEach((c) => c.close()); httpServer.close(() => res()); }),
     _http: httpServer,
   };
 
