@@ -304,6 +304,20 @@
     }
     else if (m.t === 'voice_status') { dbgLog(m); /* recognizer ready / status */ }
     else if (m.t === 'transcript') { if (window.APVoiceHost && typeof window.APVoiceHost.onTranscript === 'function') window.APVoiceHost.onTranscript(m); }
+    else if (m.t === 'turn_budget') {
+      // Plan 0473 P5 (proactive per-turn budget, NEVER silent): the SERVER decides; the client only
+      // RENDERS the cue (a display affordance) and, on 'closed', YIELDS the mic. No heavy logic here —
+      // the stub stays a stub. 'wrap' = a gentle wrap-up nudge; 'closed' = the turn was gracefully
+      // closed at the budget, so stop capturing (the captured audio is still transcribed server-side).
+      try {
+        var tb = document.getElementById('ap-voice-badge');
+        if (tb) { var tl = tb.querySelector('span:nth-child(2)') || tb; if (!tl.__apPrev) tl.__apPrev = tl.textContent;
+          tl.textContent = (m.state === 'closed') ? '⏹ turn ended — your turn' : '⏳ please wrap up';
+          clearTimeout(tl.__apT); tl.__apT = setTimeout(function(){ tl.textContent = tl.__apPrev || 'Mic on-air'; tl.__apPrev = null; }, m.state === 'closed' ? 2500 : 1800); }
+        if (m.state === 'closed' && window.APVoice && window.APVoice.enabled) { try { window.APVoice.disable(); if (window.__apVoicePaint) window.__apVoicePaint(); } catch(e){} }
+      } catch(e){}
+      dbgLog(m);
+    }
     /* AP-VOICE:END */
     else if (m.t === 'host') {
       if (m.msg && m.msg.type === 'diff') {
