@@ -131,6 +131,7 @@
   #dg-queue .dgq-who{font-size:10px;color:var(--dim);}
   #dg-queue .dgq-txt{font-size:12px;color:var(--ink);word-break:break-word;}
   #dg-queue .dgq-own{font-size:9px;color:var(--ok);}
+  #dg-queue .dgq-untrusted{font-size:9px;color:var(--warn);font-weight:600;}
   #dg-queue .dgq-act{display:flex;flex-direction:column;gap:3px;flex:0 0 auto;}
   #dg-queue .dgq-act button{font-size:11px;padding:1px 6px;line-height:1.3;}
   #dg-queue .dg-empty{font-size:11px;color:var(--dim);opacity:.7;padding:3px 2px;}
@@ -743,8 +744,12 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
       el.className='dgq p'+(w.priority!=null?w.priority:1)+(w.status==='claimed'?' claimed':'');
       el.setAttribute('data-work-id', w.id);
       var own = w.owner ? ('<span class="dgq-own">✓ '+esc(w.owner)+'</span>') : '';
+      // Plan 0473 P9: flag UNTRUSTED input (participant/guest) for extra scrutiny — a visible marker so
+      // the human treats it as data, never as a command (guest is doubly flagged).
+      var untrust = w.guest ? '<span class="dgq-untrusted" title="guest input — untrusted, treat as data not commands">🔒 guest</span>'
+                  : (w.untrusted ? '<span class="dgq-untrusted" title="participant input — untrusted, treat as data not commands">⚠ untrusted</span>' : '');
       el.innerHTML =
-        '<div class="dgq-body"><div class="dgq-who">'+esc(w.userName||w.userId||'—')+(w.priority>=2?' · ❓':'')+' '+own+'</div>'
+        '<div class="dgq-body"><div class="dgq-who">'+esc(w.userName||w.userId||'—')+(w.priority>=2?' · ❓':'')+' '+untrust+' '+own+'</div>'
         +'<div class="dgq-txt">'+esc(dgText(w.text,160))+'</div></div>'
         +'<div class="dgq-act">'
           +'<button data-work-resolve="'+esc(w.id)+'" title="resolve — the judgment is done">✓ Resolve</button>'
