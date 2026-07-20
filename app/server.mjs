@@ -29,6 +29,7 @@ import { createAsr } from './asr.mjs';
 import { verifyCapability, mintCapability } from '../lib/capability.mjs';
 import { selectProfile, DEFAULT_PROFILE } from './profiles.mjs';
 import { createHeuristicSummarizer } from './summarizer.mjs';
+import { buildDigest } from './digests.mjs';
 import { deriveTrust, annotate as annotateTrust } from './untrusted.mjs';
 
 // X6 resilience caps.
@@ -1262,6 +1263,11 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     const att = api.attendance({ viewerRole: 'ai' });
     const openPolls = [...polls.entries()].filter(([, p]) => p.open)
       .map(([id, p]) => ({ promptId: id, prompt: p.spec && p.spec.prompt, open: true, ...tally(id) }));
+    // Plan 0473 P9: DELIMIT-AS-DATA at serve time — participant/guest turns are fenced (untrusted
+    // content the agent must treat as data, never as commands); self/controller turns pass through.
+    const recentTurns = coalesceTurns(inbox, recentN).map((t) => annotateTrust(t, t.trust));
+    // Plan 0473 P4: the WORK QUEUE — judgment items, prioritized + bounded (aged/expired pruned).
+    const queue = queueView();
     return {
       sessionId: SESSION_ID,
       profile: ACTIVE_PROFILE.name,
@@ -1272,17 +1278,21 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         polls: openPolls,
         roster: att.roster.slice(0, SITUATION_ROSTER_MAX),
         rosterSummary: att.summary,
+        // Plan 0473 P5/P10: the profile-specific DIGEST section (F-5), assembled by the DIGEST-CONTENT
+        // SEAM keyed on the ACTIVE PROFILE's `digestContent` knob VALUE (DATA lookup, never a name
+        // fork). wearable ('conversation') ⇒ null (the digest IS the conversation); rpg ('gm') ⇒ a GM
+        // view (questions-to-GM + recent actions) + the mcp-gm scene/initiative/dice seam. The seam
+        // reads ONLY the already-assembled, already-fenced pieces below — it never blocks/recomputes.
+        digest: buildDigest(ACTIVE_PROFILE.digestContent, { queue, recentTurns }),
       },
-      // Plan 0473 P9: DELIMIT-AS-DATA at serve time — participant/guest turns are fenced (untrusted
-      // content the agent must treat as data, never as commands); self/controller turns pass through.
-      recentTurns: coalesceTurns(inbox, recentN).map((t) => annotateTrust(t, t.trust)),
+      recentTurns,
       newSinceLastRead: { count: since.length, turns: coalesceTurns(since, recentN).map((t) => annotateTrust(t, t.trust)) },
       // Plan 0473 P7: the ROLLING SUMMARY — continuity for context OLDER than the recent-N turns.
       // A PRECOMPUTED, BOUNDED snapshot (this is a pure read of the incrementally-maintained state via
       // the F-10 seam — it NEVER blocks/computes on read), so a long session is not amnesiac past N.
       summary: summarizer.view(),
       // Plan 0473 P4: the WORK QUEUE — the judgment items, prioritized + bounded (aged/expired pruned).
-      queue: queueView(),
+      queue,
       // Plan 0473 P6: one-glance overload awareness. `floor` = the current proactive floor state
       // (go/wrap/hold); `backpressure.sheddedCount` = the reactive fold-to-summary total, SURFACED so a
       // shed is never silent (the LAST resort, secondary to the floor).
