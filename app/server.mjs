@@ -46,7 +46,7 @@ const VOICE_SR = 16000;                        // server-side ASR sample rate (c
 const VOICE_MAX_SESSIONS = 8;                  // RT-22: concurrent active voice sessions (<< MAX_CONNS)
 const VOICE_BYTE_RATE_CAP = 64 * 1024;         // RT-7: per-conn audio byte/s (PCM is 32 KB/s -> 2x headroom)
 const VOICE_SEG_MAX_MS = 30000;                // RT-8: hard segment length cap -> force-cut
-const VOICE_SEG_TIMEOUT_MS = parseInt(process.env.PRESENTER_VOICE_SEG_TIMEOUT_MS || '3000', 10);   // RT-14: no frames for this long -> flush/discard open segment
+// RT-14 open-segment timeout is resolved PER createServer() (see segTimeoutMs) so tests can override it.
 const VOICE_MIN_SEG_MS = 300;                  // RT-12: shorter than this -> drop (whisper hallucinates on blips)
 const VOICE_SEG_MAX_BYTES = Math.round(VOICE_SR * 2 * VOICE_SEG_MAX_MS / 1000);
 const VOICE_MIN_SEG_BYTES = Math.round(VOICE_SR * 2 * VOICE_MIN_SEG_MS / 1000);
@@ -732,6 +732,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // The ASR worker is PLUGGABLE (PRESENTER_ASR_CMD) and WARM: created lazily on the first
   // voice-enable / seg-start, model loaded ONCE, kept alive across every segment (RT-17/25).
   let asr = null;
+  const segTimeoutMs = parseInt(process.env.PRESENTER_VOICE_SEG_TIMEOUT_MS || '3000', 10);   // RT-14 (per-server; test-overridable)
   let voiceSessions = 0;                 // active voice sessions (capped, RT-22)
   const transcripts = [];                // cursored in-memory ring (presenter_transcript reads this)
   let transcriptSeq = 0;
@@ -763,7 +764,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   function voiceArmTimeout(c, ws) {   // RT-14: an open segment starved of frames is flushed/discarded
     const v = c.voice; if (!v) return;
     if (v.timer) clearTimeout(v.timer);
-    v.timer = setTimeout(() => { log.warn('voice', 'seg-timeout', { socketId: c.id, seq: v.seq }); voiceSegFinalize(c, ws, {}); }, VOICE_SEG_TIMEOUT_MS);
+    v.timer = setTimeout(() => { log.warn('voice', 'seg-timeout', { socketId: c.id, seq: v.seq }); voiceSegFinalize(c, ws, {}); }, segTimeoutMs);
     v.timer.unref?.();
   }
   function voiceSegStart(c, ws, m) {

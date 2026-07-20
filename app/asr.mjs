@@ -49,7 +49,9 @@ export function createAsr({ cmd, onReady, maxQueue = 8, timeoutMs = 20000, cwd }
   function handleLine(line) {
     const s = line.trim(); if (!s) return;
     let obj = null; try { obj = JSON.parse(s); } catch (e) { log.warn('asr', 'bad-line', { line: s.slice(0, 120) }); return; }
-    if (obj && obj.ready === true && !pending.length) { markReady(); return; }
+    // A readiness marker is a STATUS line, never a job result — it must never consume a pending
+    // job (even if one is already queued: the model-load / ready line can race ahead of results).
+    if (obj && typeof obj.ready !== 'undefined') { if (obj.ready) markReady(); return; }
     const job = pending.shift();
     if (!job) { log.warn('asr', 'unmatched-result', { line: s.slice(0, 120) }); return; }
     clearTimeout(job.timer);
