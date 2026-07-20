@@ -335,6 +335,22 @@
       } catch(e){}
       dbgLog(m);
     }
+    else if (m.t === 'barge_in') {
+      // Plan 0473 P13 (barge-in, cross-plan 0469/0470): the SERVER detected a user speaking WHILE the
+      // agent's outbound TTS reply was playing. The client only RENDERS a brief cue and calls a DUCK
+      // hook — the actual TTS audio duck/stop is the Plan-0469 client seam (stub here). No heavy logic;
+      // the stub stays a stub.
+      try {
+        var xb = document.getElementById('ap-voice-badge');
+        if (xb) { var xl = xb.querySelector('span:nth-child(2)') || xb; if (!xl.__apPrev) xl.__apPrev = xl.textContent;
+          xl.textContent = '🔇 interrupted';
+          clearTimeout(xl.__apT); xl.__apT = setTimeout(function(){ xl.textContent = xl.__apPrev || 'Mic on-air'; xl.__apPrev = null; }, 1500); }
+        // DUCK/STOP seam — Plan 0469 wires real TTS ducking to this hook (a no-op stub until then).
+        if (window.APVoice && typeof window.APVoice.duck === 'function') { try { window.APVoice.duck(m); } catch(e){} }
+        if (typeof window.__apBargeIn === 'function') { try { window.__apBargeIn(m); } catch(e){} }
+      } catch(e){}
+      dbgLog(m);
+    }
     /* AP-VOICE:END */
     else if (m.t === 'host') {
       if (m.msg && m.msg.type === 'diff') {

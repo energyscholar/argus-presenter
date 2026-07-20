@@ -210,7 +210,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   const polls = new Map();     // promptId -> {spec, votes:Map(userId->{value,userName,ts}), open}
   const acks = new Map();      // ackId -> { message, requestedAt, target, by:Map(userId->{userName,at}) } — eyes-on handshake
   const lastResults = {};      // PRIM-results: promptId -> { userId -> {type,value} } (last beat result per user)
-  const listeners = { presence: [], result: [], poll: [], transcript: [], inbox: [], turnComplete: [] };
+  const listeners = { presence: [], result: [], poll: [], transcript: [], inbox: [], turnComplete: [], barge_in: [] };
   const emit = (ev, data) => listeners[ev].forEach((cb) => { try { cb(data); } catch (e) {} });
 
   const CONTROL = join(__dirname, 'control.html');
@@ -1104,12 +1104,50 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     h.write('data', 36); h.writeUInt32LE(pcm.length, 40);
     return Buffer.concat([h, pcm]);
   }
+  // ---- Plan 0473 P13: BARGE-IN + OWN-TURNS (ONE coherent conversation object) ----
+  // Cross-plan (0469 outbound TTS + 0470 client). The OUTBOUND TTS reply leg (Plan 0469) is NOT built in
+  // this branch, so P13 provides the barge-in MECHANISM + a fenced client seam, NOT real TTS audio.
+  //
+  // OWN-TURNS. When the AI/controller emits an outbound reply (emitOwnTurn, below) it lands in the SAME
+  // unified inbox as any other turn — attributed role:'ai' (⇒ trust:'self' via deriveTrust), flagged
+  // own:true. So presenter_situation / presenter_inbox surface ONE coherent conversation that INCLUDES
+  // the agent's OWN contributions, not just inbound user turns. Being trust:'self' it is NOT fenced (the
+  // agent is the trusted instruction side), and being own:true it is NOT re-queued as a judgment item
+  // for the agent (deriveWorkFromTurn skips own-turns) — the agent does not judge its own reply.
+  //
+  // SPEAKING-STATE. `speaking` is true while the agent's TTS reply is (notionally) playing. It is set by
+  // emitOwnTurn (the agent began speaking) and can be set/cleared explicitly via api.setSpeaking — the
+  // seam Plan 0469 drives from real TTS start/stop.
+  let speaking = false;
+  function setSpeaking(on) { speaking = on === true; log.info('barge', 'speaking', { speaking }); return speaking; }
+  // BARGE-IN. A user speaking WHILE the agent is speaking is an interruption: signal the speaker(s) to
+  // DUCK/STOP the TTS (the actual audio duck is the Plan-0469 client seam — here we just emit the cue),
+  // CLEAR speaking-state, and let the interrupting speech be recorded as an inbound turn independently
+  // (the emitInbox path already stored it — nothing is lost). Broadcast to clients + emit a server event.
+  function bargeIn(by) {
+    const signal = { t: 'barge_in', by: by || null, ts: Date.now() };
+    speaking = false;                                   // the TTS is being interrupted — stop "speaking"
+    for (const ws of conns.keys()) send(ws, signal);    // client seam: DUCK/STOP cue to the speaker(s)
+    emit('barge_in', signal);
+    log.info('barge', 'barge-in', { by: by && by.userId });
+    return signal;
+  }
+  // Interrupt ONLY when the agent IS speaking and the incoming speech is NOT the agent's own reply (an
+  // own-turn never barges in on its own TTS). Idempotent per speaking-episode: bargeIn clears speaking,
+  // so a second inbound item cannot re-fire until the agent speaks again.
+  function maybeBargeIn(by, isOwn) {
+    if (!speaking || isOwn === true) return null;
+    return bargeIn(by);
+  }
+
   // Plan 0472: land ONE item into the unified inbox. The item is a FLAT, EXTENSIBLE object. Plan 0473
   // P2 now populates the reserved `turnId` + `turnComplete` fields via assignTurn (below); future
   // increments may add more (annotations{...}, identity{...}, dropped) WITHOUT overloading these.
   // `final` means "segment-final ASR result" (this recognition pass is complete) — it does NOT mean the
   // speaker's turn is over. `turnComplete` (set when the turn settles) is the DISTINCT turn-end signal.
-  function emitInbox({ kind, userId, userName, role, text, conf = null, final = true, sessionId, isGuest = false }) {
+  // Plan 0473 P13: `own` marks the AGENT's OWN outbound reply (role:'ai', trust:'self') so it joins the
+  // conversation object but never barges in on itself and is never queued as a judgment item.
+  function emitInbox({ kind, userId, userName, role, text, conf = null, final = true, sessionId, isGuest = false, own = false }) {
     const entry = {
       seq: ++inboxSeq, kind, userId, userName, role: role || null,
       // Plan 0473 P9: the SERVER-AUTHORITATIVE trust level, stamped at ingest from role + isGuest (both
@@ -1120,6 +1158,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       text, conf: (conf == null ? null : conf), final: final !== false,
       ts: Date.now(), sessionId: sessionId || SESSION_ID,
     };
+    if (own === true) entry.own = true;   // Plan 0473 P13: the agent's OWN outbound reply (never fenced/queued/self-barged)
     inbox.push(entry); if (inbox.length > TRANSCRIPT_RING) inbox.shift();
     assignTurn(entry);   // Plan 0473 P2: attach turnId + turnComplete (may settle the prior turn) BEFORE emit
     persistInboxItem(entry);   // RT-26: no-op unless PRESENTER_TRANSCRIPT_PERSIST is ON (voice AND text)
@@ -1130,6 +1169,10 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     }
     emit('inbox', entry);
     evaluateFloor();   // Plan 0473 P6: fresh input can push a consumer behind — reassess the floor
+    // Plan 0473 P13: BARGE-IN — if a USER just spoke (a NON-own inbound turn) while the agent's TTS reply
+    // is playing, interrupt it. The item is ALREADY recorded above (nothing lost); this only fires the
+    // duck/stop cue + clears speaking-state. own-turns (the agent's own reply) never barge in on themselves.
+    maybeBargeIn({ userId, userName, role: role || null, seq: entry.seq }, entry.own === true);
     // Wake every pending long-poll waiter (each resolves with what arrived and removes itself).
     for (const w of [...inboxWaiters]) w.wake();
     log.info('voice', 'inbox', { kind, userId, seq: entry.seq, len: (text || '').length });
@@ -1168,6 +1211,10 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     voiceSessions++;
     voiceArmTimeout(c, ws);
     evaluateFloor();   // Plan 0473 P6: a new active speaker changes the load — reassess the floor
+    // Plan 0473 P13: BARGE-IN at the SOURCE — a user OPENING a voice segment while the agent's TTS reply
+    // is playing is an interruption. Fire the duck/stop cue + clear speaking now (before the utterance is
+    // even transcribed); the segment proceeds to capture, so the interrupting speech is still recorded.
+    maybeBargeIn({ userId: c.userId, userName: c.userName, role: c.role, seq: null }, false);
     log.info('voice', 'seg-start', { socketId: c.id, userId: c.userId, seq: v.seq, sessions: voiceSessions });
   }
   // Binary PCM frame from a conn. IGNORED unless that conn has an active voice session (RT-7);
@@ -1390,6 +1437,10 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     const knobs = queueKnobs();
     const text = t.items.map((i) => i.text || '').join(' ').trim().slice(0, QUEUE_TEXT_MAX);
     if (!text) return null;                                   // nothing to act on
+    // Plan 0473 P13: the AGENT's OWN outbound reply is NOT a judgment item for the agent — it joins the
+    // conversation (recent turns / summary) but never enters the work queue. (own-turns share one speaker,
+    // so `last.own` reflects the whole turn.)
+    if (last && last.own) return null;
     // Plan 0473 P11 (F-7): explicit moderation — a MUTED student produces NO work item (their input never
     // reaches the queue). The turn is still recorded in the inbox/recent-turns (continuity is not silently
     // dropped); it is the teacher's explicit decision to keep it out of the actionable queue.
@@ -1677,6 +1728,22 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         inboxWaiters.add(w);
       });
     },
+    // Plan 0473 P13 — BARGE-IN + OWN-TURNS (ONE coherent conversation object). Cross-plan (0469 + 0470).
+    // emitOwnTurn({text}): the agent/controller emits an OUTBOUND reply. It joins the SAME unified inbox
+    // as any turn — role:'ai' ⇒ trust:'self', flagged own:true — so situation/inbox show ONE conversation
+    // that INCLUDES the agent's own contributions. It also (by default) sets speaking-state active (the
+    // agent is now speaking its TTS reply); pass speaking:false to add the turn WITHOUT arming barge-in.
+    // Returns the emitted (annotated) inbox entry.
+    emitOwnTurn: ({ text, userId = 'argus', userName = 'Argus', role = 'ai', speaking: sp = true } = {}) => {
+      const entry = emitInbox({ kind: 'reply', userId, userName, role, text, conf: null, final: true, own: true });
+      if (sp) setSpeaking(true);
+      return annotateTrust(entry, entry.trust);   // serve-shape (own:true + trust:'self', unfenced)
+    },
+    // setSpeaking(on): the outbound-TTS seam (Plan 0469 drives this from real TTS start/stop). While
+    // speaking is true, a NON-own inbound user turn / voice_seg_start triggers a barge-in (duck/stop cue).
+    setSpeaking: (on) => setSpeaking(on),
+    // isSpeaking(): is the agent's outbound reply currently playing (barge-in armed)? Observability hook.
+    isSpeaking: () => speaking,
     // Plan 0473 P4 — WORK-QUEUE operator surface (server-tracked status/owner; the agent holds nothing).
     // workItems(): the current ACTIONABLE queue (pending + claimed), prioritized + bounded (aged pruned).
     workItems: () => queueView(),
