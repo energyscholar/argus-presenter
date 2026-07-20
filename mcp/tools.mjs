@@ -148,6 +148,18 @@ export const tools = [
     handler: async ({ staleMs } = {}) => need().attendance({ staleMs, viewerRole: 'ai' })
   },
   {
+    name: 'presenter_voice_enable',
+    description: 'Plan 0470 (inbound voice): REQUEST that a target enable microphone capture. Sends a voice_enable signal to the target; the human still passes the browser mic-permission prompt (uncoerceable) and sees an on-air badge with one-click stop. Recognized speech flows back — poll presenter_transcript to read it. This can NEVER silently hot a mic.',
+    input: { type: 'object', properties: { target: { type: 'string', default: 'all', description: 'userId | all | participant | presenter | ai' } } },
+    handler: async ({ target = 'all' } = {}) => ({ requested: need().voiceEnable(target), target })
+  },
+  {
+    name: 'presenter_transcript',
+    description: 'Plan 0470 (inbound voice): cursored poll of recognized speech. Returns transcript entries {seq,userId,userName,text,final,ts,conf} with seq > since, plus a next cursor. Call with since=0 first, then pass the returned cursor to get only new entries.',
+    input: { type: 'object', properties: { since: { type: 'number', default: 0, description: 'Return entries with seq greater than this cursor (0 = from the start of the ring)' } } },
+    handler: async ({ since = 0 } = {}) => need().getTranscripts(since)
+  },
+  {
     name: 'presenter_raf',
     description: 'RAF metrics from the op-log: peer-catalysis ratio (peer-visible peer actions), teacher-dependency (AI/GM-catalyzed), interaction-graph density (peer->peer response edges).',
     input: { type: 'object', properties: { windowMs: { type: 'number', default: 5000, description: 'Response window for peer->peer interaction edges' } } },

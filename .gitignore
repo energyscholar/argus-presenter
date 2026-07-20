@@ -1,6 +1,9 @@
 node_modules/
 *.log
 .DS_Store
+# Plan 0470: ASR scratch (segment WAVs / stub worker counters) never committed
+.asr-cache/
+*.asr-count
 /harness/_shots/
 test/screenshots/
 *.tmp

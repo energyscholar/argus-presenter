@@ -16,14 +16,16 @@
  */
 import http from 'http';
 import { createHash } from 'node:crypto';
-import { readFileSync, readdirSync, statSync, existsSync, writeFileSync, watch } from 'fs';
+import { readFileSync, readdirSync, statSync, existsSync, writeFileSync, watch, mkdirSync, unlinkSync, appendFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { tmpdir } from 'os';
 import { WebSocketServer } from 'ws';
 import { assemble } from '../harness/assemble.mjs';
 import * as log from './log.mjs';
 import { createStore, isEphemeral, validOp } from './state.mjs';
 import { validate, summarize } from './validate.mjs';
+import { createAsr } from './asr.mjs';
 
 // X6 resilience caps.
 const MAX_CONNS = 200;              // connection cap
@@ -36,6 +38,19 @@ const DURABLE_OPS_PER_SEC = 50;     // per-conn durable-op rate (ephemeral is co
 // pings don't flip the dot. Shared by the heartbeat, the attendance api default, and health().
 const PING_MS = 5000;               // heartbeat interval
 const STALE_MS = 15000;             // > 3 missed pings ⇒ red (present-but-stale)
+
+// Plan 0470 — inbound voice (mic -> client DSP -> server ASR). The binary PCM lane is an
+// EPHEMERAL sibling of the JSON op lane: branched BEFORE JSON.parse, exempt from the durable-op
+// cap, byte-rate capped, and ignored unless the connection has an active voice session.
+const VOICE_SR = 16000;                        // server-side ASR sample rate (client resamples to this)
+const VOICE_MAX_SESSIONS = 8;                  // RT-22: concurrent active voice sessions (<< MAX_CONNS)
+const VOICE_BYTE_RATE_CAP = 64 * 1024;         // RT-7: per-conn audio byte/s (PCM is 32 KB/s -> 2x headroom)
+const VOICE_SEG_MAX_MS = 30000;                // RT-8: hard segment length cap -> force-cut
+const VOICE_SEG_TIMEOUT_MS = parseInt(process.env.PRESENTER_VOICE_SEG_TIMEOUT_MS || '3000', 10);   // RT-14: no frames for this long -> flush/discard open segment
+const VOICE_MIN_SEG_MS = 300;                  // RT-12: shorter than this -> drop (whisper hallucinates on blips)
+const VOICE_SEG_MAX_BYTES = Math.round(VOICE_SR * 2 * VOICE_SEG_MAX_MS / 1000);
+const VOICE_MIN_SEG_BYTES = Math.round(VOICE_SR * 2 * VOICE_MIN_SEG_MS / 1000);
+const TRANSCRIPT_RING = 500;                   // in-memory cursored transcript log depth
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PAGE = join(__dirname, 'presenter.html');
@@ -117,11 +132,12 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   const polls = new Map();     // promptId -> {spec, votes:Map(userId->{value,userName,ts}), open}
   const acks = new Map();      // ackId -> { message, requestedAt, target, by:Map(userId->{userName,at}) } — eyes-on handshake
   const lastResults = {};      // PRIM-results: promptId -> { userId -> {type,value} } (last beat result per user)
-  const listeners = { presence: [], result: [], poll: [] };
+  const listeners = { presence: [], result: [], poll: [], transcript: [] };
   const emit = (ev, data) => listeners[ev].forEach((cb) => { try { cb(data); } catch (e) {} });
 
   const CONTROL = join(__dirname, 'control.html');
   const BRANDING = join(__dirname, 'branding', 'argus-presenter.svg');
+  const LIB = join(__dirname, '..', 'lib');   // Plan 0470: voice-stub/capture/worklet live in repo lib/
   // --- Content-module registry. Modules are LOCAL JSON files (NOT the web) in MODULES_DIR
   // (default ./modules; set PRESENTER_MODULES_DIR to point at your content, e.g. a campaign's
   // adventures/). Read + validated on demand, cached by file mtime so repeat loads are snappy.
@@ -223,6 +239,15 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       // AUT-3: serve the SINGLE-SOURCE validator so the Content Creator imports the SAME
       // validate()/summarize() the server uses (no duplication) for in-browser validation.
       sendStatic(res, req, join(__dirname, 'validate.mjs'), 'text/javascript; charset=utf-8');
+    } else if (req.url === '/lib/voice-stub.js') {
+      // Plan 0470 Tier 0: the sub-1KB always-on voice stub (dynamic-imports Tier 1 on enable()).
+      sendStatic(res, req, join(LIB, 'voice-stub.js'), 'text/javascript; charset=utf-8');
+    } else if (req.url === '/lib/voice-capture.mjs') {
+      // Plan 0470 Tier 1 controller — served only when a client enable()s voice (T-LAZY).
+      sendStatic(res, req, join(LIB, 'voice-capture.mjs'), 'text/javascript; charset=utf-8');
+    } else if (req.url === '/lib/voice-worklet.js') {
+      // Plan 0470 Tier 1 DSP worklet (pure JS; loaded via audioWorklet.addModule).
+      sendStatic(res, req, join(LIB, 'voice-worklet.js'), 'text/javascript; charset=utf-8');
     } else if (req.url === '/branding/argus-presenter.svg') {
       // Default idle branding art (self-contained animated SVG; no external dep).
       sendStatic(res, req, BRANDING, 'image/svg+xml; charset=utf-8');
@@ -348,7 +373,11 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     // heartbeat's pong) drives the connection-liveness dot. lastActive stays in the struct (still set on
     // deliberate interaction) but Plan 0468 no longer surfaces it or anything derived from it (G5).
     conns.set(ws, { id: 'c' + (++connSeq), userId: null, userName: null, role: 'participant', lastSeen: Date.now(), connectedAt: Date.now(), lastActive: 0, ip });
-    ws.on('message', (buf) => {
+    ws.on('message', (buf, isBinary) => {
+      // Plan 0470 (RT-6): the binary PCM lane branches BEFORE JSON.parse — audio is NEVER
+      // parsed as JSON, is exempt from the durable-op cap, and is ignored unless the conn
+      // has an active voice session (RT-7). Route it and return.
+      if (isBinary) { handleVoiceBinary(conns.get(ws), ws, buf); return; }
       let m; try { m = JSON.parse(buf.toString()); } catch (e) { return; }
       const c = conns.get(ws);
       if (c) c.lastSeen = Date.now();   // liveness (X4)
@@ -447,9 +476,18 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
           };
           send(ws, { t: 'attendance', roster: self, summary });
         }
+      } else if (m.t === 'voice_seg_start') {
+        // Plan 0470: control frame bracketing an utterance (binary PCM follows on the same conn).
+        voiceSegStart(c, ws, m);
+      } else if (m.t === 'voice_seg_end') {
+        voiceSegFinalize(c, ws, {});   // finalize -> WAV -> WARM ASR -> transcript out
       }
     });
-    ws.on('close', () => { const c = conns.get(ws); if (c && c.userId) byUser.delete(c.userId); conns.delete(ws); updateChatListeners(); emit('presence', presence()); });
+    ws.on('close', () => {
+      const c = conns.get(ws);
+      if (c && c.voice && c.voice.active) { if (c.voice.timer) clearTimeout(c.voice.timer); c.voice.active = false; voiceSessions = Math.max(0, voiceSessions - 1); }   // RT-14: drop an orphaned open segment
+      if (c && c.userId) byUser.delete(c.userId); conns.delete(ws); updateChatListeners(); emit('presence', presence());
+    });
   });
 
   // ---- Op protocol (Plan 0435 C3): {t:'op'} -> store.apply -> broadcast diff ----
@@ -568,6 +606,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       case 'op': handleOp(c, { path: a.path, verb: a.verb, value: a.value, opId: a.opId }); break;   // drive an op as the presenter
       // ATT (Plan 0466, decision 1): presenter toggles whether attendees may see the roster.
       case 'set_roster_visible': rosterVisibleToAttendees = !!a.value; log.info('att', 'roster-visible', { value: rosterVisibleToAttendees }); break;
+      case 'voice_enable': api.voiceEnable(a.target || 'all'); break;   // Plan 0470: request inbound voice on a target
       case 'set_module': api.setModule(a.module || { beats: a.beats || [] }); break;   // Group I
       case 'show_beat': api.showBeat(a.id != null ? a.id : (a.index | 0)); break;   // by id (branch nav) or index
       case 'show_default': api.showDefault(); break;   // DEF-1: Home → module title page (or branding fallback)
@@ -689,6 +728,92 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     return { tally: counts, count, spec: poll.spec };
   }
 
+  // ---- Plan 0470: inbound voice (binary PCM lane -> WARM ASR seam -> transcript out) ----
+  // The ASR worker is PLUGGABLE (PRESENTER_ASR_CMD) and WARM: created lazily on the first
+  // voice-enable / seg-start, model loaded ONCE, kept alive across every segment (RT-17/25).
+  let asr = null;
+  let voiceSessions = 0;                 // active voice sessions (capped, RT-22)
+  const transcripts = [];                // cursored in-memory ring (presenter_transcript reads this)
+  let transcriptSeq = 0;
+  const TRANSCRIPT_LOG = process.env.PRESENTER_TRANSCRIPT_LOG || null;   // optional JSONL append sink
+  function ensureAsr() {
+    if (!asr) asr = createAsr({ cwd: join(__dirname, '..'), onReady: () => announceVoiceStatus({ ready: true }) });
+    return asr;
+  }
+  function announceVoiceStatus(obj) {   // "recognizer ready" / status -> control roles only
+    for (const [ws, c] of conns.entries()) if (c.role === 'presenter' || c.role === 'ai') send(ws, { t: 'voice_status', ...obj });
+  }
+  // Wrap 16 kHz mono PCM16 in a minimal WAV container (whisper's native input; no transcode).
+  function pcm16ToWav(pcm) {
+    const h = Buffer.alloc(44);
+    h.write('RIFF', 0); h.writeUInt32LE(36 + pcm.length, 4); h.write('WAVE', 8);
+    h.write('fmt ', 12); h.writeUInt32LE(16, 16); h.writeUInt16LE(1, 20); h.writeUInt16LE(1, 22);
+    h.writeUInt32LE(VOICE_SR, 24); h.writeUInt32LE(VOICE_SR * 2, 28); h.writeUInt16LE(2, 32); h.writeUInt16LE(16, 34);
+    h.write('data', 36); h.writeUInt32LE(pcm.length, 40);
+    return Buffer.concat([h, pcm]);
+  }
+  function emitTranscript({ userId, userName, text, conf, seq }) {
+    const entry = { seq: ++transcriptSeq, userId, userName, text, conf: (conf == null ? null : conf), final: true, ts: Date.now() };
+    transcripts.push(entry); if (transcripts.length > TRANSCRIPT_RING) transcripts.shift();
+    if (TRANSCRIPT_LOG) { try { appendFileSync(TRANSCRIPT_LOG, JSON.stringify(entry) + '\n'); } catch (e) {} }
+    for (const [ws, c] of conns.entries()) if (c.role === 'presenter' || c.role === 'ai') send(ws, { t: 'transcript', ...entry });
+    emit('transcript', entry);
+    log.info('voice', 'transcript', { userId, seq, len: (text || '').length });
+  }
+  function voiceArmTimeout(c, ws) {   // RT-14: an open segment starved of frames is flushed/discarded
+    const v = c.voice; if (!v) return;
+    if (v.timer) clearTimeout(v.timer);
+    v.timer = setTimeout(() => { log.warn('voice', 'seg-timeout', { socketId: c.id, seq: v.seq }); voiceSegFinalize(c, ws, {}); }, VOICE_SEG_TIMEOUT_MS);
+    v.timer.unref?.();
+  }
+  function voiceSegStart(c, ws, m) {
+    if (!c) return;
+    if (!c.voice) c.voice = { active: false, seq: 0, chunks: [], bytes: 0, startedAt: 0, timer: null, rl: null };
+    const v = c.voice;
+    if (v.active) { if (v.timer) clearTimeout(v.timer); v.active = false; voiceSessions = Math.max(0, voiceSessions - 1); v.chunks = []; v.bytes = 0; }   // drop a stray-open prior segment
+    if (voiceSessions >= VOICE_MAX_SESSIONS) {   // RT-22: reject over cap, with a surfaced reason
+      log.warn('voice', 'sessions-cap', { socketId: c.id, cap: VOICE_MAX_SESSIONS });
+      send(ws, { t: 'voice_rejected', reason: 'server voice capacity reached' });
+      return;
+    }
+    ensureAsr();   // RT-25: warm the recognizer now, so the first utterance doesn't eat the model load
+    v.active = true; v.seq = (typeof m.seq === 'number' ? m.seq : v.seq + 1); v.chunks = []; v.bytes = 0; v.startedAt = Date.now();
+    v.rl = { winStart: Date.now(), bytes: 0 };
+    voiceSessions++;
+    voiceArmTimeout(c, ws);
+    log.info('voice', 'seg-start', { socketId: c.id, userId: c.userId, seq: v.seq, sessions: voiceSessions });
+  }
+  // Binary PCM frame from a conn. IGNORED unless that conn has an active voice session (RT-7);
+  // byte-rate capped; force-cut past the segment length cap (RT-8). NEVER JSON-parsed.
+  function handleVoiceBinary(c, ws, buf) {
+    const v = c && c.voice;
+    if (!v || !v.active) { log.warn('voice', 'binary-no-session', { socketId: c && c.id }); return; }   // RT-7 drop
+    c.lastSeen = Date.now();
+    const now = Date.now();
+    if (!v.rl || now - v.rl.winStart >= 1000) v.rl = { winStart: now, bytes: 0 };
+    v.rl.bytes += buf.length;
+    if (v.rl.bytes > VOICE_BYTE_RATE_CAP) { log.warn('voice', 'byterate-cap', { socketId: c.id, bytes: v.rl.bytes }); return; }   // RT-7 drop excess + log (never silent)
+    v.chunks.push(Buffer.from(buf)); v.bytes += buf.length;
+    voiceArmTimeout(c, ws);
+    if (v.bytes >= VOICE_SEG_MAX_BYTES) { log.warn('voice', 'seg-forcecut', { socketId: c.id, bytes: v.bytes }); voiceSegFinalize(c, ws, {}); }   // RT-8
+  }
+  async function voiceSegFinalize(c, ws, { discard = false, reason } = {}) {
+    const v = c && c.voice; if (!v || !v.active) return;
+    if (v.timer) { clearTimeout(v.timer); v.timer = null; }
+    v.active = false; voiceSessions = Math.max(0, voiceSessions - 1);
+    const pcm = Buffer.concat(v.chunks, v.bytes); const seq = v.seq;
+    v.chunks = []; v.bytes = 0;
+    if (discard) { log.info('voice', 'seg-discard', { socketId: c.id, seq, reason }); return; }
+    if (pcm.length < VOICE_MIN_SEG_BYTES) { log.info('voice', 'seg-too-short', { socketId: c.id, seq, bytes: pcm.length }); return; }   // RT-12
+    const wavDir = join(tmpdir(), 'ap-asr'); try { mkdirSync(wavDir, { recursive: true }); } catch (e) {}
+    const wavPath = join(wavDir, `seg-${c.id}-${seq}-${Date.now()}.wav`);
+    try { writeFileSync(wavPath, pcm16ToWav(pcm)); } catch (e) { log.warn('voice', 'wav-fail', { msg: String(e && e.message || e) }); return; }
+    const result = await ensureAsr().recognize(wavPath, seq);
+    try { unlinkSync(wavPath); } catch (e) {}
+    if (!result || !result.text) { log.info('voice', 'no-text', { socketId: c.id, seq }); return; }
+    emitTranscript({ userId: c.userId, userName: c.userName, text: result.text, conf: result.conf, seq });
+  }
+
   const api = {
     url: () => `http://127.0.0.1:${httpServer.address().port}`,
     port: () => httpServer.address().port,
@@ -737,6 +862,12 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     getPoll: (promptId) => { const votes = store.get('polls/' + promptId + '/votes') || {}; return { promptId, ...tally(promptId), votes: Object.keys(votes).map((userId) => ({ userId, value: votes[userId] })) }; },
     // Hot-reload clients in place (swap client/server code without dropping them).
     reloadClients: (target = 'all', delay = 0) => targets(target).map((ws) => send(ws, { t: 'reload', delay })).length,
+    // Plan 0470: REQUEST that a target enable inbound voice. This only sends {t:'voice_enable'};
+    // the client still goes through the browser mic-permission prompt (uncoerceable, RT-9) — it
+    // can never silently hot a participant's mic. Also warms the recognizer (RT-25).
+    voiceEnable: (target = 'all') => { ensureAsr(); return targets(target).map((ws) => send(ws, { t: 'voice_enable' })).length; },
+    // Cursored read of recognized speech. Returns entries with seq > since + a next cursor.
+    getTranscripts: (since = 0) => ({ transcripts: transcripts.filter((t) => t.seq > (since || 0)), cursor: transcriptSeq }),
     // Clear the display back to idle/branding. Sends {t:'clear'} to live clients AND drops the stored
     // display descriptor so a RECONNECTING client converges to idle branding, not the stale last content
     // (fixes "stuck on the end card, never reverts to branding"). Use as the standard session-end primitive.
@@ -914,7 +1045,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       };
     },
     store,
-    close: () => new Promise((res) => { clearInterval(heartbeat); /* Plan 0468 (INV-7) */ if (ephTimer) clearTimeout(ephTimer); for (const t of hotTimers.values()) clearTimeout(t); hotTimers.clear(); watcher && watcher.close(); wss.clients.forEach((c) => c.close()); httpServer.close(() => res()); }),
+    close: () => new Promise((res) => { clearInterval(heartbeat); /* Plan 0468 (INV-7) */ if (ephTimer) clearTimeout(ephTimer); for (const t of hotTimers.values()) clearTimeout(t); hotTimers.clear(); for (const [, c] of conns) { if (c.voice && c.voice.timer) clearTimeout(c.voice.timer); } if (asr) { try { asr.close(); } catch (e) {} asr = null; } watcher && watcher.close(); wss.clients.forEach((c) => c.close()); httpServer.close(() => res()); }),
     _http: httpServer,
   };
 
