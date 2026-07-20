@@ -87,14 +87,26 @@ export const PROFILES = {
   },
 
   // guest (scoped, untrusted): as host session, but TIGHT budget + aggressive floor; guest items
-  // mediated + flagged untrusted (F-8 security lands in P9).
+  // mediated + flagged untrusted (F-8 security landed in P9). WIRED in P12 — every knob below is CONSUMED
+  // by the generic engine, so this is DATA, not a per-name code fork:
+  //   - perTurnBudget.byRole.GUEST → routed by the guest TRUST (the server hard-forces role=participant,
+  //     so the tight budget must key on trust, or a guest would silently get the generous default);
+  //   - floorThresholds AGGRESSIVE (low queue/speaker levels) → a flooding guest is HELD sooner than a
+  //     trusted user (whose profile has floor OFF);
+  //   - queuePolicy.mediated + flagUntrusted + enqueue='questions' → guest items enter the queue as
+  //     untrusted judgment items Argus mediates (claim/resolve);
+  //   - the P9 fence + the 0472 cap scope gate compose on top (guest content fenced; drive REFUSED).
   guest: {
     name: 'guest',
-    wired: false,
+    wired: true,
     shedding: 'host',                                   // as host session
     settlingMs: SETTLING.MEDIUM,
-    perTurnBudget: { mode: 'tight', byRole: { guest: 20000 } },      // F-3/H tight
-    floorThresholds: { enabled: true, aggressive: true },
+    // F-3/H TIGHT: keyed by the guest TRUST (not the hard-forced 'participant' role). 20s per turn — a
+    // short leash a trusted solo (2 min, soft) never feels. Consumed via perTurnBudgetFor(role, trust).
+    perTurnBudget: { mode: 'tight', byRole: { guest: 20000 } },
+    // AGGRESSIVE floor: low thresholds (as DATA, like teaching's injected levels) so a flooding guest is
+    // WRAPPED at 1 pending and HELD at 2 — far sooner than a trusted user, whose floor is OFF entirely.
+    floorThresholds: { enabled: true, aggressive: true, speakers: { wrap: 1, hold: 2 }, queue: { wrap: 1, hold: 2 } },
     digestContent: 'host',
     queuePolicy: { mode: 'mediated', enqueue: 'questions', flagUntrusted: true },   // guest items mediated (P4/P12)
   },
