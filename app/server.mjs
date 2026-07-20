@@ -428,18 +428,23 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         // keyed on the CONNECTION's authoritative role. Control/ai always get the full roster;
         // a participant gets the redacted roster ONLY when the presenter gate is ON, else self-only.
         const control = (c.role === 'presenter' || c.role === 'ai');
+        // Plan 0468: no activeSec/afkSec — connection liveness only. Pass optional staleMs; else default.
         if (control) {
-          const att = api.attendance({ activeSec: m.activeSec, afkSec: m.afkSec, viewerRole: c.role });
+          const att = api.attendance({ staleMs: m.staleMs, viewerRole: c.role });
           send(ws, { t: 'attendance', roster: att.roster, summary: att.summary, rosterVisible: rosterVisibleToAttendees });
         } else if (rosterVisibleToAttendees) {
-          const att = api.attendance({ activeSec: m.activeSec, afkSec: m.afkSec, viewerRole: 'participant' });
+          const att = api.attendance({ staleMs: m.staleMs, viewerRole: 'participant' });
           send(ws, { t: 'attendance', roster: att.roster, summary: att.summary });
         } else {
           // gate OFF ⇒ deny = self-only (decision 1). Reuse the redacted build, filter to self.
-          const att = api.attendance({ activeSec: m.activeSec, afkSec: m.afkSec, viewerRole: 'participant' });
+          const att = api.attendance({ staleMs: m.staleMs, viewerRole: 'participant' });
           const self = att.roster.filter((r) => r.userId === c.userId);
-          const summary = { active: 0, idle: 0, afk: 0, total: self.length };
-          for (const r of self) summary[r.status]++;
+          const summary = {
+            connected: self.filter((r) => r.connected).length,
+            offline: self.filter((r) => !r.connected).length,
+            eyesOn: self.filter((r) => r.eyesOn).length,
+            total: self.length,
+          };
           send(ws, { t: 'attendance', roster: self, summary });
         }
       }
@@ -756,32 +761,41 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       const acked = new Set(by.map((b) => b.userId));
       return { ackId, message: a ? a.message : null, requestedAt: a ? a.requestedAt : null, acked: by.length > 0, count: by.length, by, pending: viewerIds.filter((u) => u && !acked.has(u)) };
     },
-    // ATT (Plan 0466 §2.4): passive/continuous liveness roster + summary, redacted per viewerRole.
-    // idleSec = now − lastActive (the headline number: seconds since the last DELIBERATE interaction);
-    // status derives from thresholds (active < activeSec · idle · afk ≥ afkSec). A connection that has
-    // never interacted this session (lastActive = 0) reads a huge idleSec ⇒ afk (fresh/reconnect = afk).
-    attendance: ({ activeSec = 30, afkSec = 120, viewerRole = 'participant' } = {}) => {
+    // ATT (Plan 0466 §2.4, reworked Plan 0468): the roster dot means CONNECTION LIVENESS ONLY,
+    // uniform in every display. `connected` = lastSeen fresh within staleMs (kept fresh by the Part A0
+    // heartbeat) ⇒ GREEN; stale ⇒ RED (present-but-stale; a CLEAN close removes the row entirely, G3).
+    // NO idle-derived status (active/idle/afk) and NO idleSec — dropped (D2). Attention is a SEPARATE,
+    // explicit signal: `eyesOn` is a prior verify_watching CONFIRM only (D3) — never set by polling/content.
+    // lastSeenAgoSec replaces idleSec: bounded (heartbeat-refreshed), never epoch-sized (INV-5).
+    attendance: ({ staleMs = STALE_MS, viewerRole = 'participant' } = {}) => {
       const now = Date.now();
       const control = (viewerRole === 'presenter' || viewerRole === 'ai');
       // TODO(opsec): throttle control-view info exposure — see plan 0466 §Deferred
       const full = [...conns.values()].map((c) => {
-        const idleSec = Math.floor((now - (c.lastActive || 0)) / 1000);
-        const status = idleSec < activeSec ? 'active' : (idleSec < afkSec ? 'idle' : 'afk');
+        const lastSeenAgoSec = Math.floor((now - (c.lastSeen || now)) / 1000);
+        const connected = (now - (c.lastSeen || 0)) <= staleMs;   // green when fresh, red when stale
         return {
           userId: c.userId, userName: c.userName, role: c.role,
+          connected,                                             // <-- the dot (liveness only)
           connectedSec: Math.floor((now - (c.connectedAt || now)) / 1000),
-          idleSec, status,
-          everActive: (c.lastActive || 0) > 0,               // false ⇒ never interacted this connection (idleSec is nominal)
+          lastSeenAgoSec,                                        // replaces idleSec; bounded, never epoch-sized
+          eyesOn: !!c.eyesOn,                                    // explicit attendance (verify_watching CONFIRM)
           eyesOnAgoSec: c.eyesOn ? Math.floor((now - c.eyesOn) / 1000) : null,
           display: displayIdFor(c),
-          ip: c.ip, socketId: c.id,                          // CONTROL-ONLY (stripped below for participants)
+          ip: c.ip, socketId: c.id,                             // CONTROL-ONLY (stripped below for participants)
         };
       });
-      const summary = { active: 0, idle: 0, afk: 0, total: full.length };
-      for (const r of full) summary[r.status]++;
-      // Redaction is SERVER-SIDE (global invariant): participants get names + role + status ONLY —
-      // no ip/socketId/display/idle. Control/ai get the full rows (usable by the overlay's per-row buttons).
-      const roster = control ? full : full.map((r) => ({ userId: r.userId, userName: r.userName, role: r.role, status: r.status }));
+      const summary = {
+        connected: full.filter((r) => r.connected).length,
+        offline: full.filter((r) => !r.connected).length,
+        eyesOn: full.filter((r) => r.eyesOn).length,
+        total: full.length,
+      };
+      // Redaction is SERVER-SIDE (global invariant): participants get names + role + connected + eyesOn
+      // ONLY — no ip/socketId/display/last-seen. Control/ai get the full rows (per-row buttons need them).
+      const roster = control ? full : full.map((r) => ({
+        userId: r.userId, userName: r.userName, role: r.role, connected: r.connected, eyesOn: r.eyesOn,
+      }));
       return { roster, summary };
     },
     closePoll: (promptId) => { const p = polls.get(promptId); if (p) p.open = false; serverApply({ path: 'polls/' + promptId + '/open', verb: 'set', value: false }); return { promptId, ...tally(promptId) }; },
