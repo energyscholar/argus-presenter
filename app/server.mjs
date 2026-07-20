@@ -28,6 +28,7 @@ import { validate, summarize } from './validate.mjs';
 // X6 resilience caps.
 const MAX_CONNS = 200;              // connection cap
 const MAX_PAYLOAD = 256 * 1024;     // per-frame byte cap (S6)
+const MAX_VALUE_BYTES = 64 * 1024;  // Plan 0471 M3: per-value cap (mirrors state.mjs) — applied to the lastResults path
 const DURABLE_OPS_PER_SEC = 50;     // per-conn durable-op rate (ephemeral is coalesced, not capped)
 
 // Plan 0468: the dot means CONNECTION LIVENESS only. A real heartbeat keeps a silent-but-
@@ -116,7 +117,10 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   });
   const polls = new Map();     // promptId -> {spec, votes:Map(userId->{value,userName,ts}), open}
   const acks = new Map();      // ackId -> { message, requestedAt, target, by:Map(userId->{userName,at}) } — eyes-on handshake
+  const ACKS_MAX = 256;        // Plan 0471 M2: bound the number of distinct outstanding ackIds
   const lastResults = {};      // PRIM-results: promptId -> { userId -> {type,value} } (last beat result per user)
+  const lastResultsOrder = []; // Plan 0471 M3: FIFO of promptIds for LRU eviction of lastResults
+  const LAST_RESULTS_MAX = 500;// Plan 0471 M3: bound distinct promptIds retained
   const listeners = { presence: [], result: [], poll: [] };
   const emit = (ev, data) => listeners[ev].forEach((cb) => { try { cb(data); } catch (e) {} });
 
@@ -411,9 +415,20 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         // Auditor: only meaningful results (answer/continue) — drop lifecycle events (ready/step/change/
         // flow-complete) that carry the SAME promptId and would false-trigger DEL-2 branch nav (S190 gotcha).
         if (r.promptId != null && (r.type === 'answer' || r.type === 'continue')) {
-          lastResults[r.promptId] = lastResults[r.promptId] || {};
-          lastResults[r.promptId][r.userId] = { type: r.type, value: r.value };
-          pushResult(r);
+          // Plan 0471 M3: this path bypasses store.validOp, so enforce the 64KB value cap here,
+          // and bound lastResults to LAST_RESULTS_MAX distinct promptIds (FIFO evict).
+          let vsize = 0; try { vsize = JSON.stringify(r.value === undefined ? null : r.value).length; } catch { vsize = Infinity; }
+          if (vsize > MAX_VALUE_BYTES) {
+            log.warn('result', 'value-too-large', { promptId: r.promptId, userId: r.userId, bytes: vsize });
+          } else {
+            if (!lastResults[r.promptId]) {
+              lastResults[r.promptId] = {};
+              lastResultsOrder.push(r.promptId);
+              while (lastResultsOrder.length > LAST_RESULTS_MAX) { const old = lastResultsOrder.shift(); delete lastResults[old]; }
+            }
+            lastResults[r.promptId][r.userId] = { type: r.type, value: r.value };
+            pushResult(r);
+          }
         }
       } else if (m.t === 'op') {
         handleOp(c, m);
@@ -429,11 +444,14 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         emit('poll', { type: 'request', from: { userId: c.userId, userName: c.userName }, spec: m.spec });
       } else if (m.t === 'ack') {
         // Eyes-on acknowledgement: the viewer clicked CONFIRM on a requireAck chime.
+        // Plan 0471 M2: ONLY an OUTSTANDING chime (created by api.chime requireAck) accepts an
+        // ack. An unknown/attacker-chosen ackId is dropped — it no longer creates a map entry,
+        // so the `acks` map can't be grown by unauth {t:'ack'} frames.
         const ackId = (m && m.ackId) || 'ready';
+        const a = acks.get(ackId);
+        if (!a) { log.debug('ack', 'unknown-ackId', { socketId: c.id, ackId }); return; }
         c.eyesOn = Date.now();                              // this connection is confirmed watching (not AFK)
         c.lastActive = Date.now();                          // ATT: eyes-on CONFIRM click = deliberate interaction
-        let a = acks.get(ackId);
-        if (!a) { a = { message: null, requestedAt: null, target: 'all', by: new Map() }; acks.set(ackId, a); }
         a.by.set(c.userId, { userName: c.userName, at: c.eyesOn });
         log.info('ack', 'eyes-on', { ackId, userId: c.userId });
         pushPresence();                                    // control user-list reflects eyes-on immediately
@@ -775,7 +793,10 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     // bell (default true) is carried in the frame: bell:false = SILENT ask (banner only, no
     // audio) — the client's onChime plays audio unless m.bell === false.
     chime: ({ message = 'Ready to start?', target = 'all', requireAck = false, ackId = 'ready', bell = true } = {}) => {
-      if (requireAck) { const prev = acks.get(ackId); acks.set(ackId, { message, requestedAt: Date.now(), target, by: (prev && prev.by) || new Map() }); }
+      if (requireAck) {
+        const prev = acks.get(ackId); acks.set(ackId, { message, requestedAt: Date.now(), target, by: (prev && prev.by) || new Map() });
+        while (acks.size > ACKS_MAX) { const oldest = acks.keys().next().value; if (oldest === ackId) break; acks.delete(oldest); }   // Plan 0471 M2: bound distinct ackIds (FIFO evict)
+      }
       return targets(target).map((ws) => send(ws, { t: 'chime', message, requireAck: !!requireAck, ackId, bell: bell !== false })).length;
     },
     // Eyes-on status for an ackId: who confirmed they're watching, and who (among current
@@ -942,6 +963,8 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     store,
     close: () => new Promise((res) => { clearInterval(heartbeat); /* Plan 0468 (INV-7) */ if (ephTimer) clearTimeout(ephTimer); for (const t of hotTimers.values()) clearTimeout(t); hotTimers.clear(); watcher && watcher.close(); wss.clients.forEach((c) => c.close()); httpServer.close(() => res()); }),
     _http: httpServer,
+    _acks: acks,                 // Plan 0471 M2: test-only observability (bounded map)
+    _lastResults: lastResults,   // Plan 0471 M3: test-only observability (bounded object)
   };
 
   return new Promise((resolve) => { httpServer.listen(port, '127.0.0.1', () => resolve(api)); });
