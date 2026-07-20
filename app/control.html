@@ -114,6 +114,31 @@
   #att-table .att-actions button{font-size:12px;padding:2px 7px;margin-right:3px;}
   #att-summary{padding:9px 16px;border-top:1px solid #21314f;font-size:12px;color:var(--dim);}
   .att-dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;vertical-align:middle;}
+  /* Plan 0473 P8: the HUMAN DIGEST FACE — the SAME bounded working set the AI consumes, rendered as a
+     glanceable digest (room-at-a-glance + prioritized queue + one-click resolve/claim + recent/summary).
+     Bounded + calm: the mechanism disappears, the presenter glances and acts. */
+  #dg-room{font-size:11px;color:var(--dim);line-height:1.5;margin-bottom:6px;}
+  #dg-room b{color:#fff;font-weight:600;}
+  #dg-room .dg-chip{display:inline-block;border:1px solid #2a3a5a;border-radius:8px;padding:0 6px;margin:0 4px 3px 0;color:var(--ink);}
+  #dg-room .dg-chip.poll{border-color:var(--warn);color:var(--warn);}
+  .dg-sub{font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--dim);margin:6px 0 3px;display:flex;align-items:center;gap:6px;}
+  #dg-queue .dgq{display:flex;gap:6px;align-items:flex-start;padding:5px 6px;border:1px solid #1c2a44;border-radius:6px;margin:4px 0;border-left-width:3px;}
+  #dg-queue .dgq.p2{border-left-color:var(--warn);}   /* directed question — needs judgment now */
+  #dg-queue .dgq.p1{border-left-color:#2a3a5a;}        /* ambient statement */
+  #dg-queue .dgq.p0{border-left-color:#16223a;opacity:.8;}
+  #dg-queue .dgq.claimed{background:rgba(34,229,160,.05);border-left-color:var(--ok);}
+  #dg-queue .dgq-body{flex:1 1 auto;min-width:0;}
+  #dg-queue .dgq-who{font-size:10px;color:var(--dim);}
+  #dg-queue .dgq-txt{font-size:12px;color:var(--ink);word-break:break-word;}
+  #dg-queue .dgq-own{font-size:9px;color:var(--ok);}
+  #dg-queue .dgq-act{display:flex;flex-direction:column;gap:3px;flex:0 0 auto;}
+  #dg-queue .dgq-act button{font-size:11px;padding:1px 6px;line-height:1.3;}
+  #dg-queue .dg-empty{font-size:11px;color:var(--dim);opacity:.7;padding:3px 2px;}
+  #dg-recent-wrap>summary{cursor:pointer;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--dim);list-style:none;}
+  #dg-recent-wrap>summary::-webkit-details-marker{display:none;}
+  #dg-recent{margin-top:5px;font-size:11px;color:var(--dim);line-height:1.5;max-height:200px;overflow:auto;}
+  #dg-recent .dgr b{color:var(--ink);font-weight:600;}
+  #dg-recent .dg-summary{margin-top:6px;padding-top:5px;border-top:1px solid #16223a;font-style:italic;opacity:.85;}
 </style>
 </head>
 <body>
@@ -211,6 +236,18 @@
 </div>
 
 <div class="col">
+  <!-- Plan 0473 P8: the HUMAN DIGEST FACE — room-at-a-glance + prioritized work queue (one-click
+       resolve/claim) + recent turns / rolling summary. The SAME working set the AI reads via
+       presenter_situation; resolve/claim go through the SAME shared api. Works voice on OR off. -->
+  <section id="dg-section">
+    <h2>Working set <span class="badge" id="dg-profile">—</span></h2>
+    <div id="dg-room">…</div>
+    <div class="dg-sub">Queue <span class="badge" id="dg-queue-count">0</span></div>
+    <div id="dg-queue"></div>
+    <details id="dg-recent-wrap"><summary>Recent · <span id="dg-recent-note"></span></summary>
+      <div id="dg-recent"></div>
+    </details>
+  </section>
   <section>
     <h2>Users <span class="badge" id="user-count">0</span></h2>
     <div class="row" style="margin-bottom:6px"><button class="mini sel" id="view-all">View: ALL (default)</button></div>
@@ -654,7 +691,82 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     .then(function(d){ authGated=!!(d&&d.gated); if(d&&d.seed) authSeed=d.seed; renderConfig(); })
     .catch(function(){ authGated=false; renderConfig(); });
 
-  connect(); refreshModules(); refreshSeries();
+  // ---- Plan 0473 P8: the HUMAN DIGEST FACE (room-at-a-glance + prioritized queue + one-click resolve) ----
+  // Reads the SAME bounded WORKING SET the AI consumes via presenter_situation, over GET /api/situation
+  // (server-held per-consumer cursor — this page is one consumer). A one-click resolve/claim POSTs to
+  // /api/work, which routes through the SAME api.resolveWork/claimWork the MCP tools use — so the human
+  // and AI faces are ONE working set (owner/status prevent double-handling). Light poll + refresh-on-act;
+  // works whether voice is on or off (it shows text + session too). NOT the raw transcript firehose.
+  var DG_CID = 'ctl-' + Math.random().toString(36).slice(2, 8);   // this page's consumer id (its own cursor)
+  var dgLast = null, dgTimer = null, dgInFlight = false;
+  function dgHeaders(base){ var h = base || {}; if(identity.token) h['x-control-token'] = identity.token; return h; }
+  function fetchSituation(){
+    if(dgInFlight) return Promise.resolve(dgLast); dgInFlight = true;
+    return fetch('/api/situation?c='+encodeURIComponent(DG_CID), { cache:'no-store', headers: dgHeaders() })
+      .then(function(r){ return r.ok ? r.json() : null; })
+      .then(function(sit){ dgInFlight = false; if(sit){ dgLast = sit; renderDigest(sit); } return sit; })
+      .catch(function(){ dgInFlight = false; return null; });
+  }
+  function workOp(id, op, extra){
+    return fetch('/api/work', { method:'POST', headers: dgHeaders({'content-type':'application/json'}),
+      body: JSON.stringify(Object.assign({ id:id, op:op }, extra||{})) })
+      .then(function(r){ return r.json().catch(function(){return null;}); })
+      .then(function(d){ fetchSituation(); return d; })      // refresh both faces' shared view immediately
+      .catch(function(){ fetchSituation(); });
+  }
+  function dgText(s,n){ s=(s==null?'':(''+s)); return s.length>(n||120)?s.slice(0,(n||120))+'…':s; }
+  function renderDigest(sit){
+    if(!sit){ return; }
+    var st = sit.situation || {};
+    $('dg-profile').textContent = sit.profile || '—';
+    // room-at-a-glance: current beat/display, open polls + live tallies, roster summary.
+    var room = [];
+    if(st.beat){ room.push('<b>'+esc(st.beat.title||'—')+'</b> · beat '+((st.beat.index|0)+1)+'/'+(st.beat.total||'?')); }
+    else { room.push('<b>idle</b> (no module)'); }
+    var rs = st.rosterSummary||{};
+    room.push('<span class="dg-chip">👥 '+((rs.connected!=null?rs.connected:(rs.total||0)))+' present</span>');
+    (st.polls||[]).forEach(function(p){
+      var t = p.tally||{}; var parts = Object.keys(t).map(function(k){ return k+':'+t[k]; }).join(' ');
+      room.push('<span class="dg-chip poll" title="open poll">📊 '+esc(dgText(p.prompt||p.promptId,40))+(parts?(' ('+esc(parts)+')'):'')+'</span>');
+    });
+    // floor / backpressure awareness (one glance): surface only when NOT the calm default.
+    var fl = sit.floor; if(fl && fl!=='go') room.push('<span class="dg-chip poll">⏳ floor: '+esc(fl)+'</span>');
+    var bp = sit.backpressure||{}; if(bp.sheddedCount>0) room.push('<span class="dg-chip poll">↯ '+bp.sheddedCount+' folded</span>');
+    $('dg-room').innerHTML = room.join(' ');
+    // prioritized work queue — one-click resolve/claim on each item.
+    var q = sit.queue||[];
+    $('dg-queue-count').textContent = q.length;
+    var box = $('dg-queue'); box.innerHTML='';
+    if(!q.length){ box.innerHTML = '<div class="dg-empty">nothing pending — clear</div>'; }
+    q.forEach(function(w){
+      var el=document.createElement('div');
+      el.className='dgq p'+(w.priority!=null?w.priority:1)+(w.status==='claimed'?' claimed':'');
+      el.setAttribute('data-work-id', w.id);
+      var own = w.owner ? ('<span class="dgq-own">✓ '+esc(w.owner)+'</span>') : '';
+      el.innerHTML =
+        '<div class="dgq-body"><div class="dgq-who">'+esc(w.userName||w.userId||'—')+(w.priority>=2?' · ❓':'')+' '+own+'</div>'
+        +'<div class="dgq-txt">'+esc(dgText(w.text,160))+'</div></div>'
+        +'<div class="dgq-act">'
+          +'<button data-work-resolve="'+esc(w.id)+'" title="resolve — the judgment is done">✓ Resolve</button>'
+          +'<button data-work-claim="'+esc(w.id)+'" title="claim — I am handling this (so the AI won\'t double-handle)">✋ Claim</button>'
+        +'</div>';
+      box.appendChild(el);
+    });
+    [].forEach.call(box.querySelectorAll('[data-work-resolve]'),function(b){ b.onclick=function(){ b.disabled=true; workOp(b.getAttribute('data-work-resolve'),'resolve'); }; });
+    [].forEach.call(box.querySelectorAll('[data-work-claim]'),function(b){ b.onclick=function(){ workOp(b.getAttribute('data-work-claim'),'claim',{owner:identity.userName||identity.userId||'presenter'}); }; });
+    // recent turns + rolling summary — continuity at a glance, NOT the firehose (bounded last-N).
+    var rt = sit.recentTurns||[];
+    $('dg-recent-note').textContent = rt.length+' turns';
+    var rec = rt.slice(-8).map(function(t){ return '<div class="dgr"><b>'+esc(t.userName||t.userId||'?')+':</b> '+esc(dgText(t.text,120))+'</div>'; }).join('');
+    var sum = sit.summary||{};
+    if(sum.turnsSummarized>0){ rec += '<div class="dg-summary">+'+sum.turnsSummarized+' earlier turns folded'+(sum.sheddedFolded>0?(' · '+sum.sheddedFolded+' shed'):'')+(sum.text?(' — '+esc(dgText(sum.text,140))):'')+'</div>'; }
+    $('dg-recent').innerHTML = rec || '<div class="dg-empty">no turns yet</div>';
+  }
+  function startDigest(){ if(dgTimer) return; fetchSituation(); dgTimer=setInterval(fetchSituation, 1500); }
+  document.addEventListener('visibilitychange', function(){ if(document.hidden){ if(dgTimer){ clearInterval(dgTimer); dgTimer=null; } } else startDigest(); });
+  window.__digest = { last:function(){return dgLast;}, refresh:fetchSituation, resolve:function(id){return workOp(id,'resolve');}, claim:function(id){return workOp(id,'claim',{owner:identity.userName||'presenter'});} };   // test/automation hook (P8)
+
+  connect(); refreshModules(); refreshSeries(); startDigest();
   window.__ctlAuth = { role:function(){return effRole;}, gated:function(){return authGated;}, open:function(){return $('ap-config').classList.contains('open');} };   // test hook
   window.__control = control;   // test/automation hook (P1) — drive control ops programmatically
   window.__gm={ users:function(){return users;}, module:function(){return module;}, cur:function(){return curBeat;}, rec:function(){return recBeat;},

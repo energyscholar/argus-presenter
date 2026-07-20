@@ -394,8 +394,53 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       const modules = (series.moduleIds || []).map((mid) => moduleSummary(mid, 'missing'));
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-cache' });
       res.end(JSON.stringify({ id, series, modules }));
+    } else if (req.url === '/api/situation' || req.url.startsWith('/api/situation?')) {
+      // Plan 0473 P8 — the HUMAN DIGEST FACE reads the SAME bounded WORKING SET the AI consumes via
+      // presenter_situation. GET returns api.situation for a per-page consumer id (server-held cursor),
+      // so the human face (control.html) and the AI face (MCP) are ONE working set. OPSEC: the roster in
+      // the digest carries control-only fields (ip/socketId), so this is GATED behind the control
+      // credential when one is configured — parity with the presence feed + module write-back. Ungated
+      // server (LAN/tests, no credential) → open, like the rest of the control surface.
+      if (!httpControlAuthed(req)) { res.writeHead(403, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'forbidden' })); return; }
+      const cid = new URLSearchParams((req.url.split('?')[1] || '')).get('c') || 'default';
+      Promise.resolve(api.situation({ consumerId: 'ctl:' + cid })).then((sit) => {
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(JSON.stringify(sit));
+      }).catch((e) => { res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: String((e && e.message) || e) })); });
+    } else if (req.url === '/api/work' || req.url.startsWith('/api/work?')) {
+      // Plan 0473 P8 — the HUMAN one-click resolve/claim/defer. A digest button POSTs {id, op, note?,
+      // owner?}; the op routes through the SAME api.resolveWork / claimWork / deferWork the MCP tools
+      // call — so the two faces never disagree (server-tracked status/owner prevent double-handling).
+      if (req.method !== 'POST') { res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'method not allowed' })); return; }
+      if (!httpControlAuthed(req)) { res.writeHead(403, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'forbidden' })); return; }
+      const CAP = 16 * 1024; let body = ''; let aborted = false;
+      req.on('data', (chunk) => { if (aborted) return; body += chunk; if (body.length > CAP) { aborted = true; res.writeHead(413, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'too large' })); req.destroy(); } });
+      req.on('end', () => {
+        if (aborted) return;
+        let msg; try { msg = JSON.parse(body || '{}'); } catch (e) { res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'invalid json' })); return; }
+        const id = msg && msg.id, op = msg && msg.op;
+        if (typeof id !== 'string' || !id) { res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'missing id' })); return; }
+        let item = null;
+        if (op === 'resolve') item = api.resolveWork(id, { note: msg.note != null ? String(msg.note) : null });
+        else if (op === 'claim') item = api.claimWork(id, { owner: msg.owner != null ? String(msg.owner) : 'presenter' });
+        else if (op === 'defer') item = api.deferWork(id);
+        else { res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'bad op (resolve|claim|defer)' })); return; }
+        if (!item) { res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'no such actionable item' })); return; }
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: true, item }));
+      });
     } else { res.writeHead(404); res.end('not found'); }
   });
+  // Plan 0473 P8 — control-credential gate for the HTTP working-set surface (situation + work). Mirrors
+  // the WS control-role rule (L~501): GRANTED iff ungated (no token AND no password hash) OR the request
+  // carries a token (x-control-token header, or ?token=) that matches CONTROL_TOKEN or ROLE_HASH.
+  function httpControlAuthed(req) {
+    const gated = !!(CONTROL_TOKEN || ROLE_HASH);
+    if (!gated) return true;
+    const q = new URLSearchParams((req.url.split('?')[1] || ''));
+    const token = req.headers['x-control-token'] || q.get('token');
+    return (CONTROL_TOKEN && token === CONTROL_TOKEN) || (ROLE_HASH && token === ROLE_HASH);
+  }
   const wss = new WebSocketServer({ server: httpServer, maxPayload: MAX_PAYLOAD });
 
   function send(ws, msg) { try { ws.send(JSON.stringify(msg)); } catch (e) {} }
@@ -1516,6 +1561,10 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     // workItem(id): the SERVER's full record for one item incl. terminal statuses (resolved/expired/shed)
     // + note/owner — proves the server, not the agent, tracks the state. null if unknown/pruned.
     workItem: (id) => { expireStale(); const it = workItemsMap.get(id); return it ? itemView(it) : null; },
+    // debugAllWorkItems(): every RETAINED work item incl. terminal statuses (resolved/expired/shed) +
+    // the `deferred` (deprioritized) flag — a test/observability hook proving whole-session invariants
+    // (e.g. the wearable scenario: nothing was ever shed or deprioritized). Bounded like workItemsMap.
+    debugAllWorkItems: () => { expireStale(); return [...workItemsMap.values()].map((it) => ({ ...itemView(it), deferred: !!it.deferred })); },
     // claim(id): mark an item as being handled (status=claimed) by `owner` — so a second consumer (human
     // via control.html, or another agent) won't double-handle it. Claimed items are exempt from the pending
     // aging-out. Returns the updated item view, or null for an unknown/non-pending-or-claimed id.
