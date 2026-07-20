@@ -164,6 +164,24 @@ export const coreTools = [
     handler: async ({ waitMs = 0 } = {}) => need().situation({ consumerId: MCP_CONSUMER_ID, waitMs })
   },
   {
+    name: 'presenter_claim',
+    description: 'Plan 0473 (WORK QUEUE — act key): CLAIM a work item by id (from presenter_situation().queue) — mark that YOU are handling it so a second controller (the human on control.html, or another agent) will not double-handle it. Sets server-tracked status=claimed + owner; the server holds the state, you hold nothing. A claimed item is exempt from the pending aging-out. Returns the updated item.',
+    input: { type: 'object', required: ['id'], properties: { id: { type: 'string', description: 'Work item id from situation().queue' } } },
+    handler: async ({ id }) => ({ item: need().claimWork(id, { owner: MCP_CONSUMER_ID }) })
+  },
+  {
+    name: 'presenter_resolve',
+    description: 'Plan 0473 (WORK QUEUE — resolve key): RESOLVE a work item by id — the judgment is done. Moves it OUT of the actionable queue (it stops appearing in situation().queue); the server retains a terminal record with your optional note. Returns the updated item.',
+    input: { type: 'object', required: ['id'], properties: { id: { type: 'string', description: 'Work item id from situation().queue' }, note: { type: 'string', description: 'Optional resolution note (server-tracked)' } } },
+    handler: async ({ id, note = null }) => ({ item: need().resolveWork(id, { note }) })
+  },
+  {
+    name: 'presenter_defer',
+    description: 'Plan 0473 (WORK QUEUE): DEFER a work item by id — not now. Releases any claim, pushes it to the BACK of the queue (lowest priority) and restarts its aging clock (defer = look at it later, not let it expire now). It stays pending/actionable. Returns the updated item.',
+    input: { type: 'object', required: ['id'], properties: { id: { type: 'string', description: 'Work item id from situation().queue' } } },
+    handler: async ({ id }) => ({ item: need().deferWork(id) })
+  },
+  {
     name: 'presenter_inbox',
     description: 'Plan 0472 (unified inbox): cursored + optional long-poll read of the ONE voice+text input stream — the standing consumer surface for a wearable/orchestration loop. Returns items {seq,kind:"voice"|"text",userId,userName,role,text,conf,final,ts,sessionId} with seq > since, interleaved by arrival seq, plus a next cursor. Call with since=0 first, then pass the returned cursor to get only new items. With waitMs>0 it LONG-POLLS: returns immediately if anything is newer than since, else blocks server-side until the next item arrives or waitMs elapses (near-real-time, no polling storm; one server-side waiter, always cleaned up). NOTE: `final` = segment-final ASR result (this recognition pass is done), NOT that the speaker finished their turn. Superset of presenter_transcript (which is the voice-only view).',
     input: { type: 'object', properties: {

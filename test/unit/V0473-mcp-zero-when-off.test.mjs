@@ -11,7 +11,10 @@ import { test, check as expect } from '../../harness/test.mjs';
 import { toolMap, activeTools, coreTools, voiceTools } from '../../mcp/tools.mjs';
 
 const VOICE_TOOL_NAMES = ['presenter_voice_enable', 'presenter_transcript'];
-const CORE_ALWAYS = ['presenter_inbox', 'presenter_start', 'presenter_status'];
+// Plan 0473 P4: the work-queue keys (claim/resolve/defer) + the sense key (situation) are CORE — the
+// instrument itself — so they are ALWAYS registered, present even with audio-in OFF.
+const CORE_ALWAYS = ['presenter_inbox', 'presenter_start', 'presenter_status',
+  'presenter_situation', 'presenter_claim', 'presenter_resolve', 'presenter_defer'];
 
 test('T-MCP-ZERO-WHEN-OFF: voice-capture tools ABSENT when off; core tools present', async () => {
   const off = toolMap({ voiceEnabled: false });
