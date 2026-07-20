@@ -44,12 +44,18 @@ const STALE_MS = 15000;             // > 3 missed pings ⇒ red (present-but-sta
 // cap, byte-rate capped, and ignored unless the connection has an active voice session.
 const VOICE_SR = 16000;                        // server-side ASR sample rate (client resamples to this)
 const VOICE_MAX_SESSIONS = 8;                  // RT-22: concurrent active voice sessions (<< MAX_CONNS)
-const VOICE_BYTE_RATE_CAP = 64 * 1024;         // RT-7: per-conn audio byte/s (PCM is 32 KB/s -> 2x headroom)
+const VOICE_BYTE_RATE_CAP = 64 * 1024;         // RT-7: sustained per-conn audio byte/s (PCM is 32 KB/s -> 2x headroom)
 const VOICE_SEG_MAX_MS = 30000;                // RT-8: hard segment length cap -> force-cut
 // RT-14 open-segment timeout is resolved PER createServer() (see segTimeoutMs) so tests can override it.
 const VOICE_MIN_SEG_MS = 300;                  // RT-12: shorter than this -> drop (whisper hallucinates on blips)
 const VOICE_SEG_MAX_BYTES = Math.round(VOICE_SR * 2 * VOICE_SEG_MAX_MS / 1000);
 const VOICE_MIN_SEG_BYTES = Math.round(VOICE_SR * 2 * VOICE_MIN_SEG_MS / 1000);
+// F1 fix: the worklet is final-only (buffers a whole utterance, flushes as one BURST at endpoint),
+// so a per-SECOND rate cap wrongly truncates any >~2s utterance. A per-conn TOKEN BUCKET lets a full
+// segment burst through whole (capacity = one 30s segment) while still throttling >2x-realtime floods
+// at the sustained refill rate. The VOICE_SEG_MAX_BYTES force-cut still bounds a non-stop babbler.
+const VOICE_TB_CAPACITY = VOICE_SEG_MAX_BYTES;   // a full 30s segment fits in one burst
+const VOICE_TB_REFILL_BPS = 64 * 1024;           // sustained bytes/sec refill
 const TRANSCRIPT_RING = 500;                   // in-memory cursored transcript log depth
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -784,7 +790,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   }
   function voiceSegStart(c, ws, m) {
     if (!c) return;
-    if (!c.voice) c.voice = { active: false, seq: 0, chunks: [], bytes: 0, startedAt: 0, timer: null, rl: null };
+    if (!c.voice) c.voice = { active: false, seq: 0, chunks: [], bytes: 0, startedAt: 0, timer: null, tokens: VOICE_TB_CAPACITY, lastRefill: Date.now() };
     const v = c.voice;
     if (v.active) { if (v.timer) clearTimeout(v.timer); v.active = false; voiceSessions = Math.max(0, voiceSessions - 1); v.chunks = []; v.bytes = 0; }   // drop a stray-open prior segment
     if (voiceSessions >= VOICE_MAX_SESSIONS) {   // RT-22: reject over cap, with a surfaced reason
@@ -794,7 +800,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     }
     ensureAsr();   // RT-25: warm the recognizer now, so the first utterance doesn't eat the model load
     v.active = true; v.seq = (typeof m.seq === 'number' ? m.seq : v.seq + 1); v.chunks = []; v.bytes = 0; v.startedAt = Date.now();
-    v.rl = { winStart: Date.now(), bytes: 0 };
+    v.tokens = VOICE_TB_CAPACITY; v.lastRefill = Date.now();   // F1: full-capacity bucket per segment
     voiceSessions++;
     voiceArmTimeout(c, ws);
     log.info('voice', 'seg-start', { socketId: c.id, userId: c.userId, seq: v.seq, sessions: voiceSessions });
@@ -805,10 +811,14 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     const v = c && c.voice;
     if (!v || !v.active) { log.warn('voice', 'binary-no-session', { socketId: c && c.id }); return; }   // RT-7 drop
     c.lastSeen = Date.now();
+    // F1 fix (RT-7): TOKEN BUCKET, not a per-second window — a final-only burst of a whole utterance
+    // (up to VOICE_SEG_MAX_BYTES) passes intact; only >2x-realtime sustained floods throttle. A drop is
+    // SURFACED to the speaker (voice_dropped), never silent.
     const now = Date.now();
-    if (!v.rl || now - v.rl.winStart >= 1000) v.rl = { winStart: now, bytes: 0 };
-    v.rl.bytes += buf.length;
-    if (v.rl.bytes > VOICE_BYTE_RATE_CAP) { log.warn('voice', 'byterate-cap', { socketId: c.id, bytes: v.rl.bytes }); return; }   // RT-7 drop excess + log (never silent)
+    v.tokens = Math.min(VOICE_TB_CAPACITY, v.tokens + (now - v.lastRefill) * VOICE_TB_REFILL_BPS / 1000);
+    v.lastRefill = now;
+    if (v.tokens < buf.length) { log.warn('voice', 'rate-drop', { socketId: c.id, seq: v.seq }); send(ws, { t: 'voice_dropped', seq: v.seq, reason: 'rate' }); return; }
+    v.tokens -= buf.length;
     v.chunks.push(Buffer.from(buf)); v.bytes += buf.length;
     voiceArmTimeout(c, ws);
     if (v.bytes >= VOICE_SEG_MAX_BYTES) { log.warn('voice', 'seg-forcecut', { socketId: c.id, bytes: v.bytes }); voiceSegFinalize(c, ws, {}); }   // RT-8
@@ -819,6 +829,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     v.active = false; voiceSessions = Math.max(0, voiceSessions - 1);
     const pcm = Buffer.concat(v.chunks, v.bytes); const seq = v.seq;
     v.chunks = []; v.bytes = 0;
+    log.info('voice', 'seg-final', { socketId: c.id, seq, bytes: pcm.length });   // F1: byte-integrity trace (utterance must arrive whole)
     if (discard) { log.info('voice', 'seg-discard', { socketId: c.id, seq, reason }); return; }
     if (pcm.length < VOICE_MIN_SEG_BYTES) { log.info('voice', 'seg-too-short', { socketId: c.id, seq, bytes: pcm.length }); return; }   // RT-12
     const wavDir = join(tmpdir(), 'ap-asr'); try { mkdirSync(wavDir, { recursive: true }); } catch (e) {}
