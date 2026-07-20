@@ -1014,6 +1014,85 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     emitTranscript({ userId: c.userId, userName: c.userName, role: c.role, text: result.text, conf: result.conf });
   }
 
+  // ---- Plan 0473 P3: BOUNDED SITUATION (the working set) + SERVER-HELD per-consumer cursor ----
+  // `situation()` is the PRIMARY sense surface: a BOUNDED working set assembled from EXISTING server
+  // state (display/beat, session profile, open polls + live tallies, roster) + the last-N coalesced
+  // turns (P2) + a new-since-last-read delta. The response is ALWAYS bounded regardless of session
+  // length — a 10k-turn session must NOT return full history (the inbox ring is already capped at
+  // TRANSCRIPT_RING, and we additionally cap recent-turns to N, roster to a max, and per-turn text).
+  const RECENT_TURNS_N = 20;          // bounded recent-turns window surfaced in the situation digest
+  const SITUATION_ROSTER_MAX = 40;    // roster is bounded too (present + recently-active)
+  const MAX_TURN_TEXT = 2000;         // per-turn verbatim text is capped so one mega-turn can't blow the cap
+  // Server-held per-consumer cursor: consumerId -> last inboxSeq that consumer has been shown. The
+  // CONSUMER never passes a cursor — the server tracks each consumer's last-read position, keyed by
+  // its connection/session identity (the MCP tool keys by the stdio connection; tests key explicitly).
+  const situationCursors = new Map();
+  // Group the (bounded) inbox ring into coalesced TURNS (consecutive items sharing a turnId), newest
+  // last, verbatim; return the last `n`. Per-turn text is length-capped (bounded-in-the-large).
+  function coalesceTurns(items, n = RECENT_TURNS_N) {
+    const turns = [];
+    let cur = null;
+    for (const it of items) {
+      if (cur && cur.turnId === it.turnId && it.turnId != null) {
+        cur.text = (cur.text + (it.text ? (cur.text ? ' ' : '') + it.text : '')).slice(0, MAX_TURN_TEXT);
+        cur.count++; cur.lastSeq = it.seq; cur.ts = it.ts;
+        cur.turnComplete = it.turnComplete === true; cur.kind = it.kind;
+      } else {
+        cur = {
+          turnId: it.turnId || null, userId: it.userId, userName: it.userName, role: it.role || null,
+          kind: it.kind, text: (it.text || '').slice(0, MAX_TURN_TEXT), count: 1,
+          firstSeq: it.seq, lastSeq: it.seq, ts: it.ts, turnComplete: it.turnComplete === true,
+        };
+        turns.push(cur);
+      }
+    }
+    return turns.slice(-n);
+  }
+  // A compact, bounded view of the current per-role display (what each broadcast role is showing now).
+  function displaySummary() {
+    const out = {};
+    for (const r of ROLES) {
+      const d = displayByRole[r];
+      out[r] = d ? (d.kind === 'component' ? ((d.opts && d.opts.promptId) || d.component)
+        : (d.contentId || d.kind)) : 'idle';
+    }
+    return out;
+  }
+  // The current beat, if a content module has one shown (currentBeat >= 0); else the module summary; null.
+  function beatSummary() {
+    if (!contentModule) return null;
+    const total = (contentModule.beats || []).length;
+    const b = (currentBeat >= 0) ? contentModule.beats[currentBeat] : null;
+    return b ? { index: currentBeat, total, component: b.component, id: b.id != null ? b.id : null, title: contentModule.title }
+      : { index: currentBeat, total, title: contentModule.title };
+  }
+  // Assemble the BOUNDED working set for `consumerId`, advancing that consumer's server-held cursor.
+  function buildSituation(consumerId, recentN = RECENT_TURNS_N) {
+    const last = situationCursors.get(consumerId) || 0;
+    const since = inbox.filter((i) => i.seq > last);   // bounded: the ring is capped at TRANSCRIPT_RING
+    situationCursors.set(consumerId, inboxSeq);         // advance the cursor to everything now shown
+    const att = api.attendance({ viewerRole: 'ai' });
+    const openPolls = [...polls.entries()].filter(([, p]) => p.open)
+      .map(([id, p]) => ({ promptId: id, prompt: p.spec && p.spec.prompt, open: true, ...tally(id) }));
+    return {
+      sessionId: SESSION_ID,
+      profile: ACTIVE_PROFILE.name,
+      bounded: true,
+      situation: {
+        display: displaySummary(),
+        beat: beatSummary(),
+        polls: openPolls,
+        roster: att.roster.slice(0, SITUATION_ROSTER_MAX),
+        rosterSummary: att.summary,
+      },
+      recentTurns: coalesceTurns(inbox, recentN),
+      newSinceLastRead: { count: since.length, turns: coalesceTurns(since, recentN) },
+      // NOTE: work QUEUE is Plan 0473 P4 — an empty bounded placeholder here (no claim/resolve yet).
+      queue: [],
+      cursor: inboxSeq,   // informational only — the consumer does NOT need to pass this back
+    };
+  }
+
   const api = {
     url: () => `http://127.0.0.1:${httpServer.address().port}`,
     port: () => httpServer.address().port,
@@ -1096,6 +1175,25 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       });
     },
     getInboxWaiters: () => inboxWaiters.size,   // test/observability hook: assert no waiter leak
+    // Plan 0473 P3 — presenter_situation's engine. Returns the BOUNDED working set for a consumer,
+    // advancing that consumer's SERVER-HELD cursor (the consumer passes NO cursor). Optional waitMs
+    // long-polls (like getInbox): if nothing is newer than this consumer's stored cursor it registers
+    // ONE inbox waiter and resolves on the next emit or at the timeout — then builds the current set.
+    situation: ({ consumerId = 'default', waitMs = 0, recentN = RECENT_TURNS_N } = {}) => {
+      const last = situationCursors.get(consumerId) || 0;
+      if (inboxSeq > last || !waitMs) return buildSituation(consumerId, recentN);
+      return new Promise((resolve) => {
+        const w = { settled: false };
+        w.wake = () => {
+          if (w.settled) return; w.settled = true;
+          clearTimeout(w.timer); inboxWaiters.delete(w);
+          resolve(buildSituation(consumerId, recentN));   // emit-woke: new items folded in; timeout: current set
+        };
+        w.timer = setTimeout(w.wake, waitMs);
+        w.timer.unref?.();
+        inboxWaiters.add(w);
+      });
+    },
     // Plan 0472 P4 — permissioned guest capability link operator surface.
     // capEnabled: are guest links configured at all (a secret present)?
     capEnabled: () => !!CAP_SECRET,
