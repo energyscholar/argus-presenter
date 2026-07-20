@@ -1,6 +1,0 @@
-PASS  CLI-1 — `node app/server.mjs 0` prints the three entry URLs (control line present)
-PASS  V20 — a module with beats but no manifest.defaultBeatId gets the advisory info
-PASS  V20 — declaring manifest.defaultBeatId suppresses the advisory
-PASS  NEUTRAL — gm role gets NO presence feed and is NOT counted as a controller; presenter/ai still are
-
-216 passed / 5 failed   [component:46/46  live:83/87  unit:87/88]
