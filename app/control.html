@@ -327,7 +327,7 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   // DEL-3: build one .beat row (same cur/rec/label/onclick logic) — shared by section- and sequence-level rendering.
   function beatRow(bid){ var b=beatById(bid); if(!b) return null; var i=beatIndex(bid);
     var el=document.createElement('div'); el.className='beat'+(i===curBeat?' cur':'')+(i===recBeat&&i!==curBeat?' rec':''); el.dataset.i=i;
-    el.innerHTML=(((b.opts&&(b.opts.title||b.opts.prompt||b.opts.text))||b.id)+'').slice(0,42)+' <span class="comp">'+b.component+(b.target?(' →'+b.target):'')+'</span>'+((i===recBeat&&i!==curBeat)?' <span class="recnote">→ recommended</span>':'');
+    el.innerHTML=esc((((b.opts&&(b.opts.title||b.opts.prompt||b.opts.text))||b.id)+'').slice(0,42))+' <span class="comp">'+esc(b.component)+(b.target?(' →'+esc(b.target)):'')+'</span>'+((i===recBeat&&i!==curBeat)?' <span class="recnote">→ recommended</span>':'');   // Plan 0471 C4: escape module-authored strings
     el.onclick=function(){ recBeat=-1; control('show_beat',{index:i}); };   // manual override always works + clears the recommendation
     return el; }
   // Plan 0456 P2: first RESOLVABLE beat index of a tier (section or sequence) — shared by the
@@ -367,13 +367,13 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
       var hasSeq = s.sequences && s.sequences.length;
       var secCount = hasSeq ? s.sequences.reduce(function(n,q){return n+(q.beatIds||[]).length;},0) : (s.beatIds||[]).length;
       var estStr = ''; if(anyDur){ var sd=secDur(s); if(sd>0) estStr=' · '+fmtDur(sd); }
-      var sum=document.createElement('summary'); sum.innerHTML='<span>'+(s.title||'section')+'</span><span class="cnt">'+secCount+' beats'+estStr+'</span>';
+      var sum=document.createElement('summary'); sum.innerHTML='<span>'+esc(s.title||'section')+'</span><span class="cnt">'+secCount+' beats'+estStr+'</span>';   // Plan 0471 C4
       var jb=jumpBtn(s); if(jb) sum.querySelector('.cnt').appendChild(jb);   // P2: section-level jump (absent when no resolvable beats)
       det.appendChild(sum);
       if(hasSeq){
         s.sequences.forEach(function(q){
           var qdet=document.createElement('details'); qdet.className='seq'; qdet.open=true;
-          var qsum=document.createElement('summary'); qsum.innerHTML='<span>'+(q.title||'sequence')+'</span><span class="cnt">'+(q.beatIds||[]).length+' beats</span>';
+          var qsum=document.createElement('summary'); qsum.innerHTML='<span>'+esc(q.title||'sequence')+'</span><span class="cnt">'+(q.beatIds||[]).length+' beats</span>';   // Plan 0471 C4
           var qjb=jumpBtn(q); if(qjb) qsum.querySelector('.cnt').appendChild(qjb);   // P2: sequence-level jump
           qdet.appendChild(qsum);
           (q.beatIds||[]).forEach(function(bid){ var el=beatRow(bid); if(el) qdet.appendChild(el); });
@@ -419,7 +419,9 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   };
 
   function copyText(t,el){ try{ if(navigator.clipboard) navigator.clipboard.writeText(t); }catch(e){} if(el){ el.classList.add('copied'); setTimeout(function(){el.classList.remove('copied');},700);} }
-  function esc(s){ return (s==null?'':(''+s)).replace(/"/g,'&quot;'); }
+  // Plan 0471 C4: full HTML-entity escaper (was &quot;-only → stored XSS in the presenter/GM control page).
+  // Escapes & < > " ' so hostile userNames/module titles render as inert text at every innerHTML sink.
+  function esc(s){ return (s==null?'':(''+s)).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
   function renderUsers(){
     $('user-count').textContent=users.length;
     var box=$('users'); box.innerHTML='';
