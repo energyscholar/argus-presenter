@@ -228,6 +228,12 @@
     reconnectDelay = Math.min(reconnectDelay * 2, 5000);   // backoff (X6 storm debounce)
   }
   function connect(){
+    // S206 fix: single IDEMPOTENT entry point. Cancel any pending auto-reconnect and fully detach +
+    // close any prior socket BEFORE opening a new one — otherwise setRole()/unlock()/onclose can each
+    // spawn a socket on top of a live/closing one, and each orphan's onclose re-triggers
+    // scheduleReconnect() → the c1..c8 reconnect storm. (The voice mic auto-follows via getSocket().)
+    if (reconnectTimer){ clearTimeout(reconnectTimer); reconnectTimer = null; }
+    if (ws){ try { ws.onopen = ws.onclose = ws.onerror = ws.onmessage = null; ws.close(); } catch(e){} }
     ws = new WebSocket(proto + '://' + location.host);
     ws.onopen = function(){ led.classList.add('on'); dbg.open = true; dbgRender(); reconnectDelay = 300;
       ws.send(JSON.stringify(Object.assign({ t:'hello', lastVersion:lastVersion }, identity))); };
