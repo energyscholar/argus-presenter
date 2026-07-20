@@ -49,8 +49,8 @@
   #ap-debug .k{color:#8ab;}
   #ap-debug pre{margin:4px 0;white-space:pre-wrap;word-break:break-word;color:#cfe9ff;}
   #ap-debug .msg{border-top:1px solid #1c2a44;opacity:.85;}
-  /* READY chime banner (MCP presenter_ready): gentle top-center pill so a backgrounded
-     tab, once brought forward, shows why it dinged. Auto-clears on focus or click. */
+  /* CHIME banner (MCP presenter_bell / presenter_verify_watching): gentle top-center pill so
+     a backgrounded tab, once brought forward, shows why it dinged. Auto-clears on focus or click. */
   #ap-ready{position:fixed;top:0;left:0;right:0;z-index:80;display:none;justify-content:center;pointer-events:none;}
   #ap-ready.show{display:flex;}
   #ap-ready .pill{margin-top:18px;pointer-events:auto;cursor:pointer;display:flex;align-items:center;gap:12px;
@@ -249,7 +249,7 @@
   }
   connect();
 
-  // ---- READY chime (server {t:'chime'} ← MCP presenter_ready) ----------------
+  // ---- CHIME (server {t:'chime'} ← MCP presenter_bell / presenter_verify_watching) ----------------
   // The human keeps this tab in the background while the AI builds a deck; a gentle
   // audible cue + tab-title flash + on-screen pill says "deck is ready, come look".
   // WebAudio keeps running in a backgrounded tab, but autoplay policy needs the
@@ -325,7 +325,7 @@
   document.addEventListener('visibilitychange', function(){ if (!document.hidden) apOnForeground(); });
   function onChime(m){
     var requireAck = !!(m && m.requireAck);
-    apPlayChime();
+    if (!(m && m.bell === false)) apPlayChime();   // bell:false = silent ask (banner only, no audio)
     apShowReady(m && m.message, requireAck, m && m.ackId);
     if (document.hidden) apStartTitleFlash();   // flash the tab title only while backgrounded
     if (apReadyTimer) { clearTimeout(apReadyTimer); apReadyTimer = null; }
