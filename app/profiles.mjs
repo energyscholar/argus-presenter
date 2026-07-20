@@ -14,7 +14,10 @@
  *   perTurnBudget   — { mode:'soft'|'tight', byRole:{ <role>: ms } }   (F-3/H, per-role/trust)
  *   floorThresholds — { enabled, ...tuning }   (load-based floor control; off for 1 speaker)
  *   digestContent   — which digest section the situation surfaces: 'conversation'|'gm'|'class'|'host' (F-5)
- *   queuePolicy     — { mode, ... }   work-queue behaviour   (F-6 dedupe/cluster at scale)
+ *   queuePolicy     — { mode, enqueue, maxPending, ttlMs?, ... }   work-queue behaviour (F-6/F-11):
+ *                     enqueue='all' ⇒ every directed turn is a work item (wearable: solo, all directed);
+ *                     enqueue='questions' ⇒ only question/request turns enqueue (multi-user: ambient shed);
+ *                     maxPending bounds the pending queue; ttlMs ages stale pending items out (P4).
  *
  * DRIFT GUARD: consume knobs, never the name. `selectProfile(name)` is a pure DATA lookup.
  */
@@ -45,7 +48,7 @@ export const PROFILES = {
     } },
     floorThresholds: { enabled: false },                // off — one speaker, no floor control
     digestContent: 'conversation',                      // F-5: the digest is the conversation
-    queuePolicy: { mode: 'trivial', maxPending: 1 },    // trivial — 1 pending exchange
+    queuePolicy: { mode: 'trivial', enqueue: 'all', maxPending: 1 },   // trivial — every directed turn is work; 1 pending exchange (P4)
   },
 
   // --- DATA PLACEHOLDERS (wired:false) — knobs from the plan table; NOT wired to behaviour in P1. ---
@@ -59,7 +62,7 @@ export const PROFILES = {
     perTurnBudget: { mode: 'soft', byRole: { self: GENEROUS_MS, gm: GENEROUS_MS, participant: 60000 } },
     floorThresholds: { enabled: true },                 // on under load
     digestContent: 'gm',                                // F-5: scene/initiative/dice/NPC (pluggable)
-    queuePolicy: { mode: 'actions-to-gm' },
+    queuePolicy: { mode: 'actions-to-gm', enqueue: 'questions' },   // ambient narrative shed from the queue (P4/P10)
   },
 
   // teaching (many): ambient shed→summary, questions kept; explicit moderation overrides auto-floor;
@@ -72,7 +75,7 @@ export const PROFILES = {
     perTurnBudget: { mode: 'soft', byRole: { self: GENEROUS_MS, presenter: GENEROUS_MS, participant: 45000 } },
     floorThresholds: { enabled: true, moderationOverrides: true },   // F-7
     digestContent: 'class',                             // hands/quiz/poll state
-    queuePolicy: { mode: 'dedupe-cluster' },            // F-6
+    queuePolicy: { mode: 'dedupe-cluster', enqueue: 'questions' },   // F-6; only questions enqueue (P4/P11)
   },
 
   // guest (scoped, untrusted): as host session, but TIGHT budget + aggressive floor; guest items
@@ -85,7 +88,7 @@ export const PROFILES = {
     perTurnBudget: { mode: 'tight', byRole: { guest: 20000 } },      // F-3/H tight
     floorThresholds: { enabled: true, aggressive: true },
     digestContent: 'host',
-    queuePolicy: { mode: 'mediated', flagUntrusted: true },
+    queuePolicy: { mode: 'mediated', enqueue: 'questions', flagUntrusted: true },   // guest items mediated (P4/P12)
   },
 };
 

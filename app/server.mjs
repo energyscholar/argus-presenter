@@ -109,7 +109,7 @@ function sendStatic(res, req, absPath, contentType) {
   } catch (e) { res.writeHead(404); res.end('not found'); }
 }
 
-export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null, profile = DEFAULT_PROFILE, settlingMs = null } = {}) {
+export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null, profile = DEFAULT_PROFILE, settlingMs = null, queueMaxPending = null, queueTtlMs = null } = {}) {
   // Plan 0473 P1 — SESSION-TYPE PROFILE (the config-knob spine). Selected ONCE at session start;
   // its knobs are DATA the working-set engine will READ (settling/shedding/budget/floor/digest/queue).
   // Unknown/absent name falls back cleanly to the default (wearable). Profiles are data, not forks.
@@ -118,8 +118,17 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // knob. It is threaded THROUGH the profile object (a shallow clone of the same knob shape), NOT a
   // code branch — so the turn engine still reads the window from api.profile().settlingMs, and the
   // override is just tuning/testing config. Absent ⇒ the profile's own settlingMs governs.
-  const ACTIVE_PROFILE = (typeof settlingMs === 'number' && settlingMs >= 0)
-    ? { ...SESSION_PROFILE, settlingMs } : SESSION_PROFILE;
+  // Plan 0473 P4 — likewise `queueMaxPending` / `queueTtlMs` OVERRIDE the active profile's queuePolicy
+  // knobs (bound + aging TTL), threaded through the SAME knob shape (never a code branch) so the queue
+  // engine keeps reading them from api.profile().queuePolicy and tests can inject a short TTL / small bound.
+  let ACTIVE_PROFILE = SESSION_PROFILE;
+  if (typeof settlingMs === 'number' && settlingMs >= 0) ACTIVE_PROFILE = { ...ACTIVE_PROFILE, settlingMs };
+  if (typeof queueMaxPending === 'number' || typeof queueTtlMs === 'number') {
+    const qp = { ...(ACTIVE_PROFILE.queuePolicy || {}) };
+    if (typeof queueMaxPending === 'number') qp.maxPending = queueMaxPending;
+    if (typeof queueTtlMs === 'number') qp.ttlMs = queueTtlMs;
+    ACTIVE_PROFILE = { ...ACTIVE_PROFILE, queuePolicy: qp };
+  }
   // Plan 0473 P0: audio-in is OPTIONAL, DEFAULT OFF. Explicit boolean wins; else the env flag; else off.
   // When off, the served presenter.html carries ZERO voice code (strip below) — the audience display
   // is byte-clean of voice. The unified inbox + typed chat are NOT voice and stay on regardless.
@@ -866,6 +875,8 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       seqs: t.items.map((i) => i.seq), lastSeq: last.seq, count: t.items.length,
       ts: Date.now(), reason };
     emit('turnComplete', signal);
+    // Plan 0473 P4: a SETTLED turn is the substrate a work item is DERIVED from (cheap rule below).
+    deriveWorkFromTurn(t, last);
     log.info('voice', 'turn-complete', { turnId: t.turnId, userId: t.userId, items: signal.count, reason });
     return signal;
   }
@@ -1087,10 +1098,101 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       },
       recentTurns: coalesceTurns(inbox, recentN),
       newSinceLastRead: { count: since.length, turns: coalesceTurns(since, recentN) },
-      // NOTE: work QUEUE is Plan 0473 P4 — an empty bounded placeholder here (no claim/resolve yet).
-      queue: [],
+      // Plan 0473 P4: the WORK QUEUE — the judgment items, prioritized + bounded (aged/expired pruned).
+      queue: queueView(),
       cursor: inboxSeq,   // informational only — the consumer does NOT need to pass this back
     };
+  }
+
+  // ---- Plan 0473 P4: WORK QUEUE (the judgment items in the working set) ----
+  // Work items are DERIVED from completed TURNS (P2) by a CHEAP rule (NO ML): a settled turn becomes a
+  // work item whose PRIORITY is set by whether it is a question/request. The active profile's queuePolicy
+  // is honoured as DATA (never a name fork): `enqueue` decides which turns enter; `maxPending` bounds the
+  // pending queue; `ttlMs` ages stale pending items out (F-11) so the queue is bounded like the rest of the
+  // working set. The SERVER tracks each item's status/owner — the consuming agent holds NOTHING.
+  const PRIORITY_DIRECTED = 2;      // a question/request — needs the agent's judgment now
+  const PRIORITY_AMBIENT = 1;       // a statement / ambient chatter
+  const PRIORITY_DEFERRED = 0;      // pushed to the back by presenter_defer
+  const QUEUE_TEXT_MAX = 500;       // per-item verbatim text cap (bounded-in-the-large)
+  const DEFAULT_QUEUE_MAX = 50;     // fallback bound when a profile sets no maxPending
+  const DEFAULT_QUEUE_TTL_MS = 10 * 60 * 1000;   // pending items expire after this by default (bounded)
+  const workItemsMap = new Map();   // id -> item (pending/claimed live here; resolved/expired kept for status tracking, bounded)
+  const RESOLVED_KEEP = 100;        // bounded terminal-status history (resolved/expired) for server-side tracking
+  let workSeq = 0;
+  // Cheap question/request heuristic (F-4 minimal): trimmed text ends with '?'. No ML, no NLP.
+  function isQuestion(text) { return /\?\s*$/.test(String(text || '').trim()); }
+  // Read the queue knobs from the ACTIVE PROFILE (consume knobs, never the profile NAME — drift guard).
+  function queueKnobs() {
+    const qp = (ACTIVE_PROFILE.queuePolicy) || {};
+    return {
+      enqueue: qp.enqueue || 'all',                                            // 'all' | 'questions'
+      maxPending: (typeof qp.maxPending === 'number' && qp.maxPending >= 0) ? qp.maxPending : DEFAULT_QUEUE_MAX,
+      ttlMs: (typeof qp.ttlMs === 'number' && qp.ttlMs > 0) ? qp.ttlMs : DEFAULT_QUEUE_TTL_MS,
+    };
+  }
+  // DERIVE a work item from a settled turn `t` (its `last` item carries role). Cheap + profile-read.
+  function deriveWorkFromTurn(t, last) {
+    const knobs = queueKnobs();
+    const text = t.items.map((i) => i.text || '').join(' ').trim().slice(0, QUEUE_TEXT_MAX);
+    if (!text) return null;                                   // nothing to act on
+    const q = isQuestion(text);
+    // Honour the profile knob: 'questions' ⇒ only questions/requests enqueue (ambient shed); 'all' ⇒
+    // every directed turn is a work item (wearable — solo, all turns are directed at the agent).
+    if (knobs.enqueue === 'questions' && !q) return null;
+    const item = {
+      id: 'work-' + (++workSeq), turnId: t.turnId, userId: t.userId,
+      userName: (last && last.userName) || null, text,
+      priority: q ? PRIORITY_DIRECTED : PRIORITY_AMBIENT,
+      status: 'pending', owner: null, note: null,
+      createdTs: Date.now(),
+    };
+    workItemsMap.set(item.id, item);
+    enforceQueueBounds();                                     // keep the PENDING queue bounded (F-11)
+    return item;
+  }
+  // Age out stale PENDING items (claimed items are being handled ⇒ exempt) — lazy, called on every read
+  // + mutation, so the queue never grows unbounded even with no reader running.
+  function expireStale() {
+    const { ttlMs } = queueKnobs();
+    const now = Date.now();
+    for (const it of workItemsMap.values()) {
+      if (it.status === 'pending' && (now - it.createdTs) > ttlMs) { it.status = 'expired'; it.expiredTs = now; }
+    }
+  }
+  // Keep the number of PENDING items <= maxPending: shed the LOWEST-priority, then OLDEST, first — so a
+  // high-priority question is NEVER crowded out by heavy ambient. Claimed items don't count against the bound.
+  function enforceQueueBounds() {
+    const { maxPending } = queueKnobs();
+    let pending = [...workItemsMap.values()].filter((it) => it.status === 'pending');
+    if (pending.length <= maxPending) return;
+    // sort ascending by (priority, createdTs) ⇒ the first entries are the ones to drop.
+    pending.sort((a, b) => (a.priority - b.priority) || (a.createdTs - b.createdTs));
+    const dropN = pending.length - maxPending;
+    for (let i = 0; i < dropN; i++) { const it = pending[i]; it.status = 'shed'; it.shedTs = Date.now(); }
+    pruneTerminal();
+  }
+  // Bound the retained terminal-status history (resolved/expired/shed) so workItemsMap can't grow forever.
+  function pruneTerminal() {
+    const terminal = [...workItemsMap.values()].filter((it) => it.status === 'resolved' || it.status === 'expired' || it.status === 'shed');
+    if (terminal.length <= RESOLVED_KEEP) return;
+    terminal.sort((a, b) => (a.expiredTs || a.shedTs || a.resolvedTs || a.createdTs) - (b.expiredTs || b.shedTs || b.resolvedTs || b.createdTs));
+    for (let i = 0; i < terminal.length - RESOLVED_KEEP; i++) workItemsMap.delete(terminal[i].id);
+  }
+  // Stamp the dynamic `age` (ms since created) at serve time; return a bounded, plain item view.
+  function itemView(it) {
+    const v = { id: it.id, turnId: it.turnId, userId: it.userId, userName: it.userName, text: it.text,
+      priority: it.priority, status: it.status, createdTs: it.createdTs, age: Date.now() - it.createdTs };
+    if (it.owner) v.owner = it.owner;
+    if (it.note != null) v.note = it.note;
+    return v;
+  }
+  // The ACTIONABLE queue: pending + claimed only (resolved/expired/shed are dropped from the view),
+  // prioritized (priority desc, then oldest-first within a priority = FIFO) and already bounded.
+  function queueView() {
+    expireStale();
+    const live = [...workItemsMap.values()].filter((it) => it.status === 'pending' || it.status === 'claimed');
+    live.sort((a, b) => (b.priority - a.priority) || (a.createdTs - b.createdTs));
+    return live.map(itemView);
   }
 
   const api = {
@@ -1193,6 +1295,45 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         w.timer.unref?.();
         inboxWaiters.add(w);
       });
+    },
+    // Plan 0473 P4 — WORK-QUEUE operator surface (server-tracked status/owner; the agent holds nothing).
+    // workItems(): the current ACTIONABLE queue (pending + claimed), prioritized + bounded (aged pruned).
+    workItems: () => queueView(),
+    // workItem(id): the SERVER's full record for one item incl. terminal statuses (resolved/expired/shed)
+    // + note/owner — proves the server, not the agent, tracks the state. null if unknown/pruned.
+    workItem: (id) => { expireStale(); const it = workItemsMap.get(id); return it ? itemView(it) : null; },
+    // claim(id): mark an item as being handled (status=claimed) by `owner` — so a second consumer (human
+    // via control.html, or another agent) won't double-handle it. Claimed items are exempt from the pending
+    // aging-out. Returns the updated item view, or null for an unknown/non-pending-or-claimed id.
+    claimWork: (id, { owner = 'agent' } = {}) => {
+      expireStale();
+      const it = workItemsMap.get(id);
+      if (!it || (it.status !== 'pending' && it.status !== 'claimed')) return null;
+      it.status = 'claimed'; it.owner = owner || 'agent'; it.claimedTs = Date.now();
+      log.info('queue', 'claim', { id, owner: it.owner });
+      return itemView(it);
+    },
+    // resolve(id): the judgment is done — move the item OUT of the actionable queue (status=resolved). The
+    // server retains the terminal record (with an optional note) so the state is server-tracked, not held
+    // by the agent. Returns the updated item view, or null for an unknown/already-resolved id.
+    resolveWork: (id, { note = null } = {}) => {
+      const it = workItemsMap.get(id);
+      if (!it || it.status === 'resolved') return null;
+      it.status = 'resolved'; it.resolvedTs = Date.now(); if (note != null) it.note = String(note).slice(0, QUEUE_TEXT_MAX);
+      pruneTerminal();
+      log.info('queue', 'resolve', { id });
+      return itemView(it);
+    },
+    // defer(id): not now — release any claim, push the item to the BACK (lowest priority) and RESTART its
+    // aging clock (defer = "look at it later", not "let it expire immediately"). Stays pending/actionable.
+    deferWork: (id) => {
+      expireStale();
+      const it = workItemsMap.get(id);
+      if (!it || (it.status !== 'pending' && it.status !== 'claimed')) return null;
+      it.status = 'pending'; it.owner = null; it.priority = PRIORITY_DEFERRED; it.createdTs = Date.now(); it.deferred = true;
+      enforceQueueBounds();
+      log.info('queue', 'defer', { id });
+      return itemView(it);
     },
     // Plan 0472 P4 — permissioned guest capability link operator surface.
     // capEnabled: are guest links configured at all (a secret present)?
