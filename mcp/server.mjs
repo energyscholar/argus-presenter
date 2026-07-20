@@ -8,7 +8,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { tools } from './tools.mjs';
+import { activeTools } from './tools.mjs';
 
 // Minimal JSON-schema-property -> zod converter (top-level props only).
 function zshape(input) {
@@ -32,7 +32,9 @@ function zshape(input) {
 }
 
 const server = new McpServer({ name: 'argus-presenter', version: '0.1.0' });
-for (const t of tools) {
+// Plan 0473 P0: conditional registration — voice-capture tools appear ONLY when
+// PRESENTER_VOICE_ENABLED is set; core (text/session/inbox) tools are always present.
+for (const t of activeTools()) {
   server.tool(t.name, t.description, zshape(t.input), async (args) => {
     const result = await t.handler(args || {});
     return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };

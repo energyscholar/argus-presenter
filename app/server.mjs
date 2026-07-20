@@ -16,14 +16,21 @@
  */
 import http from 'http';
 import { createHash } from 'node:crypto';
-import { readFileSync, readdirSync, statSync, existsSync, writeFileSync, watch } from 'fs';
+import { readFileSync, readdirSync, statSync, existsSync, writeFileSync, watch, mkdirSync, unlinkSync, appendFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { tmpdir } from 'os';
 import { WebSocketServer } from 'ws';
 import { assemble } from '../harness/assemble.mjs';
 import * as log from './log.mjs';
 import { createStore, isEphemeral, validOp } from './state.mjs';
 import { validate, summarize } from './validate.mjs';
+import { createAsr } from './asr.mjs';
+import { verifyCapability, mintCapability } from '../lib/capability.mjs';
+import { selectProfile, DEFAULT_PROFILE } from './profiles.mjs';
+import { createHeuristicSummarizer } from './summarizer.mjs';
+import { buildDigest } from './digests.mjs';
+import { deriveTrust, annotate as annotateTrust } from './untrusted.mjs';
 
 // X6 resilience caps.
 const MAX_CONNS = 200;              // connection cap
@@ -38,8 +45,43 @@ const DURABLE_OPS_PER_SEC = 50;     // per-conn durable-op rate (ephemeral is co
 const PING_MS = 5000;               // heartbeat interval
 const STALE_MS = 15000;             // > 3 missed pings ⇒ red (present-but-stale)
 
+// Plan 0470 — inbound voice (mic -> client DSP -> server ASR). The binary PCM lane is an
+// EPHEMERAL sibling of the JSON op lane: branched BEFORE JSON.parse, exempt from the durable-op
+// cap, byte-rate capped, and ignored unless the connection has an active voice session.
+const VOICE_SR = 16000;                        // server-side ASR sample rate (client resamples to this)
+const VOICE_MAX_SESSIONS = 8;                  // RT-22: concurrent active voice sessions (<< MAX_CONNS)
+const VOICE_BYTE_RATE_CAP = 64 * 1024;         // RT-7: sustained per-conn audio byte/s (PCM is 32 KB/s -> 2x headroom)
+const VOICE_SEG_MAX_MS = 30000;                // RT-8: hard segment length cap -> force-cut
+// RT-14 open-segment timeout is resolved PER createServer() (see segTimeoutMs) so tests can override it.
+const VOICE_MIN_SEG_MS = 300;                  // RT-12: shorter than this -> drop (whisper hallucinates on blips)
+const VOICE_SEG_MAX_BYTES = Math.round(VOICE_SR * 2 * VOICE_SEG_MAX_MS / 1000);
+const VOICE_MIN_SEG_BYTES = Math.round(VOICE_SR * 2 * VOICE_MIN_SEG_MS / 1000);
+// F1 fix: the worklet is final-only (buffers a whole utterance, flushes as one BURST at endpoint),
+// so a per-SECOND rate cap wrongly truncates any >~2s utterance. A per-conn TOKEN BUCKET lets a full
+// segment burst through whole (capacity = one 30s segment) while still throttling >2x-realtime floods
+// at the sustained refill rate. The VOICE_SEG_MAX_BYTES force-cut still bounds a non-stop babbler.
+const VOICE_TB_CAPACITY = VOICE_SEG_MAX_BYTES;   // a full 30s segment fits in one burst
+const VOICE_TB_REFILL_BPS = 64 * 1024;           // sustained bytes/sec refill
+const TRANSCRIPT_RING = 500;                   // in-memory cursored transcript log depth
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PAGE = join(__dirname, 'presenter.html');
+
+// Plan 0473 P0 — audio-in is OPTIONAL and USUALLY OFF ⇒ ZERO client cost when off.
+// Parse a truthy env flag (1/true/on/yes). Used as the DEFAULT for createServer({voiceEnabled}).
+function envVoiceEnabled() { return /^(1|true|on|yes)$/i.test(String(process.env.PRESENTER_VOICE_ENABLED || '').trim()); }
+
+// Plan 0473 P0 — the audience page's voice code lives inside AP-VOICE:BEGIN..END markers
+// (HTML comments in body, /* */ block comments inside <script>). When voice is OFF we remove
+// those regions ENTIRELY before serving, so the page pulls ZERO voice bytes (no voice-stub
+// <script>, no APVoice wiring, no mic row) and runs no always-on voice runtime.
+const VOICE_BLOCK_RE = /[^\S\n]*(?:<!--|\/\*)\s*AP-VOICE:BEGIN\s*(?:-->|\*\/)[\s\S]*?(?:<!--|\/\*)\s*AP-VOICE:END\s*(?:-->|\*\/)[^\S\n]*\n?/g;
+function stripVoiceBlocks(html) { return html.replace(VOICE_BLOCK_RE, ''); }
+// Serve presenter.html, stripping the voice block(s) unless voice is enabled for this server.
+export function renderPresenterPage(voiceEnabled) {
+  const html = readFileSync(PAGE, 'utf8');
+  return voiceEnabled ? html : stripVoiceBlocks(html);
+}
 
 // AUTH-ROLE (P5.5): standard seeded hash. The plaintext password NEVER travels —
 // the browser sends sha256(seed + password); the server compares against ROLE_HASH.
@@ -71,7 +113,49 @@ function sendStatic(res, req, absPath, contentType) {
   } catch (e) { res.writeHead(404); res.end('not found'); }
 }
 
-export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null } = {}) {
+export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null, profile = DEFAULT_PROFILE, settlingMs = null, queueMaxPending = null, queueTtlMs = null, perTurnBudgetMs = null, perTurnWrapMs = null, floorThresholds = null } = {}) {
+  // Plan 0473 P1 — SESSION-TYPE PROFILE (the config-knob spine). Selected ONCE at session start;
+  // its knobs are DATA the working-set engine will READ (settling/shedding/budget/floor/digest/queue).
+  // Unknown/absent name falls back cleanly to the default (wearable). Profiles are data, not forks.
+  const SESSION_PROFILE = selectProfile(profile);
+  // Plan 0473 P2 — an explicit `settlingMs` at session start OVERRIDES the active profile's settling
+  // knob. It is threaded THROUGH the profile object (a shallow clone of the same knob shape), NOT a
+  // code branch — so the turn engine still reads the window from api.profile().settlingMs, and the
+  // override is just tuning/testing config. Absent ⇒ the profile's own settlingMs governs.
+  // Plan 0473 P4 — likewise `queueMaxPending` / `queueTtlMs` OVERRIDE the active profile's queuePolicy
+  // knobs (bound + aging TTL), threaded through the SAME knob shape (never a code branch) so the queue
+  // engine keeps reading them from api.profile().queuePolicy and tests can inject a short TTL / small bound.
+  let ACTIVE_PROFILE = SESSION_PROFILE;
+  if (typeof settlingMs === 'number' && settlingMs >= 0) ACTIVE_PROFILE = { ...ACTIVE_PROFILE, settlingMs };
+  if (typeof queueMaxPending === 'number' || typeof queueTtlMs === 'number') {
+    const qp = { ...(ACTIVE_PROFILE.queuePolicy || {}) };
+    if (typeof queueMaxPending === 'number') qp.maxPending = queueMaxPending;
+    if (typeof queueTtlMs === 'number') qp.ttlMs = queueTtlMs;
+    ACTIVE_PROFILE = { ...ACTIVE_PROFILE, queuePolicy: qp };
+  }
+  // Plan 0473 P5 — likewise `perTurnBudgetMs` (the cap) / `perTurnWrapMs` (when the wrap-up cue fires,
+  // ms from turn-open) OVERRIDE the active profile's perTurnBudget, threaded THROUGH the SAME knob shape
+  // (never a code branch). `overrideMs` is a UNIFORM (all-role) tuning/test cap; `wrapMs` an explicit
+  // wrap-lead time. The budget engine keeps reading these from api.profile().perTurnBudget, so tests can
+  // inject a short cap and the wearable's soft/generous per-role budget still governs by default.
+  if (typeof perTurnBudgetMs === 'number' || typeof perTurnWrapMs === 'number') {
+    const ptb = { ...(ACTIVE_PROFILE.perTurnBudget || {}) };
+    ptb.byRole = { ...(ptb.byRole || {}) };
+    if (typeof perTurnBudgetMs === 'number') ptb.overrideMs = perTurnBudgetMs;
+    if (typeof perTurnWrapMs === 'number') ptb.wrapMs = perTurnWrapMs;
+    ACTIVE_PROFILE = { ...ACTIVE_PROFILE, perTurnBudget: ptb };
+  }
+  // Plan 0473 P6 — likewise an explicit `floorThresholds` at session start OVERRIDES/MERGES the active
+  // profile's floorThresholds knob (enable + tune the load levels), threaded THROUGH the SAME knob shape
+  // (never a code branch) so the floor engine keeps reading them from api.profile().floorThresholds.
+  // Absent ⇒ the profile's own floorThresholds govern (wearable = disabled → floor is a no-op).
+  if (floorThresholds && typeof floorThresholds === 'object') {
+    ACTIVE_PROFILE = { ...ACTIVE_PROFILE, floorThresholds: { ...(ACTIVE_PROFILE.floorThresholds || {}), ...floorThresholds } };
+  }
+  // Plan 0473 P0: audio-in is OPTIONAL, DEFAULT OFF. Explicit boolean wins; else the env flag; else off.
+  // When off, the served presenter.html carries ZERO voice code (strip below) — the audience display
+  // is byte-clean of voice. The unified inbox + typed chat are NOT voice and stay on regardless.
+  const VOICE_ENABLED = (typeof voiceEnabled === 'boolean') ? voiceEnabled : envVoiceEnabled();
   // AUTH-1: a shared secret gates the control roles (presenter/ai). When null,
   // behaviour is unchanged / LAN-open — any browser may claim a control role.
   const CONTROL_TOKEN = controlToken || process.env.PRESENTER_CONTROL_TOKEN || null;
@@ -83,6 +167,15 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   const ROLE_SEED = roleSeed || process.env.PRESENTER_ROLE_SEED || 'argus-presenter';
   const ROLE_PW = rolePassword || process.env.PRESENTER_ROLE_PASSWORD || null;
   const ROLE_HASH = ROLE_PW ? sha256hex(ROLE_SEED + ROLE_PW) : null;
+  // Plan 0472 P4 (SECURITY): the HMAC secret for permissioned GUEST capability links (/?cap=…).
+  // From the option or PRESENTER_CAP_SECRET. There is NO insecure default and an empty string is
+  // treated as UNSET — when null, capability links are DISABLED and every presented `cap` is rejected.
+  // NEVER logged or echoed. Independent of the control-token / role-password gate (a cap never grants
+  // a control role; that gate alone governs presenter/ai).
+  const CAP_SECRET = capSecret || process.env.PRESENTER_CAP_SECRET || null;
+  // In-memory revoked-nonce set. api.revokeCap(nonce) adds; a revoked nonce is rejected on hello even
+  // if its HMAC + exp are still valid. In-memory by design (short-lived tokens; a restart = new session).
+  const revokedNonces = new Set();
   const conns = new Map();     // ws -> {id,userId,userName,role}
   const byUser = new Map();    // userId -> ws
   let connSeq = 0;             // per-server connection counter -> stable socketId (S5-ready)
@@ -123,11 +216,12 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   const lastResults = {};      // PRIM-results: promptId -> { userId -> {type,value} } (last beat result per user)
   const lastResultsOrder = []; // Plan 0471 M3: FIFO of promptIds for LRU eviction of lastResults
   const LAST_RESULTS_MAX = 500;// Plan 0471 M3: bound distinct promptIds retained
-  const listeners = { presence: [], result: [], poll: [] };
+  const listeners = { presence: [], result: [], poll: [], transcript: [], inbox: [], turnComplete: [], barge_in: [] };
   const emit = (ev, data) => listeners[ev].forEach((cb) => { try { cb(data); } catch (e) {} });
 
   const CONTROL = join(__dirname, 'control.html');
   const BRANDING = join(__dirname, 'branding', 'argus-presenter.svg');
+  const LIB = join(__dirname, '..', 'lib');   // Plan 0470: voice-stub/capture/worklet live in repo lib/
   // --- Content-module registry. Modules are LOCAL JSON files (NOT the web) in MODULES_DIR
   // (default ./modules; set PRESENTER_MODULES_DIR to point at your content, e.g. a campaign's
   // adventures/). Read + validated on demand, cached by file mtime so repeat loads are snappy.
@@ -211,8 +305,9 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   } catch (e) { log.warn('module', 'watch-failed', { err: String((e && e.message) || e).slice(0, 80) }); }
   const httpServer = http.createServer((req, res) => {
     if (req.url === '/' || req.url.startsWith('/?')) {
+      // Plan 0473 P0: strip the voice block(s) unless voice is enabled ⇒ zero voice bytes when off.
       res.writeHead(200, htmlHeaders());
-      res.end(readFileSync(PAGE, 'utf8'));
+      res.end(renderPresenterPage(VOICE_ENABLED));
     } else if (req.url === '/control' || req.url.startsWith('/control?')) {
       res.writeHead(200, htmlHeaders());
       res.end(readFileSync(CONTROL, 'utf8'));
@@ -229,6 +324,15 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       // AUT-3: serve the SINGLE-SOURCE validator so the Content Creator imports the SAME
       // validate()/summarize() the server uses (no duplication) for in-browser validation.
       sendStatic(res, req, join(__dirname, 'validate.mjs'), 'text/javascript; charset=utf-8');
+    } else if (req.url === '/lib/voice-stub.js') {
+      // Plan 0470 Tier 0: the sub-1KB always-on voice stub (dynamic-imports Tier 1 on enable()).
+      sendStatic(res, req, join(LIB, 'voice-stub.js'), 'text/javascript; charset=utf-8');
+    } else if (req.url === '/lib/voice-capture.mjs') {
+      // Plan 0470 Tier 1 controller — served only when a client enable()s voice (T-LAZY).
+      sendStatic(res, req, join(LIB, 'voice-capture.mjs'), 'text/javascript; charset=utf-8');
+    } else if (req.url === '/lib/voice-worklet.js') {
+      // Plan 0470 Tier 1 DSP worklet (pure JS; loaded via audioWorklet.addModule).
+      sendStatic(res, req, join(LIB, 'voice-worklet.js'), 'text/javascript; charset=utf-8');
     } else if (req.url === '/branding/argus-presenter.svg') {
       // Default idle branding art (self-contained animated SVG; no external dep).
       sendStatic(res, req, BRANDING, 'image/svg+xml; charset=utf-8');
@@ -301,8 +405,53 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       const modules = (series.moduleIds || []).map((mid) => moduleSummary(mid, 'missing'));
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-cache' });
       res.end(JSON.stringify({ id, series, modules }));
+    } else if (req.url === '/api/situation' || req.url.startsWith('/api/situation?')) {
+      // Plan 0473 P8 — the HUMAN DIGEST FACE reads the SAME bounded WORKING SET the AI consumes via
+      // presenter_situation. GET returns api.situation for a per-page consumer id (server-held cursor),
+      // so the human face (control.html) and the AI face (MCP) are ONE working set. OPSEC: the roster in
+      // the digest carries control-only fields (ip/socketId), so this is GATED behind the control
+      // credential when one is configured — parity with the presence feed + module write-back. Ungated
+      // server (LAN/tests, no credential) → open, like the rest of the control surface.
+      if (!httpControlAuthed(req)) { res.writeHead(403, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'forbidden' })); return; }
+      const cid = new URLSearchParams((req.url.split('?')[1] || '')).get('c') || 'default';
+      Promise.resolve(api.situation({ consumerId: 'ctl:' + cid })).then((sit) => {
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(JSON.stringify(sit));
+      }).catch((e) => { res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: String((e && e.message) || e) })); });
+    } else if (req.url === '/api/work' || req.url.startsWith('/api/work?')) {
+      // Plan 0473 P8 — the HUMAN one-click resolve/claim/defer. A digest button POSTs {id, op, note?,
+      // owner?}; the op routes through the SAME api.resolveWork / claimWork / deferWork the MCP tools
+      // call — so the two faces never disagree (server-tracked status/owner prevent double-handling).
+      if (req.method !== 'POST') { res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'method not allowed' })); return; }
+      if (!httpControlAuthed(req)) { res.writeHead(403, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'forbidden' })); return; }
+      const CAP = 16 * 1024; let body = ''; let aborted = false;
+      req.on('data', (chunk) => { if (aborted) return; body += chunk; if (body.length > CAP) { aborted = true; res.writeHead(413, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'too large' })); req.destroy(); } });
+      req.on('end', () => {
+        if (aborted) return;
+        let msg; try { msg = JSON.parse(body || '{}'); } catch (e) { res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'invalid json' })); return; }
+        const id = msg && msg.id, op = msg && msg.op;
+        if (typeof id !== 'string' || !id) { res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'missing id' })); return; }
+        let item = null;
+        if (op === 'resolve') item = api.resolveWork(id, { note: msg.note != null ? String(msg.note) : null });
+        else if (op === 'claim') item = api.claimWork(id, { owner: msg.owner != null ? String(msg.owner) : 'presenter' });
+        else if (op === 'defer') item = api.deferWork(id);
+        else { res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'bad op (resolve|claim|defer)' })); return; }
+        if (!item) { res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'no such actionable item' })); return; }
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: true, item }));
+      });
     } else { res.writeHead(404); res.end('not found'); }
   });
+  // Plan 0473 P8 — control-credential gate for the HTTP working-set surface (situation + work). Mirrors
+  // the WS control-role rule (L~501): GRANTED iff ungated (no token AND no password hash) OR the request
+  // carries a token (x-control-token header, or ?token=) that matches CONTROL_TOKEN or ROLE_HASH.
+  function httpControlAuthed(req) {
+    const gated = !!(CONTROL_TOKEN || ROLE_HASH);
+    if (!gated) return true;
+    const q = new URLSearchParams((req.url.split('?')[1] || ''));
+    const token = req.headers['x-control-token'] || q.get('token');
+    return (CONTROL_TOKEN && token === CONTROL_TOKEN) || (ROLE_HASH && token === ROLE_HASH);
+  }
   const wss = new WebSocketServer({ server: httpServer, maxPayload: MAX_PAYLOAD });
   // Plan 0471 C1: a server-level socket error (bad handshake, etc.) must never reach
   // Node's default "Unhandled 'error'" path (which terminates the process).
@@ -366,7 +515,11 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       try { log.warn('ws', 'socket-error', { socketId: (conns.get(ws) || {}).id, err: String(e && e.message || e) }); } catch {}
       try { ws.close(1011); } catch {}
     });
-    ws.on('message', (buf) => {
+    ws.on('message', (buf, isBinary) => {
+      // Plan 0470 (RT-6): the binary PCM lane branches BEFORE JSON.parse — audio is NEVER
+      // parsed as JSON, is exempt from the durable-op cap, and is ignored unless the conn
+      // has an active voice session (RT-7). Route it and return.
+      if (isBinary) { handleVoiceBinary(conns.get(ws), ws, buf); return; }
       let m; try { m = JSON.parse(buf.toString()); } catch (e) { return; }
       if (m === null || typeof m !== 'object') return;   // Plan 0471 C2: null/primitive frame → no dispatch (null.t would throw)
       try {
@@ -375,27 +528,62 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       if (m.t === 'hello') {
         c.userId = m.userId || ('anon-' + Math.random().toString(36).slice(2, 8));
         c.userName = m.userName || c.userId;
-        // AUTH-1 / AUTH-ROLE: control roles require a credential when one is configured.
-        // GRANTED iff: ungated (no token AND no password hash) OR the hello token matches
-        // CONTROL_TOKEN (when set) OR it matches ROLE_HASH (the seeded password hash, when
-        // set). Otherwise downgrade to participant. CONTROL_TOKEN-only behaves exactly as
-        // before; neither configured ⇒ ungated (LAN-open back-compat).
-        let reqRole = m.role || 'participant';
-        if (reqRole === 'presenter' || reqRole === 'ai') {
-          const gated = !!(CONTROL_TOKEN || ROLE_HASH);
-          const ok = !gated
-            || (CONTROL_TOKEN && m.token === CONTROL_TOKEN)
-            || (ROLE_HASH && m.token === ROLE_HASH);
-          if (!ok) {
-            log.warn('auth', 'control-denied', { userId: c.userId, role: reqRole });
-            reqRole = 'participant';
+        // Plan 0472 P4 (SECURITY): a signed, scoped, revocable GUEST capability link (?cap=<token>).
+        // The HMAC is verified over the RAW payload bytes BEFORE any field is trusted; exp + revocation
+        // are enforced; the rejection reason stays INTERNAL (a generic warn only — never the reason or
+        // any secret/nonce is surfaced). A presented cap makes this connection a GUEST: role is
+        // HARD-FORCED to participant (never presenter/ai, whatever the payload/hello claims), identity +
+        // scope come from the (authentic) token, and the client CANNOT widen either. Disabled entirely
+        // when no secret is configured. A cap NEVER bypasses the control gate below — it is a separate,
+        // guest-only path.
+        let capGrant = null;
+        if (m.cap) {
+          if (CAP_SECRET) {
+            try {
+              const v = verifyCapability(m.cap, CAP_SECRET, { now: Date.now(), isRevoked: (n) => revokedNonces.has(n) });
+              if (v.ok) capGrant = v.payload;
+              else log.warn('cap', 'invalid-capability', { socketId: c.id });   // GENERIC: no reason, no secret material
+            } catch (e) { log.warn('cap', 'invalid-capability', { socketId: c.id }); }   // never let a bad token crash the conn
+          } else {
+            log.warn('cap', 'capability-disabled', { socketId: c.id });   // links disabled: no secret configured
           }
         }
-        c.role = reqRole;
+        if (capGrant) {
+          // GUEST identity: participant only. Attribution is bound to the token nonce (not client-claimed),
+          // so a guest can neither impersonate another userId nor promote itself.
+          c.role = 'participant';
+          c.isGuest = true;
+          c.capScope = capGrant.scope;
+          c.capNonce = capGrant.nonce;
+          c.userId = 'guest:' + capGrant.nonce;
+          if (capGrant.name) c.userName = capGrant.name;
+        } else {
+          // AUTH-1 / AUTH-ROLE: control roles require a credential when one is configured.
+          // GRANTED iff: ungated (no token AND no password hash) OR the hello token matches
+          // CONTROL_TOKEN (when set) OR it matches ROLE_HASH (the seeded password hash, when
+          // set). Otherwise downgrade to participant. CONTROL_TOKEN-only behaves exactly as
+          // before; neither configured ⇒ ungated (LAN-open back-compat).
+          let reqRole = m.role || 'participant';
+          if (reqRole === 'presenter' || reqRole === 'ai') {
+            const gated = !!(CONTROL_TOKEN || ROLE_HASH);
+            const ok = !gated
+              || (CONTROL_TOKEN && m.token === CONTROL_TOKEN)
+              || (ROLE_HASH && m.token === ROLE_HASH);
+            if (!ok) {
+              log.warn('auth', 'control-denied', { userId: c.userId, role: reqRole });
+              reqRole = 'participant';
+            }
+          }
+          c.role = reqRole;
+        }
         byUser.set(c.userId, ws);
         // welcome.role = the EFFECTIVE granted role, so the client learns if it was
         // silently downgraded (wrong/absent password) and can surface feedback.
-        send(ws, { t: 'welcome', userId: c.userId, socketId: c.id, role: c.role });
+        // RT-26 consent surface: tell every client whether recognized speech is being written to
+        // disk. Default false (ephemeral-only) — saving people's words silently is a consent violation.
+        // For a GUEST (capability link), surface guest:true + the granted scope so the client knows
+        // exactly what it may do (talk/type) — the same consent/transparency surface as any participant.
+        send(ws, { t: 'welcome', userId: c.userId, socketId: c.id, role: c.role, transcriptPersisting: TRANSCRIPT_PERSIST, ...(c.isGuest ? { guest: true, scope: c.capScope } : {}) });
         // C4/X1: converge the (re)connecting client. If it reports a lastVersion we
         // can still replay from the op-log, send only the MISSED ops (resync);
         // otherwise a full role-filtered snapshot (Memento).
@@ -481,10 +669,34 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
           };
           send(ws, { t: 'attendance', roster: self, summary });
         }
+      } else if (m.t === 'voice_seg_start') {
+        // Plan 0470: control frame bracketing an utterance (binary PCM follows on the same conn).
+        voiceSegStart(c, ws, m);
+      } else if (m.t === 'voice_seg_end') {
+        voiceSegFinalize(c, ws, {});   // finalize -> WAV -> WARM ASR -> transcript out
+      } else if (m.t === 'chat') {
+        // Plan 0472: typed text is FIRST-CLASS input. Land it in the unified inbox attributed to the
+        // SERVER-AUTHORITATIVE connection identity (never the client payload). D5 = DUAL-WRITE: also
+        // drive the chat STORE slice so the existing read-perm'd chat display (P3) keeps working.
+        // Plan 0472 P4: a GUEST may type ONLY if its capability scope includes 'type' (the scope is
+        // token-signed, so it cannot be widened by the client). Non-guests are unaffected.
+        if (c && c.isGuest && !(c.capScope || []).includes('type')) { log.warn('cap', 'type-out-of-scope', { socketId: c.id }); return; }
+        if (c && typeof m.text === 'string' && m.text.length) {
+          c.lastActive = Date.now();   // ATT: typing = deliberate human interaction
+          emitInbox({ kind: 'text', userId: c.userId, userName: c.userName, role: c.role, text: m.text, conf: null, final: true, isGuest: !!c.isGuest });
+          const id = (typeof m.id === 'string' && m.id) ? m.id : (c.userId + '-' + Date.now());
+          handleOp(c, { path: 'chat', verb: 'add', value: { id, text: m.text, name: c.userName } });   // display slice (best-effort; perm-gated)
+        }
       }
       } catch (e) { try { log.warn('ws', 'dispatch-error', { err: String(e && e.message || e) }); } catch {} }   // Plan 0471 C2: defense-in-depth
     });
-    ws.on('close', () => { const c = conns.get(ws); if (c && c.userId) byUser.delete(c.userId); conns.delete(ws); updateChatListeners(); emit('presence', presence()); pushPresence(); });   // Plan 0471 M4: refresh the control user-list on disconnect (connect already does)
+    ws.on('close', () => {
+      const c = conns.get(ws);
+      if (c && c.voice && c.voice.active) { if (c.voice.timer) clearTimeout(c.voice.timer); c.voice.active = false; voiceSessions = Math.max(0, voiceSessions - 1); }   // RT-14: drop an orphaned open segment
+      if (c && c.userId) byUser.delete(c.userId); conns.delete(ws); updateChatListeners(); emit('presence', presence());
+      pushPresence();   // Plan 0471 M4: refresh the control user-list on disconnect (connect already does)
+      evaluateFloor();   // Plan 0473 P6: a disconnect can lower the load (speaker gone) — reassess the floor
+    });
   });
 
   // ---- Op protocol (Plan 0435 C3): {t:'op'} -> store.apply -> broadcast diff ----
@@ -603,6 +815,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       case 'op': handleOp(c, { path: a.path, verb: a.verb, value: a.value, opId: a.opId }); break;   // drive an op as the presenter
       // ATT (Plan 0466, decision 1): presenter toggles whether attendees may see the roster.
       case 'set_roster_visible': rosterVisibleToAttendees = !!a.value; log.info('att', 'roster-visible', { value: rosterVisibleToAttendees }); break;
+      case 'voice_enable': api.voiceEnable(a.target || 'all'); break;   // Plan 0470: request inbound voice on a target
       case 'set_module': api.setModule(a.module || { beats: a.beats || [] }); break;   // Group I
       case 'show_beat': api.showBeat(a.id != null ? a.id : (a.index | 0)); break;   // by id (branch nav) or index
       case 'show_default': api.showDefault(); break;   // DEF-1: Home → module title page (or branding fallback)
@@ -731,9 +944,736 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     return { tally: counts, count, spec: poll.spec };
   }
 
+  // ---- Plan 0470: inbound voice (binary PCM lane -> WARM ASR seam -> transcript out) ----
+  // The ASR worker is PLUGGABLE (PRESENTER_ASR_CMD) and WARM: created lazily on the first
+  // voice-enable / seg-start, model loaded ONCE, kept alive across every segment (RT-17/25).
+  let asr = null;
+  const segTimeoutMs = parseInt(process.env.PRESENTER_VOICE_SEG_TIMEOUT_MS || '3000', 10);   // RT-14 (per-server; test-overridable)
+  let voiceSessions = 0;                 // active voice sessions (capped, RT-22)
+  // Plan 0472: the ONE unified voice+text INBOX. Voice transcripts AND typed text land here as a
+  // single cursored ring; `kind` discriminates them and one global monotonic `seq` interleaves them
+  // by arrival. getTranscripts is a kind==='voice' VIEW over this ring (back-compat alias).
+  const inbox = [];                      // cursored in-memory ring (presenter_inbox / presenter_transcript read this)
+  let inboxSeq = 0;
+  // A stable id for this server instance's session — every inbox item carries it so a consumer can
+  // tell a fresh server run from a resumed one (the ring is in-memory; a restart starts a new session).
+  const SESSION_ID = 'sess-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+  // Long-poll waiters (Plan 0472): each pending presenter_inbox({waitMs}) that had nothing ready
+  // registers ONE waiter here; it is resolved (and removed) on the next emit, at its timeout, or on
+  // server close. Never left dangling — no leaked timers or promises.
+  const inboxWaiters = new Set();
+  // ---- Plan 0473 P2: TURN COALESCING (fragments -> turns) ----
+  // A speaker's CONSECUTIVE inbox items (voice OR typed text) are grouped into a TURN by a per-speaker
+  // SETTLING WINDOW read from the ACTIVE PROFILE (api.profile().settlingMs — wearable = 400ms; consumed
+  // as a knob, never branched on the profile NAME). A new item from the SAME identity within the window
+  // EXTENDS the open turn (shared turnId, timer reset). A gap > settlingMs, OR an item from a DIFFERENT
+  // identity, CLOSES the open turn (fires `turnComplete`) and starts a fresh one. Single conversational
+  // floor (one open turn) — a speaker change is itself a close, so turns are NEVER merged across
+  // identities. `turnComplete` is DISTINCT from `final`: `final` = one ASR/segment result is complete
+  // (0472 hygiene); `turnComplete` = the speaker's TURN has settled. An item can be final:true while its
+  // turn is still open (turnComplete:false). Server-side; carried on the reserved item fields.
+  let turnSeq = 0;
+  let openTurn = null;   // { turnId, userId, items:[entry...], timer, wrapTimer, budgetTimer, budgetMs, startedAt } | null
+
+  // ---- Plan 0473 P7: ROLLING SUMMARY (continuity BEYOND the recent-N turns) ----
+  // The situation digest (P3) surfaces only the last-N turns; a session is UNBOUNDED in duration, so
+  // context OLDER than N would be LOST (the agent — even a solo wearable over a long conversation —
+  // goes amnesiac past N). The rolling summary RETAINS that aged-out context, itself BOUNDED, and is
+  // PRECOMPUTED INCREMENTALLY as turns SETTLE/AGE (never computed on-read) so situation() never blocks.
+  //
+  // F-10 SEAM: the updater is a SWAPPABLE unit behind this single `summarizer` reference. DEFAULT = the
+  // cheap incremental heuristic (app/summarizer.mjs): NO LLM, NO new dependency, NO agent cognition. A
+  // future cheap-model (Haiku) worker or an agent-assist presenter_set_summary would just reassign
+  // `summarizer` to another {kind,onTurnAged,onShed,view} — the engine calls only that interface, and
+  // Tier-1/situation() NEVER hard-depends on an LLM. NONE of those replacements is built here.
+  const summarizer = createHeuristicSummarizer();
+  // Staging ring modelling the recent-N window BY TURN COUNT (mirrors coalesceTurns(...).slice(-N)):
+  // a turn folds into the summary EXACTLY when a newer settled turn pushes it out of the last-N. O(1)/turn.
+  const settledTurnRing = [];
+  // Feed ONE freshly-settled turn to the staging ring; the evicted head (now older than recent-N) folds
+  // into the rolling summary. Incremental + non-blocking (pure in-memory), called from closeTurn.
+  function stageSettledTurn(t) {
+    const text = t.items.map((i) => i.text || '').join(' ').trim();
+    if (!text) return;                         // an empty turn carries no continuity — skip
+    const last = t.items[t.items.length - 1];
+    settledTurnRing.push({ turnId: t.turnId, userId: t.userId, userName: (last && last.userName) || null, text });
+    while (settledTurnRing.length > RECENT_TURNS_N) summarizer.onTurnAged(settledTurnRing.shift());
+  }
+
+  // ---- Plan 0473 P5: PROACTIVE per-turn budget (transparent — never a silent truncation) ----
+  // A single conversational TURN is TIME-bounded by the ACTIVE PROFILE's perTurnBudget knob (per role/
+  // trust — read here, NEVER a name fork). This is the USER-FACING proactive layer that sits ABOVE the
+  // hard VOICE_SEG_MAX_BYTES backstop (which is kept). It matters most for VOICE ("talkative granny who
+  // won't yield the floor"), but the engine is turn-generic (voice OR text). As an open turn approaches
+  // its budget the speaker gets a visible WRAP-UP cue BEFORE the cap; AT the cap the turn is gracefully
+  // CLOSED/yielded and the speaker NOTIFIED — the captured content is PRESERVED (settled), never cut.
+  const DEFAULT_TURN_BUDGET_MS = 120000;   // fallback when a profile/role sets no budget (generous, soft)
+  const WRAP_AT_FRACTION = 0.8;            // default: wrap-up cue fires at 80% of the budget (lead = 20%)
+  // The budget (ms) for a speaker's role/TRUST: an injected uniform override wins; else the profile's
+  // per-role value; else — CRUCIALLY for a GUEST — the per-TRUST value; else the participant default; else
+  // the module default. The TRUST fallback (Plan 0473 P12) is what makes the guest's TIGHT budget engage:
+  // the server hard-forces a guest's role to 'participant', so a budget keyed only by role would miss the
+  // guest's tight leash and silently hand it the generous default. The guest profile deliberately authors
+  // its tight ms under byRole.GUEST (a trust key) and NO byRole.participant, so the role lookup cleanly
+  // misses and the trust fallback engages — DATA, never a profile-NAME fork (every existing role lookup is
+  // unchanged: role resolves first, so wearable/rpg/teaching behaviour is untouched).
+  function perTurnBudgetFor(role, trust) {
+    const ptb = api.profile().perTurnBudget || {};
+    if (typeof ptb.overrideMs === 'number' && ptb.overrideMs >= 0) return ptb.overrideMs;
+    const byRole = ptb.byRole || {};
+    if (typeof byRole[role] === 'number') return byRole[role];
+    if (typeof trust === 'string' && typeof byRole[trust] === 'number') return byRole[trust];   // P12: guest tight budget routes by trust
+    if (typeof byRole.participant === 'number') return byRole.participant;
+    return DEFAULT_TURN_BUDGET_MS;
+  }
+  // When (ms from turn-open) the WRAP-UP cue fires: an explicit injected wrapMs wins; else a fraction of
+  // the budget. Clamped strictly inside (0, budget) so wrap always precedes the cap.
+  function perTurnWrapAt(budgetMs) {
+    const ptb = api.profile().perTurnBudget || {};
+    const at = (typeof ptb.wrapMs === 'number' && ptb.wrapMs >= 0) ? ptb.wrapMs : Math.round(budgetMs * WRAP_AT_FRACTION);
+    return Math.max(0, Math.min(at, budgetMs - 1));
+  }
+  // Deliver a server→client signal to a SPEAKER by userId (their live socket). Never silent: this is how
+  // the wrap-up / close is surfaced to the person holding the floor.
+  function notifySpeaker(userId, msg) { const ws = byUser.get(userId); if (ws) send(ws, msg); }
+  // Arm the budget timers for a FRESHLY-OPENED turn. Measured from turn-open and NOT reset when the turn
+  // is extended (it bounds total turn duration — the whole point for a non-stop speaker). Cleared in
+  // closeTurn. budgetMs <= 0 ⇒ no proactive budget (the hard backstop still applies).
+  function armTurnBudget(t, role, trust) {
+    const budgetMs = perTurnBudgetFor(role || 'participant', trust);
+    if (!(budgetMs > 0)) return;
+    t.budgetMs = budgetMs; t.startedAt = Date.now();
+    const wrapAt = perTurnWrapAt(budgetMs);
+    if (wrapAt > 0) { t.wrapTimer = setTimeout(() => onTurnWrap(t), wrapAt); t.wrapTimer.unref?.(); }
+    t.budgetTimer = setTimeout(() => onTurnBudgetCap(t), budgetMs); t.budgetTimer.unref?.();
+  }
+  // Proactive WRAP-UP: the turn is nearing its budget — cue the speaker to wrap up. Fired ONCE, only while
+  // this turn is still the open one (a turn that already closed early is a no-op).
+  function onTurnWrap(t) {
+    if (openTurn !== t || t.budgetWrapped) return;
+    t.budgetWrapped = true;
+    const remainingMs = Math.max(0, t.budgetMs - (Date.now() - t.startedAt));
+    log.info('voice', 'turn-budget-wrap', { turnId: t.turnId, userId: t.userId, remainingMs });
+    notifySpeaker(t.userId, { t: 'turn_budget', state: 'wrap', turnId: t.turnId, budgetMs: t.budgetMs, remainingMs, mode: (api.profile().perTurnBudget || {}).mode || 'soft' });
+  }
+  // AT the cap: gracefully CLOSE/yield the turn and NOTIFY the speaker (never a silent cut). Finalize any
+  // active voice segment for that speaker so the mic YIELDS (the captured audio is still transcribed, not
+  // discarded), then settle the turn (turnComplete + work derivation) with reason 'budget'.
+  function onTurnBudgetCap(t) {
+    if (openTurn !== t) return;
+    const userId = t.userId, turnId = t.turnId;
+    log.warn('voice', 'turn-budget-cap', { turnId, userId, budgetMs: t.budgetMs });
+    notifySpeaker(userId, { t: 'turn_budget', state: 'closed', turnId, reason: 'budget', budgetMs: t.budgetMs, mode: (api.profile().perTurnBudget || {}).mode || 'soft' });
+    // Yield the floor: finalize (do NOT discard) any active voice segment for this speaker.
+    const ws = byUser.get(userId); const c = ws ? conns.get(ws) : null;
+    if (c && c.voice && c.voice.active) { try { voiceSegFinalize(c, ws, {}); } catch (e) {} }
+    closeTurn('budget');
+  }
+
+  // Close the open turn: mark its items complete (ring update, so a later read sees a settled turn) and
+  // fire ONE `turnComplete` signal (event). Idempotent when nothing is open.
+  function closeTurn(reason = 'settle') {
+    if (!openTurn) return null;
+    const t = openTurn; openTurn = null;
+    if (t.timer) { clearTimeout(t.timer); t.timer = null; }
+    if (t.wrapTimer) { clearTimeout(t.wrapTimer); t.wrapTimer = null; }         // P5: clear budget timers
+    if (t.budgetTimer) { clearTimeout(t.budgetTimer); t.budgetTimer = null; }
+    for (const it of t.items) it.turnComplete = true;
+    const last = t.items[t.items.length - 1];
+    const signal = { turnId: t.turnId, userId: t.userId, role: last.role,
+      seqs: t.items.map((i) => i.seq), lastSeq: last.seq, count: t.items.length,
+      ts: Date.now(), reason };
+    emit('turnComplete', signal);
+    // Plan 0473 P4: a SETTLED turn is the substrate a work item is DERIVED from (cheap rule below).
+    deriveWorkFromTurn(t, last);
+    // Plan 0473 P7: a SETTLED turn is also staged for the ROLLING SUMMARY — when it later ages out of
+    // the recent-N window it folds into the summary (continuity beyond recent-N). Incremental, non-blocking.
+    stageSettledTurn(t);
+    log.info('voice', 'turn-complete', { turnId: t.turnId, userId: t.userId, items: signal.count, reason });
+    return signal;
+  }
+  // Attach turnId + turnComplete to a freshly-emitted inbox item, opening/extending/closing turns.
+  function assignTurn(entry) {
+    const settlingMs = api.profile().settlingMs;   // consume the profile knob (never the profile NAME)
+    if (openTurn && openTurn.userId !== entry.userId) closeTurn('speaker-change');   // never merge identities
+    if (openTurn) {                                 // same speaker within the window ⇒ extend the turn
+      entry.turnId = openTurn.turnId;
+      entry.turnComplete = false;
+      openTurn.items.push(entry);
+    } else {                                        // open a fresh turn
+      const turnId = 'turn-' + (++turnSeq);
+      entry.turnId = turnId;
+      entry.turnComplete = false;
+      openTurn = { turnId, userId: entry.userId, items: [entry], timer: null };
+      armTurnBudget(openTurn, entry.role, entry.trust);   // Plan 0473 P5/P12: budget clock keyed by role + TRUST (guest = tight)
+    }
+    if (openTurn.timer) clearTimeout(openTurn.timer);
+    if (settlingMs > 0) {                           // (re)arm: settle after settlingMs of silence
+      openTurn.timer = setTimeout(() => closeTurn('settle'), settlingMs);
+      openTurn.timer.unref?.();
+    } else {                                        // settlingMs === 0 ⇒ every item is its own settled turn
+      closeTurn('settle');
+    }
+  }
+  // RT-26 persistence policy. Recognized text is EPHEMERAL BY DEFAULT — it lives ONLY in the
+  // bounded ring above; ring eviction / restart losing history is INTENDED. Disk persistence is
+  // OPT-IN via PRESENTER_TRANSCRIPT_PERSIST; when ON, one JSONL line per FINAL transcript is
+  // appended to a STABLE file under PRESENTER_TRANSCRIPT_DIR (so a restart appends, not truncates).
+  // Audio segment WAVs are ALWAYS deleted after ASR regardless of the flag — only text is ever
+  // persistable. When ON, clients are TOLD (welcome.transcriptPersisting) — never save silently.
+  const TRANSCRIPT_PERSIST = /^(1|true|yes|on)$/i.test(process.env.PRESENTER_TRANSCRIPT_PERSIST || '');
+  const TRANSCRIPT_DIR = process.env.PRESENTER_TRANSCRIPT_DIR || join(__dirname, '..', '.transcripts');
+  const TRANSCRIPT_FILE = join(TRANSCRIPT_DIR, 'transcripts.jsonl');
+  // RT-26 (Plan 0472: applies to TEXT too). Persist ONE JSONL line per inbox item — voice or text —
+  // only when PRESENTER_TRANSCRIPT_PERSIST is ON. Default OFF ⇒ nothing touches disk (ephemeral ring).
+  function persistInboxItem(e) {
+    if (!TRANSCRIPT_PERSIST) return;   // default OFF: nothing touches disk
+    try { mkdirSync(TRANSCRIPT_DIR, { recursive: true }); appendFileSync(TRANSCRIPT_FILE, JSON.stringify({ ts: e.ts, kind: e.kind, userId: e.userId, userName: e.userName, role: e.role, trust: e.trust, seq: e.seq, text: e.text, conf: e.conf }) + '\n'); }
+    catch (err) { log.warn('voice', 'transcript-persist-fail', { msg: String(err && err.message || err) }); }
+  }
+  function ensureAsr() {
+    if (!asr) asr = createAsr({ cwd: join(__dirname, '..'), onReady: () => announceVoiceStatus({ ready: true }) });
+    return asr;
+  }
+  function announceVoiceStatus(obj) {   // "recognizer ready" / status -> control roles only
+    for (const [ws, c] of conns.entries()) if (c.role === 'presenter' || c.role === 'ai') send(ws, { t: 'voice_status', ...obj });
+  }
+  // Wrap 16 kHz mono PCM16 in a minimal WAV container (whisper's native input; no transcode).
+  function pcm16ToWav(pcm) {
+    const h = Buffer.alloc(44);
+    h.write('RIFF', 0); h.writeUInt32LE(36 + pcm.length, 4); h.write('WAVE', 8);
+    h.write('fmt ', 12); h.writeUInt32LE(16, 16); h.writeUInt16LE(1, 20); h.writeUInt16LE(1, 22);
+    h.writeUInt32LE(VOICE_SR, 24); h.writeUInt32LE(VOICE_SR * 2, 28); h.writeUInt16LE(2, 32); h.writeUInt16LE(16, 34);
+    h.write('data', 36); h.writeUInt32LE(pcm.length, 40);
+    return Buffer.concat([h, pcm]);
+  }
+  // ---- Plan 0473 P13: BARGE-IN + OWN-TURNS (ONE coherent conversation object) ----
+  // Cross-plan (0469 outbound TTS + 0470 client). The OUTBOUND TTS reply leg (Plan 0469) is NOT built in
+  // this branch, so P13 provides the barge-in MECHANISM + a fenced client seam, NOT real TTS audio.
+  //
+  // OWN-TURNS. When the AI/controller emits an outbound reply (emitOwnTurn, below) it lands in the SAME
+  // unified inbox as any other turn — attributed role:'ai' (⇒ trust:'self' via deriveTrust), flagged
+  // own:true. So presenter_situation / presenter_inbox surface ONE coherent conversation that INCLUDES
+  // the agent's OWN contributions, not just inbound user turns. Being trust:'self' it is NOT fenced (the
+  // agent is the trusted instruction side), and being own:true it is NOT re-queued as a judgment item
+  // for the agent (deriveWorkFromTurn skips own-turns) — the agent does not judge its own reply.
+  //
+  // SPEAKING-STATE. `speaking` is true while the agent's TTS reply is (notionally) playing. It is set by
+  // emitOwnTurn (the agent began speaking) and can be set/cleared explicitly via api.setSpeaking — the
+  // seam Plan 0469 drives from real TTS start/stop.
+  let speaking = false;
+  function setSpeaking(on) { speaking = on === true; log.info('barge', 'speaking', { speaking }); return speaking; }
+  // BARGE-IN. A user speaking WHILE the agent is speaking is an interruption: signal the speaker(s) to
+  // DUCK/STOP the TTS (the actual audio duck is the Plan-0469 client seam — here we just emit the cue),
+  // CLEAR speaking-state, and let the interrupting speech be recorded as an inbound turn independently
+  // (the emitInbox path already stored it — nothing is lost). Broadcast to clients + emit a server event.
+  function bargeIn(by) {
+    const signal = { t: 'barge_in', by: by || null, ts: Date.now() };
+    speaking = false;                                   // the TTS is being interrupted — stop "speaking"
+    for (const ws of conns.keys()) send(ws, signal);    // client seam: DUCK/STOP cue to the speaker(s)
+    emit('barge_in', signal);
+    log.info('barge', 'barge-in', { by: by && by.userId });
+    return signal;
+  }
+  // Interrupt ONLY when the agent IS speaking and the incoming speech is NOT the agent's own reply (an
+  // own-turn never barges in on its own TTS). Idempotent per speaking-episode: bargeIn clears speaking,
+  // so a second inbound item cannot re-fire until the agent speaks again.
+  function maybeBargeIn(by, isOwn) {
+    if (!speaking || isOwn === true) return null;
+    return bargeIn(by);
+  }
+
+  // Plan 0472: land ONE item into the unified inbox. The item is a FLAT, EXTENSIBLE object. Plan 0473
+  // P2 now populates the reserved `turnId` + `turnComplete` fields via assignTurn (below); future
+  // increments may add more (annotations{...}, identity{...}, dropped) WITHOUT overloading these.
+  // `final` means "segment-final ASR result" (this recognition pass is complete) — it does NOT mean the
+  // speaker's turn is over. `turnComplete` (set when the turn settles) is the DISTINCT turn-end signal.
+  // Plan 0473 P13: `own` marks the AGENT's OWN outbound reply (role:'ai', trust:'self') so it joins the
+  // conversation object but never barges in on itself and is never queued as a judgment item.
+  function emitInbox({ kind, userId, userName, role, text, conf = null, final = true, sessionId, isGuest = false, own = false }) {
+    const entry = {
+      seq: ++inboxSeq, kind, userId, userName, role: role || null,
+      // Plan 0473 P9: the SERVER-AUTHORITATIVE trust level, stamped at ingest from role + isGuest (both
+      // server-decided; never client-reported). Carried on every item so every downstream consumer
+      // (inbox, coalesced turns, work queue) can DELIMIT untrusted content as data. Guest wins first
+      // because the server hard-forces a guest's role to 'participant'.
+      trust: deriveTrust(role, isGuest),
+      text, conf: (conf == null ? null : conf), final: final !== false,
+      ts: Date.now(), sessionId: sessionId || SESSION_ID,
+    };
+    if (own === true) entry.own = true;   // Plan 0473 P13: the agent's OWN outbound reply (never fenced/queued/self-barged)
+    inbox.push(entry); if (inbox.length > TRANSCRIPT_RING) inbox.shift();
+    assignTurn(entry);   // Plan 0473 P2: attach turnId + turnComplete (may settle the prior turn) BEFORE emit
+    persistInboxItem(entry);   // RT-26: no-op unless PRESENTER_TRANSCRIPT_PERSIST is ON (voice AND text)
+    // Back-compat: voice items still surface to control roles as {t:'transcript'} (presenter voice host).
+    if (kind === 'voice') {
+      for (const [ws, c] of conns.entries()) if (c.role === 'presenter' || c.role === 'ai') send(ws, { t: 'transcript', ...entry });
+      emit('transcript', entry);
+    }
+    emit('inbox', entry);
+    evaluateFloor();   // Plan 0473 P6: fresh input can push a consumer behind — reassess the floor
+    // Plan 0473 P13: BARGE-IN — if a USER just spoke (a NON-own inbound turn) while the agent's TTS reply
+    // is playing, interrupt it. The item is ALREADY recorded above (nothing lost); this only fires the
+    // duck/stop cue + clears speaking-state. own-turns (the agent's own reply) never barge in on themselves.
+    maybeBargeIn({ userId, userName, role: role || null, seq: entry.seq }, entry.own === true);
+    // Wake every pending long-poll waiter (each resolves with what arrived and removes itself).
+    for (const w of [...inboxWaiters]) w.wake();
+    log.info('voice', 'inbox', { kind, userId, seq: entry.seq, len: (text || '').length });
+    return entry;
+  }
+  // Back-compat shim: voice-path callers still call emitTranscript(); it is kind:'voice' into the inbox.
+  function emitTranscript({ userId, userName, role, text, conf, isGuest = false }) {
+    return emitInbox({ kind: 'voice', userId, userName, role, text, conf, final: true, isGuest });
+  }
+  function voiceArmTimeout(c, ws) {   // RT-14: an open segment starved of frames is flushed/discarded
+    const v = c.voice; if (!v) return;
+    if (v.timer) clearTimeout(v.timer);
+    v.timer = setTimeout(() => { log.warn('voice', 'seg-timeout', { socketId: c.id, seq: v.seq }); voiceSegFinalize(c, ws, {}); }, segTimeoutMs);
+    v.timer.unref?.();
+  }
+  function voiceSegStart(c, ws, m) {
+    if (!c) return;
+    // Plan 0472 P4: a GUEST may open a voice segment ONLY if its capability scope includes 'speak'
+    // (token-signed; not client-widenable). Surface the refusal (never silent). Non-guests unaffected.
+    if (c.isGuest && !(c.capScope || []).includes('speak')) { log.warn('cap', 'speak-out-of-scope', { socketId: c.id }); send(ws, { t: 'voice_rejected', reason: 'not permitted' }); return; }
+    // Plan 0473 P6 — PROACTIVE floor gate: under HOLD (overload) refuse a NEW segment AT THE SOURCE and
+    // tell the speaker to hold, instead of accepting audio only to shed it downstream. No-op when the
+    // floor is disabled (solo wearable) — so existing single-speaker voice behaviour is unchanged.
+    if (floorGated()) { log.info('floor', 'gated-seg-start', { socketId: c.id, userId: c.userId }); send(ws, { t: 'floor', state: 'hold', gated: true }); return; }
+    if (!c.voice) c.voice = { active: false, seq: 0, chunks: [], bytes: 0, startedAt: 0, timer: null, tokens: VOICE_TB_CAPACITY, lastRefill: Date.now() };
+    const v = c.voice;
+    if (v.active) { if (v.timer) clearTimeout(v.timer); v.active = false; voiceSessions = Math.max(0, voiceSessions - 1); v.chunks = []; v.bytes = 0; }   // drop a stray-open prior segment
+    if (voiceSessions >= VOICE_MAX_SESSIONS) {   // RT-22: reject over cap, with a surfaced reason
+      log.warn('voice', 'sessions-cap', { socketId: c.id, cap: VOICE_MAX_SESSIONS });
+      send(ws, { t: 'voice_rejected', reason: 'server voice capacity reached' });
+      return;
+    }
+    ensureAsr();   // RT-25: warm the recognizer now, so the first utterance doesn't eat the model load
+    v.active = true; v.seq = (typeof m.seq === 'number' ? m.seq : v.seq + 1); v.chunks = []; v.bytes = 0; v.startedAt = Date.now();
+    v.tokens = VOICE_TB_CAPACITY; v.lastRefill = Date.now();   // F1: full-capacity bucket per segment
+    voiceSessions++;
+    voiceArmTimeout(c, ws);
+    evaluateFloor();   // Plan 0473 P6: a new active speaker changes the load — reassess the floor
+    // Plan 0473 P13: BARGE-IN at the SOURCE — a user OPENING a voice segment while the agent's TTS reply
+    // is playing is an interruption. Fire the duck/stop cue + clear speaking now (before the utterance is
+    // even transcribed); the segment proceeds to capture, so the interrupting speech is still recorded.
+    maybeBargeIn({ userId: c.userId, userName: c.userName, role: c.role, seq: null }, false);
+    log.info('voice', 'seg-start', { socketId: c.id, userId: c.userId, seq: v.seq, sessions: voiceSessions });
+  }
+  // Binary PCM frame from a conn. IGNORED unless that conn has an active voice session (RT-7);
+  // byte-rate capped; force-cut past the segment length cap (RT-8). NEVER JSON-parsed.
+  function handleVoiceBinary(c, ws, buf) {
+    const v = c && c.voice;
+    if (!v || !v.active) { log.warn('voice', 'binary-no-session', { socketId: c && c.id }); return; }   // RT-7 drop
+    c.lastSeen = Date.now();
+    // F1 fix (RT-7): TOKEN BUCKET, not a per-second window — a final-only burst of a whole utterance
+    // (up to VOICE_SEG_MAX_BYTES) passes intact; only >2x-realtime sustained floods throttle. A drop is
+    // SURFACED to the speaker (voice_dropped), never silent.
+    const now = Date.now();
+    v.tokens = Math.min(VOICE_TB_CAPACITY, v.tokens + (now - v.lastRefill) * VOICE_TB_REFILL_BPS / 1000);
+    v.lastRefill = now;
+    if (v.tokens < buf.length) { log.warn('voice', 'rate-drop', { socketId: c.id, seq: v.seq }); send(ws, { t: 'voice_dropped', seq: v.seq, reason: 'rate' }); return; }
+    v.tokens -= buf.length;
+    v.chunks.push(Buffer.from(buf)); v.bytes += buf.length;
+    voiceArmTimeout(c, ws);
+    if (v.bytes >= VOICE_SEG_MAX_BYTES) { log.warn('voice', 'seg-forcecut', { socketId: c.id, bytes: v.bytes }); voiceSegFinalize(c, ws, {}); }   // RT-8
+  }
+  async function voiceSegFinalize(c, ws, { discard = false, reason } = {}) {
+    const v = c && c.voice; if (!v || !v.active) return;
+    if (v.timer) { clearTimeout(v.timer); v.timer = null; }
+    v.active = false; voiceSessions = Math.max(0, voiceSessions - 1);
+    evaluateFloor();   // Plan 0473 P6: a speaker yielding the floor lowers the load — reassess the floor
+    const pcm = Buffer.concat(v.chunks, v.bytes); const seq = v.seq;
+    v.chunks = []; v.bytes = 0;
+    log.info('voice', 'seg-final', { socketId: c.id, seq, bytes: pcm.length });   // F1: byte-integrity trace (utterance must arrive whole)
+    if (discard) { log.info('voice', 'seg-discard', { socketId: c.id, seq, reason }); return; }
+    if (pcm.length < VOICE_MIN_SEG_BYTES) { log.info('voice', 'seg-too-short', { socketId: c.id, seq, bytes: pcm.length }); return; }   // RT-12
+    const wavDir = join(tmpdir(), 'ap-asr'); try { mkdirSync(wavDir, { recursive: true }); } catch (e) {}
+    const wavPath = join(wavDir, `seg-${c.id}-${seq}-${Date.now()}.wav`);
+    try { writeFileSync(wavPath, pcm16ToWav(pcm)); } catch (e) { log.warn('voice', 'wav-fail', { msg: String(e && e.message || e) }); return; }
+    const result = await ensureAsr().recognize(wavPath, seq);
+    try { unlinkSync(wavPath); } catch (e) {}
+    if (!result || !result.text) { log.info('voice', 'no-text', { socketId: c.id, seq }); return; }
+    emitTranscript({ userId: c.userId, userName: c.userName, role: c.role, text: result.text, conf: result.conf, isGuest: !!c.isGuest });
+  }
+
+  // ---- Plan 0473 P3: BOUNDED SITUATION (the working set) + SERVER-HELD per-consumer cursor ----
+  // `situation()` is the PRIMARY sense surface: a BOUNDED working set assembled from EXISTING server
+  // state (display/beat, session profile, open polls + live tallies, roster) + the last-N coalesced
+  // turns (P2) + a new-since-last-read delta. The response is ALWAYS bounded regardless of session
+  // length — a 10k-turn session must NOT return full history (the inbox ring is already capped at
+  // TRANSCRIPT_RING, and we additionally cap recent-turns to N, roster to a max, and per-turn text).
+  const RECENT_TURNS_N = 20;          // bounded recent-turns window surfaced in the situation digest
+  const SITUATION_ROSTER_MAX = 40;    // roster is bounded too (present + recently-active)
+  const MAX_TURN_TEXT = 2000;         // per-turn verbatim text is capped so one mega-turn can't blow the cap
+  // Server-held per-consumer cursor: consumerId -> last inboxSeq that consumer has been shown. The
+  // CONSUMER never passes a cursor — the server tracks each consumer's last-read position, keyed by
+  // its connection/session identity (the MCP tool keys by the stdio connection; tests key explicitly).
+  const situationCursors = new Map();
+  // Group the (bounded) inbox ring into coalesced TURNS (consecutive items sharing a turnId), newest
+  // last, verbatim; return the last `n`. Per-turn text is length-capped (bounded-in-the-large).
+  function coalesceTurns(items, n = RECENT_TURNS_N) {
+    const turns = [];
+    let cur = null;
+    for (const it of items) {
+      if (cur && cur.turnId === it.turnId && it.turnId != null) {
+        cur.text = (cur.text + (it.text ? (cur.text ? ' ' : '') + it.text : '')).slice(0, MAX_TURN_TEXT);
+        cur.count++; cur.lastSeq = it.seq; cur.ts = it.ts;
+        cur.turnComplete = it.turnComplete === true; cur.kind = it.kind;
+      } else {
+        cur = {
+          turnId: it.turnId || null, userId: it.userId, userName: it.userName, role: it.role || null,
+          // Plan 0473 P9: a turn's trust is its speaker's — and a turn NEVER merges identities (a
+          // speaker-change closes the turn), so every item in a turn shares one trust level.
+          trust: it.trust, kind: it.kind, text: (it.text || '').slice(0, MAX_TURN_TEXT), count: 1,
+          firstSeq: it.seq, lastSeq: it.seq, ts: it.ts, turnComplete: it.turnComplete === true,
+        };
+        turns.push(cur);
+      }
+    }
+    return turns.slice(-n);
+  }
+  // A compact, bounded view of the current per-role display (what each broadcast role is showing now).
+  function displaySummary() {
+    const out = {};
+    for (const r of ROLES) {
+      const d = displayByRole[r];
+      out[r] = d ? (d.kind === 'component' ? ((d.opts && d.opts.promptId) || d.component)
+        : (d.contentId || d.kind)) : 'idle';
+    }
+    return out;
+  }
+  // The current beat, if a content module has one shown (currentBeat >= 0); else the module summary; null.
+  function beatSummary() {
+    if (!contentModule) return null;
+    const total = (contentModule.beats || []).length;
+    const b = (currentBeat >= 0) ? contentModule.beats[currentBeat] : null;
+    return b ? { index: currentBeat, total, component: b.component, id: b.id != null ? b.id : null, title: contentModule.title }
+      : { index: currentBeat, total, title: contentModule.title };
+  }
+  // Assemble the BOUNDED working set for `consumerId`, advancing that consumer's server-held cursor.
+  function buildSituation(consumerId, recentN = RECENT_TURNS_N) {
+    const last = situationCursors.get(consumerId) || 0;
+    const since = inbox.filter((i) => i.seq > last);   // bounded: the ring is capped at TRANSCRIPT_RING
+    situationCursors.set(consumerId, inboxSeq);         // advance the cursor to everything now shown
+    evaluateFloor();   // Plan 0473 P6: this read caught the consumer up (backlog reduced) — reassess the floor
+    const att = api.attendance({ viewerRole: 'ai' });
+    const openPolls = [...polls.entries()].filter(([, p]) => p.open)
+      .map(([id, p]) => ({ promptId: id, prompt: p.spec && p.spec.prompt, open: true, ...tally(id) }));
+    // Plan 0473 P9: DELIMIT-AS-DATA at serve time — participant/guest turns are fenced (untrusted
+    // content the agent must treat as data, never as commands); self/controller turns pass through.
+    const recentTurns = coalesceTurns(inbox, recentN).map((t) => annotateTrust(t, t.trust));
+    // Plan 0473 P4: the WORK QUEUE — judgment items, prioritized + bounded (aged/expired pruned).
+    const queue = queueView();
+    return {
+      sessionId: SESSION_ID,
+      profile: ACTIVE_PROFILE.name,
+      bounded: true,
+      situation: {
+        display: displaySummary(),
+        beat: beatSummary(),
+        polls: openPolls,
+        roster: att.roster.slice(0, SITUATION_ROSTER_MAX),
+        rosterSummary: att.summary,
+        // Plan 0473 P5/P10: the profile-specific DIGEST section (F-5), assembled by the DIGEST-CONTENT
+        // SEAM keyed on the ACTIVE PROFILE's `digestContent` knob VALUE (DATA lookup, never a name
+        // fork). wearable ('conversation') ⇒ null (the digest IS the conversation); rpg ('gm') ⇒ a GM
+        // view (questions-to-GM + recent actions) + the mcp-gm scene/initiative/dice seam. The seam
+        // reads ONLY the already-assembled, already-fenced pieces below — it never blocks/recomputes.
+        digest: buildDigest(ACTIVE_PROFILE.digestContent, { queue, recentTurns }),
+      },
+      recentTurns,
+      newSinceLastRead: { count: since.length, turns: coalesceTurns(since, recentN).map((t) => annotateTrust(t, t.trust)) },
+      // Plan 0473 P7: the ROLLING SUMMARY — continuity for context OLDER than the recent-N turns.
+      // A PRECOMPUTED, BOUNDED snapshot (this is a pure read of the incrementally-maintained state via
+      // the F-10 seam — it NEVER blocks/computes on read), so a long session is not amnesiac past N.
+      summary: summarizer.view(),
+      // Plan 0473 P4: the WORK QUEUE — the judgment items, prioritized + bounded (aged/expired pruned).
+      queue,
+      // Plan 0473 P6: one-glance overload awareness. `floor` = the current proactive floor state
+      // (go/wrap/hold); `backpressure.sheddedCount` = the reactive fold-to-summary total, SURFACED so a
+      // shed is never silent (the LAST resort, secondary to the floor).
+      floor: effectiveFloor(),
+      backpressure: { sheddedCount, floor: effectiveFloor() },
+      cursor: inboxSeq,   // informational only — the consumer does NOT need to pass this back
+    };
+  }
+
+  // ---- Plan 0473 P4: WORK QUEUE (the judgment items in the working set) ----
+  // Work items are DERIVED from completed TURNS (P2) by a CHEAP rule (NO ML): a settled turn becomes a
+  // work item whose PRIORITY is set by whether it is a question/request. The active profile's queuePolicy
+  // is honoured as DATA (never a name fork): `enqueue` decides which turns enter; `maxPending` bounds the
+  // pending queue; `ttlMs` ages stale pending items out (F-11) so the queue is bounded like the rest of the
+  // working set. The SERVER tracks each item's status/owner — the consuming agent holds NOTHING.
+  const PRIORITY_DIRECTED = 2;      // a question/request — needs the agent's judgment now
+  const PRIORITY_AMBIENT = 1;       // a statement / ambient chatter
+  const PRIORITY_DEFERRED = 0;      // pushed to the back by presenter_defer
+  const QUEUE_TEXT_MAX = 500;       // per-item verbatim text cap (bounded-in-the-large)
+  const DEFAULT_QUEUE_MAX = 50;     // fallback bound when a profile sets no maxPending
+  const DEFAULT_QUEUE_TTL_MS = 10 * 60 * 1000;   // pending items expire after this by default (bounded)
+  const workItemsMap = new Map();   // id -> item (pending/claimed live here; resolved/expired kept for status tracking, bounded)
+  const RESOLVED_KEEP = 100;        // bounded terminal-status history (resolved/expired) for server-side tracking
+  let workSeq = 0;
+  // Plan 0473 P6 — REACTIVE BACKSTOP counter: the running total of ambient turns folded-to-summary/count
+  // when the queue overflows capacity. Surfaced in situation().backpressure so a shed is NEVER silent.
+  // This is the LAST resort, secondary to the proactive floor control (below).
+  let sheddedCount = 0;
+  // Cheap question/request heuristic (F-4 minimal): trimmed text ends with '?'. No ML, no NLP.
+  function isQuestion(text) { return /\?\s*$/.test(String(text || '').trim()); }
+  // Read the queue knobs from the ACTIVE PROFILE (consume knobs, never the profile NAME — drift guard).
+  function queueKnobs() {
+    const qp = (ACTIVE_PROFILE.queuePolicy) || {};
+    return {
+      enqueue: qp.enqueue || 'all',                                            // 'all' | 'questions'
+      maxPending: (typeof qp.maxPending === 'number' && qp.maxPending >= 0) ? qp.maxPending : DEFAULT_QUEUE_MAX,
+      ttlMs: (typeof qp.ttlMs === 'number' && qp.ttlMs > 0) ? qp.ttlMs : DEFAULT_QUEUE_TTL_MS,
+      cluster: qp.cluster === true,                                            // F-6: dedupe/cluster similar questions (teaching)
+    };
+  }
+
+  // ---- Plan 0473 P11 (F-6): CHEAP question DEDUPE/CLUSTER (NO ML / NO LLM / NO new deps) ----
+  // At CLASS scale the work queue ITSELF overloads: 20 near-simultaneous questions is its own overload,
+  // even though each is a legitimate judgment item. So similar questions are CLUSTERED into ONE queue
+  // item ("N students asked about X" — a count + the contributing askers) instead of 20 rows, keeping the
+  // queue bounded + glanceable. The similarity metric is a NORMALIZED-KEYWORD JACCARD overlap: strip
+  // punctuation, lowercase, drop stopwords + very short tokens, light-stem a trailing plural 's', and
+  // compare the resulting keyword SETS. Purely lexical + O(words) — no model, no dependency. Gated on the
+  // profile's `queuePolicy.cluster` knob (DATA), so wearable/rpg leave it OFF.
+  const CLUSTER_THRESHOLD = 0.4;        // Jaccard >= this ⇒ "the same question" (tuned for near-duplicates)
+  const CLUSTER_VARIANTS_MAX = 12;      // bound the retained variant phrasings per cluster
+  const STOPWORDS = new Set(('a an the is are am was were be been being do does did done how what why when '
+    + 'where which who whom whose this that these those i you we they he she it me us them my your our their '
+    + 'to of in on for and or but with about as at by can could would should shall will may might if then '
+    + 'than so up out off over under again just only also very not no yes here there').split(/\s+/));
+  function keywordSet(text) {
+    const out = new Set();
+    for (let w of String(text || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/)) {
+      if (w.length > 3 && w.endsWith('s')) w = w.slice(0, -1);   // light plural stem (closures→closure)
+      if (w.length >= 3 && !STOPWORDS.has(w)) out.add(w);
+    }
+    return out;
+  }
+  function jaccard(a, b) {
+    if (!a.size || !b.size) return 0;
+    let inter = 0; for (const w of a) if (b.has(w)) inter++;
+    return inter / (a.size + b.size - inter);
+  }
+  // Find the best-matching PENDING directed (question) item whose keywords clear the threshold — the
+  // cluster the new question should fold into, or null to start a new item.
+  function findClusterTarget(kw) {
+    let best = null, bestSim = 0;
+    for (const it of workItemsMap.values()) {
+      if (it.status !== 'pending' || it.priority < PRIORITY_DIRECTED) continue;
+      const sim = jaccard(kw, it._kw || (it._kw = keywordSet(it.text)));
+      if (sim > bestSim) { bestSim = sim; best = it; }
+    }
+    return bestSim >= CLUSTER_THRESHOLD ? best : null;
+  }
+
+  // ---- Plan 0473 P11 (F-7): EXPLICIT MODERATION state (teacher gates WHO reaches the queue) ----
+  // The teacher/presenter can MUTE a student (their input produces NO work items) — an explicit
+  // moderation decision. This is DATA-gated on the profile's `floorThresholds.moderationOverrides` knob
+  // (teaching); other profiles refuse the mute (no-op) so there is no behaviour fork on the profile name.
+  const mutedParticipants = new Set();
+  // DERIVE a work item from a settled turn `t` (its `last` item carries role). Cheap + profile-read.
+  function deriveWorkFromTurn(t, last) {
+    const knobs = queueKnobs();
+    const text = t.items.map((i) => i.text || '').join(' ').trim().slice(0, QUEUE_TEXT_MAX);
+    if (!text) return null;                                   // nothing to act on
+    // Plan 0473 P13: the AGENT's OWN outbound reply is NOT a judgment item for the agent — it joins the
+    // conversation (recent turns / summary) but never enters the work queue. (own-turns share one speaker,
+    // so `last.own` reflects the whole turn.)
+    if (last && last.own) return null;
+    // Plan 0473 P11 (F-7): explicit moderation — a MUTED student produces NO work item (their input never
+    // reaches the queue). The turn is still recorded in the inbox/recent-turns (continuity is not silently
+    // dropped); it is the teacher's explicit decision to keep it out of the actionable queue.
+    if (mutedParticipants.has(String(t.userId))) return null;
+    const q = isQuestion(text);
+    // Honour the profile knob: 'questions' ⇒ only questions/requests enqueue (ambient shed); 'all' ⇒
+    // every directed turn is a work item (wearable — solo, all turns are directed at the agent).
+    if (knobs.enqueue === 'questions' && !q) return null;
+    // Plan 0473 P11 (F-6): at class scale, FOLD a similar question into an existing cluster item instead
+    // of adding a 20th row — the queue stays bounded + glanceable. Cheap keyword-Jaccard, gated on the
+    // `cluster` knob (DATA). A clustered item carries a `count` + the contributing `askers`.
+    if (q && knobs.cluster) {
+      const kw = keywordSet(text);
+      const target = findClusterTarget(kw);
+      if (target) {
+        target.cluster = true;
+        target.count = (target.count || 1) + 1;
+        if (!target.askers) target.askers = [{ userId: target.userId, userName: target.userName }];
+        target.askers.push({ userId: t.userId, userName: (last && last.userName) || null });
+        if (!target.variants) target.variants = [target.text];
+        if (target.variants.length < CLUSTER_VARIANTS_MAX && target.variants.indexOf(text) < 0) target.variants.push(text);
+        for (const w of kw) target._kw.add(w);   // grow the cluster's vocabulary so later variants still match
+        log.info('queue', 'cluster', { id: target.id, count: target.count });
+        evaluateFloor();   // a fold does not add a pending item, but load awareness stays fresh
+        return target;
+      }
+    }
+    const item = {
+      id: 'work-' + (++workSeq), turnId: t.turnId, userId: t.userId,
+      userName: (last && last.userName) || null, text,
+      // Plan 0473 P9: inherit the settled turn's SERVER-AUTHORITATIVE trust so the queued judgment item
+      // (also consumed by the agent + shown in the human digest) is delimited as data if untrusted.
+      trust: (last && last.trust) || deriveTrust(last && last.role, false),
+      priority: q ? PRIORITY_DIRECTED : PRIORITY_AMBIENT,
+      status: 'pending', owner: null, note: null,
+      createdTs: Date.now(),
+    };
+    // Plan 0473 P11: cache the question's keyword set so later similar questions can cluster onto it
+    // without recomputing (non-enumerable working field; NEVER copied into the served itemView).
+    if (q && knobs.cluster) item._kw = keywordSet(text);
+    workItemsMap.set(item.id, item);
+    // Plan 0473 P6 — PROACTIVE-FIRST: reassess load + engage the floor (wrap/hold) BEFORE the reactive
+    // shed. The floor gates NEW input at the source; only input that STILL exceeds capacity below hits
+    // the reactive backstop — so the floor is always already in effect before sheddedCount can rise.
+    evaluateFloor();
+    enforceQueueBounds();                                     // REACTIVE last resort: shed ambient overflow WITH a count (F-11)
+    return item;
+  }
+  // Age out stale PENDING items (claimed items are being handled ⇒ exempt) — lazy, called on every read
+  // + mutation, so the queue never grows unbounded even with no reader running.
+  function expireStale() {
+    const { ttlMs } = queueKnobs();
+    const now = Date.now();
+    for (const it of workItemsMap.values()) {
+      if (it.status === 'pending' && (now - it.createdTs) > ttlMs) { it.status = 'expired'; it.expiredTs = now; }
+    }
+  }
+  // Keep the number of PENDING items <= maxPending: shed the LOWEST-priority, then OLDEST, first — so a
+  // high-priority question is NEVER crowded out by heavy ambient. Claimed items don't count against the bound.
+  function enforceQueueBounds() {
+    const { maxPending } = queueKnobs();
+    let pending = [...workItemsMap.values()].filter((it) => it.status === 'pending');
+    if (pending.length <= maxPending) return;
+    // sort ascending by (priority, createdTs) ⇒ the first entries are the ones to drop.
+    pending.sort((a, b) => (a.priority - b.priority) || (a.createdTs - b.createdTs));
+    const dropN = pending.length - maxPending;
+    for (let i = 0; i < dropN; i++) { const it = pending[i]; it.status = 'shed'; it.shedTs = Date.now(); }
+    sheddedCount += dropN;   // Plan 0473 P6: count the reactive shed so it is SURFACED, never silent
+    // Plan 0473 P7: the P6 "fold ambient to summary" path — a shed is REPRESENTED in the rolling summary
+    // WITH its count (never a silent drop). The shed turns' TEXT is already retained via stageSettledTurn
+    // (every settled turn is staged); this records the backpressure MAGNITUDE as a summary dimension.
+    summarizer.onShed(dropN);
+    if (dropN > 0) log.info('queue', 'shed', { dropN, sheddedCount });
+    pruneTerminal();
+  }
+  // Bound the retained terminal-status history (resolved/expired/shed) so workItemsMap can't grow forever.
+  function pruneTerminal() {
+    const terminal = [...workItemsMap.values()].filter((it) => it.status === 'resolved' || it.status === 'expired' || it.status === 'shed');
+    if (terminal.length <= RESOLVED_KEEP) return;
+    terminal.sort((a, b) => (a.expiredTs || a.shedTs || a.resolvedTs || a.createdTs) - (b.expiredTs || b.shedTs || b.resolvedTs || b.createdTs));
+    for (let i = 0; i < terminal.length - RESOLVED_KEEP; i++) workItemsMap.delete(terminal[i].id);
+  }
+  // Stamp the dynamic `age` (ms since created) at serve time; return a bounded, plain item view.
+  function itemView(it) {
+    const v = { id: it.id, turnId: it.turnId, userId: it.userId, userName: it.userName, text: it.text,
+      priority: it.priority, status: it.status, createdTs: it.createdTs, age: Date.now() - it.createdTs };
+    if (it.owner) v.owner = it.owner;
+    if (it.note != null) v.note = it.note;
+    // Plan 0473 P11 (F-6): a CLUSTERED item carries how many students asked the same thing + the askers,
+    // so the queue stays glanceable ("N students asked about X") instead of N rows. Additive; a singleton
+    // item omits these (a plain 1-asker question).
+    if (it.cluster) {
+      v.cluster = true;
+      v.count = it.count || 1;
+      v.askers = (it.askers || []).slice(0, 50);
+      if (it.variants) v.variants = it.variants.slice(0, 50);
+    }
+    // Plan 0473 P9: delimit-as-data — fence the item's text when its speaker is untrusted (participant/
+    // guest), flag guests. Additive to the item shape; a self/controller item passes through unfenced.
+    return annotateTrust(v, it.trust);
+  }
+  // The ACTIONABLE queue: pending + claimed only (resolved/expired/shed are dropped from the view),
+  // prioritized (priority desc, then oldest-first within a priority = FIFO) and already bounded.
+  function queueView() {
+    expireStale();
+    const live = [...workItemsMap.values()].filter((it) => it.status === 'pending' || it.status === 'claimed');
+    live.sort((a, b) => (b.priority - a.priority) || (a.createdTs - b.createdTs));
+    return live.map(itemView);
+  }
+
+  // ---- Plan 0473 P6: FLOOR CONTROL (proactive, at the SOURCE) + reactive backstop (last resort) ----
+  // PROACTIVE-FIRST overload prevention. The server measures live LOAD from EXISTING state — concurrent
+  // active speakers (voiceSessions), work-queue depth (pending items), and how far the consumer has
+  // fallen behind (unread backlog) — against the ACTIVE PROFILE's `floorThresholds` knob (DATA, read via
+  // floorKnobs(), NEVER a name fork). Crossing the WRAP level emits a gentle "please wrap" floor cue;
+  // crossing HOLD emits "please hold" AND GATES new capture AT THE SOURCE (a would-be speaker is told to
+  // hold instead of the server accepting audio only to shed it). When load clears, the floor returns to
+  // 'go'. The wearable profile has floorThresholds.enabled:false (solo → a no-op); the mechanism is built
+  // + tested with an enabled/injected threshold. The REACTIVE shed (`sheddedCount`, above) is the LAST
+  // resort — secondary to, and always after, this proactive floor.
+  const FLOOR_STATES = ['go', 'wrap', 'hold'];
+  let floorState = 'go';
+  // SEAM (F-7), WIRED in P11: explicit teacher moderation OVERRIDES the automatic load-based floor. When a
+  // moderation floor is set it WINS over the auto floor everywhere the floor is consumed (effectiveFloor →
+  // the broadcast cue + floorGated + the situation view). `moderationFloor` is the teacher's explicit
+  // decision; `floorState` is the automatic (load-derived) level. Precedence: moderation first, auto second.
+  let moderationFloor = null;
+  function effectiveFloor() { return moderationFloor || floorState; }
+  // Set (or clear, with null) the explicit moderation floor. DATA-gated on the profile's
+  // `floorThresholds.moderationOverrides` knob (teaching) so it is not a profile-NAME fork: a profile that
+  // does not grant moderation refuses the override (no-op). The override wins immediately via effectiveFloor;
+  // broadcast the resulting cue so it is never silent. Returns {ok, floor(effective), auto}.
+  function setModerationFloor(state) {
+    if (!floorKnobs().moderationOverrides) return { ok: false, reason: 'moderation-not-permitted', floor: effectiveFloor(), auto: floorState };
+    if (state !== null && !FLOOR_STATES.includes(state)) return { ok: false, reason: 'bad-state', floor: effectiveFloor(), auto: floorState };
+    moderationFloor = state;
+    log.info('floor', 'moderation', { moderationFloor, auto: floorState });
+    broadcastFloor(effectiveFloor());   // the explicit decision wins over auto; never silent
+    return { ok: true, floor: effectiveFloor(), auto: floorState };
+  }
+  // Read the floor knobs from the ACTIVE PROFILE (consume knobs, never the profile NAME — drift guard).
+  function floorKnobs() {
+    const ft = (ACTIVE_PROFILE.floorThresholds) || {};
+    return { enabled: ft.enabled === true, speakers: ft.speakers || null, queue: ft.queue || null,
+      backlog: ft.backlog || null, moderationOverrides: ft.moderationOverrides === true };
+  }
+  // Live LOAD signals, measured from existing server state (NO new bookkeeping).
+  function pendingCount() { let n = 0; for (const it of workItemsMap.values()) if (it.status === 'pending') n++; return n; }
+  // How far the furthest-behind consumer has fallen behind (unread inbox items). 0 when nobody has read.
+  function consumerBacklog() { let max = 0; for (const last of situationCursors.values()) { const b = inboxSeq - last; if (b > max) max = b; } return max; }
+  // The floor level ONE signal implies, given its {wrap,hold} thresholds (absent thresholds ⇒ ignored).
+  function levelFor(value, th) {
+    if (!th) return 'go';
+    if (typeof th.hold === 'number' && value >= th.hold) return 'hold';
+    if (typeof th.wrap === 'number' && value >= th.wrap) return 'wrap';
+    return 'go';
+  }
+  function maxLevel(a, b) { return FLOOR_STATES.indexOf(a) >= FLOOR_STATES.indexOf(b) ? a : b; }
+  // Broadcast the floor cue to clients — the would-be speakers RENDER "please hold"/"wrap up" + gate
+  // capture on it (stub-tier; the SERVER decides, the client shows). Never silent.
+  function broadcastFloor(state) { for (const ws of conns.keys()) send(ws, { t: 'floor', state }); }
+  // Recompute the floor from current load; on a CHANGE, emit the cue. Called on every load-changing event
+  // (input arrival, turn settle, queue mutation, speaker start/stop, situation read). Cheap + idempotent.
+  function evaluateFloor() {
+    const k = floorKnobs();
+    let next = 'go';
+    if (k.enabled) {
+      next = maxLevel(next, levelFor(voiceSessions, k.speakers));
+      next = maxLevel(next, levelFor(pendingCount(), k.queue));
+      next = maxLevel(next, levelFor(consumerBacklog(), k.backlog));
+    }
+    if (next !== floorState) {
+      floorState = next;
+      log.info('floor', 'state', { state: floorState, speakers: voiceSessions, pending: pendingCount(), backlog: consumerBacklog() });
+      broadcastFloor(effectiveFloor());
+    }
+    return floorState;
+  }
+  // PROACTIVE gate at the SOURCE: would a NEW segment right now be gated? True only under HOLD (enabled +
+  // overloaded) — the server refuses to accept fresh audio only to shed it. (Explicit moderation would
+  // override via effectiveFloor.) No-op when the floor is disabled (solo wearable).
+  function floorGated() { return floorKnobs().enabled && effectiveFloor() === 'hold'; }
+
   const api = {
     url: () => `http://127.0.0.1:${httpServer.address().port}`,
     port: () => httpServer.address().port,
+    // Plan 0473 P1 — READ the active session profile's knobs (settling/shedding/budget/floor/digest/
+    // queue). The engine/tools call this to configure behaviour; they must consume knobs, never the
+    // profile NAME (drift guard). P2 is the FIRST real consumer: it reads settlingMs from here.
+    profile: () => ACTIVE_PROFILE,
     presence,
     on: (ev, cb) => { if (listeners[ev]) listeners[ev].push(cb); },
     pushContent(target, html, contentId) {
@@ -783,6 +1723,179 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     getPoll: (promptId) => { const votes = store.get('polls/' + promptId + '/votes') || {}; return { promptId, ...tally(promptId), votes: Object.keys(votes).map((userId) => ({ userId, value: votes[userId] })) }; },
     // Hot-reload clients in place (swap client/server code without dropping them).
     reloadClients: (target = 'all', delay = 0) => targets(target).map((ws) => send(ws, { t: 'reload', delay })).length,
+    // Plan 0470: REQUEST that a target enable inbound voice. This only sends {t:'voice_enable'};
+    // the client still goes through the browser mic-permission prompt (uncoerceable, RT-9) — it
+    // can never silently hot a participant's mic. Also warms the recognizer (RT-25).
+    voiceEnable: (target = 'all') => { ensureAsr(); return targets(target).map((ws) => send(ws, { t: 'voice_enable' })).length; },
+    // Cursored read of recognized speech — VOICE-ONLY view over the unified inbox (back-compat alias).
+    // Returns voice entries with seq > since + the (global) next cursor.
+    getTranscripts: (since = 0) => ({ transcripts: inbox.filter((t) => t.kind === 'voice' && t.seq > (since || 0)).map((t) => annotateTrust(t, t.trust)), cursor: inboxSeq }),
+    // Plan 0472: cursored + optional long-poll read of the UNIFIED inbox (superset of getTranscripts).
+    // Returns items with seq > since (interleaved voice+text, seq-ordered) + a next cursor. With
+    // waitMs > 0 it LONG-POLLS: returns immediately if anything is already newer than `since`, else
+    // registers ONE server-side waiter that resolves on the next emit or at the timeout. The `since`
+    // arg is a MANUAL cursor today; the {items,cursor} contract also accommodates a future auto-cursor
+    // (server-held per-consumer) mode and a companion presenter_situation() tool without a reshape.
+    getInbox: (since = 0, waitMs = 0) => {
+      const s = since || 0;
+      // Plan 0473 P9: DELIMIT-AS-DATA — every served item is annotated with its trust; participant/guest
+      // items are fenced (untrusted data, never commands) and guests flagged. Self/controller pass through.
+      const serve = (items) => items.map((i) => annotateTrust(i, i.trust));
+      const ready = inbox.filter((i) => i.seq > s);
+      if (ready.length || !waitMs) return { items: serve(ready), cursor: inboxSeq };
+      return new Promise((resolve) => {
+        const w = { settled: false };
+        w.wake = () => {
+          if (w.settled) return; w.settled = true;
+          clearTimeout(w.timer); inboxWaiters.delete(w);
+          resolve({ items: serve(inbox.filter((i) => i.seq > s)), cursor: inboxSeq });   // emit-woke: new items; timeout: empty
+        };
+        w.timer = setTimeout(w.wake, waitMs);
+        w.timer.unref?.();
+        inboxWaiters.add(w);
+      });
+    },
+    getInboxWaiters: () => inboxWaiters.size,   // test/observability hook: assert no waiter leak
+    // Plan 0473 P3 — presenter_situation's engine. Returns the BOUNDED working set for a consumer,
+    // advancing that consumer's SERVER-HELD cursor (the consumer passes NO cursor). Optional waitMs
+    // long-polls (like getInbox): if nothing is newer than this consumer's stored cursor it registers
+    // ONE inbox waiter and resolves on the next emit or at the timeout — then builds the current set.
+    situation: ({ consumerId = 'default', waitMs = 0, recentN = RECENT_TURNS_N } = {}) => {
+      const last = situationCursors.get(consumerId) || 0;
+      if (inboxSeq > last || !waitMs) return buildSituation(consumerId, recentN);
+      return new Promise((resolve) => {
+        const w = { settled: false };
+        w.wake = () => {
+          if (w.settled) return; w.settled = true;
+          clearTimeout(w.timer); inboxWaiters.delete(w);
+          resolve(buildSituation(consumerId, recentN));   // emit-woke: new items folded in; timeout: current set
+        };
+        w.timer = setTimeout(w.wake, waitMs);
+        w.timer.unref?.();
+        inboxWaiters.add(w);
+      });
+    },
+    // Plan 0473 P13 — BARGE-IN + OWN-TURNS (ONE coherent conversation object). Cross-plan (0469 + 0470).
+    // emitOwnTurn({text}): the agent/controller emits an OUTBOUND reply. It joins the SAME unified inbox
+    // as any turn — role:'ai' ⇒ trust:'self', flagged own:true — so situation/inbox show ONE conversation
+    // that INCLUDES the agent's own contributions. It also (by default) sets speaking-state active (the
+    // agent is now speaking its TTS reply); pass speaking:false to add the turn WITHOUT arming barge-in.
+    // Returns the emitted (annotated) inbox entry.
+    emitOwnTurn: ({ text, userId = 'argus', userName = 'Argus', role = 'ai', speaking: sp = true } = {}) => {
+      const entry = emitInbox({ kind: 'reply', userId, userName, role, text, conf: null, final: true, own: true });
+      if (sp) setSpeaking(true);
+      return annotateTrust(entry, entry.trust);   // serve-shape (own:true + trust:'self', unfenced)
+    },
+    // setSpeaking(on): the outbound-TTS seam (Plan 0469 drives this from real TTS start/stop). While
+    // speaking is true, a NON-own inbound user turn / voice_seg_start triggers a barge-in (duck/stop cue).
+    setSpeaking: (on) => setSpeaking(on),
+    // isSpeaking(): is the agent's outbound reply currently playing (barge-in armed)? Observability hook.
+    isSpeaking: () => speaking,
+    // Plan 0473 P4 — WORK-QUEUE operator surface (server-tracked status/owner; the agent holds nothing).
+    // workItems(): the current ACTIONABLE queue (pending + claimed), prioritized + bounded (aged pruned).
+    workItems: () => queueView(),
+    // Plan 0473 P12 — the resolved per-turn budget (ms) a speaker of {role, trust} gets under the active
+    // profile. Observability hook proving the guest's TIGHT budget ROUTES BY TRUST (role=participant,
+    // trust=guest → the tight leash), tighter than a trusted 'self' speaker — deterministic, no timers.
+    turnBudgetFor: ({ role = 'participant', trust } = {}) => perTurnBudgetFor(role, trust),
+    // Plan 0473 P6 — floor + backstop observability.
+    // floorState(): the current EFFECTIVE floor ('go'|'wrap'|'hold') — proactive overload state (explicit
+    // moderation, if set, wins over the automatic level here).
+    floorState: () => effectiveFloor(),
+    // Plan 0473 P11 (F-7) — the AUTOMATIC (load-derived) floor level, BEFORE any moderation override. Used
+    // to prove that explicit moderation OVERRIDES the auto floor (auto='go' but effective='hold', or vice-versa).
+    autoFloor: () => floorState,
+    // floorGated(): would a NEW voice segment be gated right now (effective floor = hold, floor enabled)?
+    floorGated: () => floorGated(),
+    // Plan 0473 P11 (F-7) — EXPLICIT MODERATION control surface (teacher). All DATA-gated on the profile's
+    // floorThresholds.moderationOverrides knob (teaching) — a profile that does not grant it no-ops.
+    // moderate({floor}): set/clear the explicit moderation floor that OVERRIDES the automatic load floor.
+    setModerationFloor: (state) => setModerationFloor(state),
+    // muteParticipant(id)/unmuteParticipant(id): gate WHOSE input reaches the queue — a muted student
+    // produces NO work items. Returns {ok, muted:[...]} (ok:false when moderation is not permitted).
+    muteParticipant: (userId) => {
+      if (!floorKnobs().moderationOverrides) return { ok: false, reason: 'moderation-not-permitted', muted: [...mutedParticipants] };
+      mutedParticipants.add(String(userId));
+      log.info('floor', 'mute', { userId: String(userId) });
+      return { ok: true, muted: [...mutedParticipants] };
+    },
+    unmuteParticipant: (userId) => {
+      if (!floorKnobs().moderationOverrides) return { ok: false, reason: 'moderation-not-permitted', muted: [...mutedParticipants] };
+      mutedParticipants.delete(String(userId));
+      log.info('floor', 'unmute', { userId: String(userId) });
+      return { ok: true, muted: [...mutedParticipants] };
+    },
+    isMuted: (userId) => mutedParticipants.has(String(userId)),
+    // backpressure(): the reactive backstop total ({sheddedCount, floor}) — a shed is never silent.
+    backpressure: () => ({ sheddedCount, floor: effectiveFloor() }),
+    // voiceSessionCount(): active voice sessions (used to prove a gated seg-start started NO capture).
+    voiceSessionCount: () => voiceSessions,
+    // workItem(id): the SERVER's full record for one item incl. terminal statuses (resolved/expired/shed)
+    // + note/owner — proves the server, not the agent, tracks the state. null if unknown/pruned.
+    workItem: (id) => { expireStale(); const it = workItemsMap.get(id); return it ? itemView(it) : null; },
+    // debugAllWorkItems(): every RETAINED work item incl. terminal statuses (resolved/expired/shed) +
+    // the `deferred` (deprioritized) flag — a test/observability hook proving whole-session invariants
+    // (e.g. the wearable scenario: nothing was ever shed or deprioritized). Bounded like workItemsMap.
+    debugAllWorkItems: () => { expireStale(); return [...workItemsMap.values()].map((it) => ({ ...itemView(it), deferred: !!it.deferred })); },
+    // claim(id): mark an item as being handled (status=claimed) by `owner` — so a second consumer (human
+    // via control.html, or another agent) won't double-handle it. Claimed items are exempt from the pending
+    // aging-out. Returns the updated item view, or null for an unknown/non-pending-or-claimed id.
+    claimWork: (id, { owner = 'agent' } = {}) => {
+      expireStale();
+      const it = workItemsMap.get(id);
+      if (!it || (it.status !== 'pending' && it.status !== 'claimed')) return null;
+      it.status = 'claimed'; it.owner = owner || 'agent'; it.claimedTs = Date.now();
+      evaluateFloor();   // Plan 0473 P6: queue depth changed — reassess the floor
+      log.info('queue', 'claim', { id, owner: it.owner });
+      return itemView(it);
+    },
+    // resolve(id): the judgment is done — move the item OUT of the actionable queue (status=resolved). The
+    // server retains the terminal record (with an optional note) so the state is server-tracked, not held
+    // by the agent. Returns the updated item view, or null for an unknown/already-resolved id.
+    resolveWork: (id, { note = null } = {}) => {
+      const it = workItemsMap.get(id);
+      if (!it || it.status === 'resolved') return null;
+      it.status = 'resolved'; it.resolvedTs = Date.now(); if (note != null) it.note = String(note).slice(0, QUEUE_TEXT_MAX);
+      pruneTerminal();
+      evaluateFloor();   // Plan 0473 P6: work resolved lowers the load — reassess the floor (may clear to 'go')
+      log.info('queue', 'resolve', { id });
+      return itemView(it);
+    },
+    // defer(id): not now — release any claim, push the item to the BACK (lowest priority) and RESTART its
+    // aging clock (defer = "look at it later", not "let it expire immediately"). Stays pending/actionable.
+    deferWork: (id) => {
+      expireStale();
+      const it = workItemsMap.get(id);
+      if (!it || (it.status !== 'pending' && it.status !== 'claimed')) return null;
+      it.status = 'pending'; it.owner = null; it.priority = PRIORITY_DEFERRED; it.createdTs = Date.now(); it.deferred = true;
+      evaluateFloor();   // Plan 0473 P6: PROACTIVE-FIRST — reassess the floor before any reactive shed
+      enforceQueueBounds();
+      log.info('queue', 'defer', { id });
+      return itemView(it);
+    },
+    // Plan 0472 P4 — permissioned guest capability link operator surface.
+    // capEnabled: are guest links configured at all (a secret present)?
+    capEnabled: () => !!CAP_SECRET,
+    // mintCap: sign a guest link payload with THIS server's secret. Returns the token, or null when
+    // links are disabled. Caller supplies { sid, scope:['speak','type'], name?, exp (epoch s), nonce };
+    // role is irrelevant (the server always forces participant). Keep exp SHORT. NEVER exposes the secret.
+    mintCap: (payload = {}) => {
+      if (!CAP_SECRET) return null;
+      const nonce = payload.nonce || ('g-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10));
+      const exp = (typeof payload.exp === 'number') ? payload.exp : (Math.floor(Date.now() / 1000) + 3600);   // default 1h
+      const scope = Array.isArray(payload.scope) ? payload.scope.filter((s) => typeof s === 'string') : ['speak', 'type'];
+      return mintCapability({ v: 1, sid: payload.sid != null ? payload.sid : SESSION_ID, role: 'participant', scope, name: payload.name || null, exp, nonce }, CAP_SECRET);
+    },
+    // revokeCap: revoke a guest link by nonce. Future hellos presenting that nonce are rejected even if
+    // the HMAC + exp are still valid. Also closes any live connection currently holding that nonce.
+    revokeCap: (nonce) => {
+      if (!nonce) return false;
+      revokedNonces.add(nonce);
+      for (const [ws, c] of conns.entries()) if (c.isGuest && c.capNonce === nonce) { try { ws.close(); } catch (e) {} }
+      log.info('cap', 'revoked', { nonce: String(nonce).slice(0, 8) });   // only a short prefix, for audit; not the token
+      return revokedNonces.has(nonce);
+    },
+    isCapRevoked: (nonce) => revokedNonces.has(nonce),
     // Clear the display back to idle/branding. Sends {t:'clear'} to live clients AND drops the stored
     // display descriptor so a RECONNECTING client converges to idle branding, not the stale last content
     // (fixes "stuck on the end card, never reverts to branding"). Use as the standard session-end primitive.
@@ -963,7 +2076,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       };
     },
     store,
-    close: () => new Promise((res) => { clearInterval(heartbeat); /* Plan 0468 (INV-7) */ if (ephTimer) clearTimeout(ephTimer); for (const t of hotTimers.values()) clearTimeout(t); hotTimers.clear(); watcher && watcher.close(); wss.clients.forEach((c) => c.close()); httpServer.close(() => res()); }),
+    close: () => new Promise((res) => { clearInterval(heartbeat); /* Plan 0468 (INV-7) */ if (ephTimer) clearTimeout(ephTimer); for (const t of hotTimers.values()) clearTimeout(t); hotTimers.clear(); for (const w of [...inboxWaiters]) w.wake(); /* Plan 0472: drain pending long-poll waiters (resolve, no dangling) */ if (openTurn && openTurn.timer) { clearTimeout(openTurn.timer); openTurn.timer = null; } /* Plan 0473 P2: clear a pending turn-settling timer */ for (const [, c] of conns) { if (c.voice && c.voice.timer) clearTimeout(c.voice.timer); } if (asr) { try { asr.close(); } catch (e) {} asr = null; } watcher && watcher.close(); wss.clients.forEach((c) => c.close()); httpServer.close(() => res()); }),
     _http: httpServer,
     _acks: acks,                 // Plan 0471 M2: test-only observability (bounded map)
     _lastResults: lastResults,   // Plan 0471 M3: test-only observability (bounded object)

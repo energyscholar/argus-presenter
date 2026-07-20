@@ -32,9 +32,36 @@ No AI required — it runs standalone. On launch it prints all three entry URLs:
 - **control** `/control` — the presenter control panel
 - **creator** `/creator` — the content-authoring panel
 
-Environment variables (both optional):
+Environment variables (all optional):
 - `PRESENTER_MODULES_DIR` — where content modules are read from (default `./modules`).
 - `PRESENTER_CONTROL_TOKEN` — when set, gates control actions + module write-back.
+- `PRESENTER_ASR_CMD` — the persistent speech-recognition worker command for inbound voice
+  (default `python3 voice/asr-whisper.py`, a warm faster-whisper worker). See below.
+- `PRESENTER_TRANSCRIPT_PERSIST` — opt-in (default OFF). When ON, recognized transcript text is
+  appended as JSONL under `PRESENTER_TRANSCRIPT_DIR` (default `.transcripts/`, gitignored).
+
+## Inbound voice (optional, off by default)
+A participant can speak into their browser mic; the client CPU pre-processes the audio and streams
+16 kHz PCM to the server, which runs speech recognition and hands the recognized **text** to the
+presenter/AI. **Audio never returns to a human, and audio is never stored** — only text, and only if
+you explicitly opt in.
+
+- **Lightweight by default.** The display page loads only a **sub-1KB stub**. The capture engine and
+  DSP worklet load on demand (dynamic `import()`) the first time voice is enabled — never before, and
+  **no WebAssembly** is loaded in this path. Byte budgets are CI-gated (see `test/unit/V0470-budget`).
+- **Enable it** from the green-dot **Settings** overlay → **Voice → 🎙 Mic** row (default OFF), or ask
+  the AI to request it with `presenter_voice_enable`. Either way the browser's **mic-permission prompt**
+  is the uncoerceable gate; while the mic is hot a persistent **on-air badge** with a one-click **Stop**
+  is shown. The AI can never silently hot a mic.
+- **Secure context required.** `getUserMedia` needs `localhost`/`127.0.0.1` or HTTPS — plain
+  `http://<lan-ip>` is blocked by the browser; use the Cloudflare tunnel (WSS) for multi-device use.
+- **Read recognized speech** with the cursored `presenter_transcript` tool.
+- **Recognizer.** The default ASR is a **persistent, warm** worker (model loaded once, reused across
+  utterances — never cold-spawned per segment). It is pluggable via `PRESENTER_ASR_CMD`; the default
+  `voice/asr-whisper.py` needs a `faster-whisper` venv (documented in that file). Optional enhancers
+  (RNNoise, Silero VAD, Opus) are scaffolded but off; the MVP DSP is pure JS.
+- **Transcripts are ephemeral by default** (a bounded in-memory ring). Disk persistence is opt-in
+  (`PRESENTER_TRANSCRIPT_PERSIST`) and, when on, is surfaced to clients (`welcome.transcriptPersisting`).
 
 Local content modules go in `modules/` and are **gitignored** (this public repo ships
 only the neutral `demo-welcome` module — your own content is never committed here).
