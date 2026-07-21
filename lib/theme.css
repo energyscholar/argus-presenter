@@ -20,6 +20,9 @@
   --ap-focus:     #00e5ff;
   --ap-radius:    10px;
   --ap-gap:       0.75rem;
+  /* Native widgets (<select> popups, scrollbars) are drawn by the UA, not the
+     page — they need this to match the theme. Inherited by dark themes. */
+  --ap-color-scheme: dark;
   --ap-font:      "Courier New", ui-monospace, "Cascadia Code", monospace;
   --ap-font-ui:   system-ui, -apple-system, sans-serif;
   --ap-speed:     0.22s;
@@ -37,6 +40,7 @@
   --ap-fg:#0f172a; --ap-fg-dim:#475569; --ap-accent:#2563eb; --ap-accent-fg:#ffffff;
   --ap-ok:#16a34a; --ap-danger:#dc2626; --ap-border:#cbd5e1; --ap-focus:#2563eb;
   --ap-font:var(--ap-font-ui);
+  --ap-color-scheme: light;
 }
 
 /* ---- base building blocks (all optional; components can extend) ---- */
