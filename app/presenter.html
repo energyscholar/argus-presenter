@@ -21,7 +21,11 @@
   #ap-goto-control{position:fixed;top:4px;left:6px;z-index:55;background:rgba(6,10,24,.7);color:#cfe9ff;border:1px solid #2a3a5a;border-radius:6px;padding:4px 9px;font:11px/1.4 'Courier New',monospace;letter-spacing:.06em;cursor:pointer;opacity:.45;}
   #ap-goto-control:hover{opacity:1;border-color:#22e5a0;}
   #led.on{background:#22e5a0;box-shadow:0 0 8px #22e5a0;}
-  #ap-config{position:fixed;top:34px;right:8px;z-index:61;width:236px;background:rgba(6,10,24,.96);border:1px solid #2a3a5a;border-radius:8px;padding:10px 12px;font:12px/1.4 'Courier New',monospace;color:#cfe9ff;display:none;box-shadow:0 6px 24px rgba(0,0,0,.5);}
+  /* max-height: the panel is position:fixed with no intrinsic bound — as rows accumulate it
+     grew down across the echo line (#ap-echo, bottom:38px) and the input row, which it
+     outranks at z-index 61 vs 41. Bound it to stop ABOVE that strip and scroll its own
+     overflow instead of overlaying the display. Top 34px + 72px bottom clearance. */
+  #ap-config{position:fixed;top:34px;right:8px;z-index:61;width:236px;max-height:calc(100vh - 106px);overflow-y:auto;overscroll-behavior:contain;background:rgba(6,10,24,.96);border:1px solid #2a3a5a;border-radius:8px;padding:10px 12px;font:12px/1.4 'Courier New',monospace;color:#cfe9ff;display:none;box-shadow:0 6px 24px rgba(0,0,0,.5);}
   #ap-config.open{display:block;}
   #ap-config h4{margin:0 0 6px;font-size:11px;letter-spacing:.12em;color:#6cf;text-transform:uppercase;}
   #ap-config .row{display:flex;gap:4px;align-items:center;margin:5px 0;flex-wrap:wrap;}
