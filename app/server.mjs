@@ -229,7 +229,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     ops: { applied: 0, denied: 0, malformed: 0, throttled: 0, duplicate: 0 },
     fanout: { sum: 0, count: 0 },
     applyMs: { sum: 0, count: 0, max: 0 },
-    reconnects: 0, renderErrors: 0, opApplyFailures: 0,
+    reconnects: 0, renderErrors: 0, opApplyFailures: 0, frameErrors: 0,
     rtt: { last: null, sum: 0, count: 0 },
   };
   const telemetryView = () => ({
@@ -238,7 +238,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     fanoutSamples: telem.fanout.count,
     avgApplyMs: telem.applyMs.count ? +(telem.applyMs.sum / telem.applyMs.count).toFixed(3) : 0,
     maxApplyMs: +telem.applyMs.max.toFixed(3),
-    reconnects: telem.reconnects, renderErrors: telem.renderErrors, opApplyFailures: telem.opApplyFailures,
+    reconnects: telem.reconnects, renderErrors: telem.renderErrors, opApplyFailures: telem.opApplyFailures, frameErrors: telem.frameErrors,
     rtt: { last: telem.rtt.last, avg: telem.rtt.count ? +(telem.rtt.sum / telem.rtt.count).toFixed(1) : null, samples: telem.rtt.count },
   });
   const polls = new Map();     // promptId -> {spec, votes:Map(userId->{value,userName,ts}), open}
@@ -623,6 +623,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     // Plan 0471 C1: a socket-level 'error' (frame > MAX_PAYLOAD → ws RangeError 1009, invalid
     // UTF-8, bad RSV bits, ECONNRESET) must NOT hit Node's default handler and kill the process.
     ws.on('error', (e) => {
+      telem.frameErrors++;   // Plan 0482 B3: a socket/frame fault is a HEALTH signal, not just a log line
       try { log.warn('ws', 'socket-error', { socketId: (conns.get(ws) || {}).id, err: String(e && e.message || e) }); } catch {}
       try { ws.close(1011); } catch {}
     });
@@ -631,8 +632,10 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       // parsed as JSON, is exempt from the durable-op cap, and is ignored unless the conn
       // has an active voice session (RT-7). Route it and return.
       if (isBinary) { handleVoiceBinary(conns.get(ws), ws, buf); return; }
-      let m; try { m = JSON.parse(buf.toString()); } catch (e) { return; }
-      if (m === null || typeof m !== 'object') return;   // Plan 0471 C2: null/primitive frame → no dispatch (null.t would throw)
+      // Plan 0482 B3: an unparseable / non-object frame is a FRAME ERROR — counted so health can
+      // see a client whose every frame is garbage (previously an entirely silent `return`).
+      let m; try { m = JSON.parse(buf.toString()); } catch (e) { telem.frameErrors++; return; }
+      if (m === null || typeof m !== 'object') { telem.frameErrors++; return; }   // Plan 0471 C2: null/primitive frame → no dispatch (null.t would throw)
       try {
       const c = conns.get(ws);
       if (c) c.lastSeen = Date.now();   // liveness (X4)
@@ -826,7 +829,9 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       log.trace('op', 'duplicate', { socketId: c.id, opId });
     } else {
       telem.ops.denied++;
-      log.debug('op', 'denied', { socketId: c.id, path: m.path, verb: m.verb, by: c.userId });
+      // Plan 0482 B3: WARN, not debug. At debug a permission BUG (a rule that wrongly denies a
+      // legitimate action) is indistinguishable from a participant simply not clicking anything.
+      log.warn('op', 'denied', { socketId: c.id, path: m.path, verb: m.verb, by: c.userId });
     }
   }
 
@@ -2176,10 +2181,27 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       const o = telem.ops, total = o.applied + o.denied + o.malformed;
       const errorRate = total ? +((o.denied + o.malformed) / total).toFixed(3) : 0;
       const anyStale = connections.some((x) => x.stale);
-      const status = (anyStale || errorRate > 0.5) ? 'degraded' : 'green';
+      // Plan 0482 B3 — health must react to the signals that mean THE SURFACE IS DEAD, and must
+      // NOT react to the signal that means the permission model is doing its job.
+      //   FAULTS (degrade): renderErrors + opApplyFailures — the client cannot draw or apply;
+      //   throttled — we are dropping the user's input; frameErrors — frames arriving as garbage;
+      //   malformed — ops arriving unusable. Every one of these means someone's session is broken.
+      //   DENIALS (never degrade): a denied op is default-deny WORKING. Five benign denials used to
+      //   drive errorRate to 1.0 and report 'degraded' — crying wolf, while a wholly dead frame
+      //   pipeline still read green because none of the fault counters were consulted at all.
+      const faults = {
+        renderErrors: telem.renderErrors,
+        opApplyFailures: telem.opApplyFailures,
+        frameErrors: telem.frameErrors,
+        throttled: o.throttled,
+        malformed: o.malformed,
+      };
+      const faultCount = faults.renderErrors + faults.opApplyFailures + faults.frameErrors + faults.throttled + faults.malformed;
+      const status = (anyStale || faultCount > 0) ? 'degraded' : 'green';
       return {
         status, connections,
         opsApplied: o.applied, errorRate,
+        faults, faultCount, denied: o.denied,   // denials REPORTED (visible) but never degrading
         stateVersion: store.version(), opLogSize: store.oplogSince(0).length,
         rtt: telem.rtt.last, reconnects: telem.reconnects,
       };
