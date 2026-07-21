@@ -58,12 +58,17 @@
       return { name: f.name || String(i), input: input, err: err, validate: validate1 };
     });
 
-    var submit = document.createElement('button'); submit.type = 'submit'; submit.className = 'ap-btn ap-btn--primary ap-form-submit';
+    var submit = document.createElement('button');
+    // NOT type="submit". The content frame is sandboxed as allow-scripts WITHOUT
+    // allow-forms, so the browser SILENTLY blocks native <form> submission and the
+    // submit handler never fires. We do not need native submit: answers travel over
+    // the Argus messaging layer on click, exactly like choice/text-input/dice.
+    submit.type = 'button'; submit.className = 'ap-btn ap-btn--primary ap-form-submit';
     submit.textContent = opts.submitLabel || 'Submit';
     form.appendChild(submit);
 
-    form.addEventListener('submit', function (e) {
-      e.preventDefault();
+    function doSubmit(e) {
+      if (e) e.preventDefault();
       var ok = true, out = {}, firstBad = null;
       models.forEach(function (m) {
         var err = m.validate();
@@ -75,7 +80,9 @@
       if (Argus) Argus.answer(pid, out);
       if (A) A.announce('Submitted.');
       submit.classList.add('is-selected'); submit.textContent = opts.submittedLabel || 'Submitted ✓';
-    });
+    }
+    submit.addEventListener('click', doSubmit);
+    form.addEventListener('submit', doSubmit);   // Enter key, where the UA permits it
 
     root.appendChild(form);
     return { values: function () { var o = {}; models.forEach(function (m) { o[m.name] = m.input.value; }); return o; }, destroy: function () { root.innerHTML = ''; } };

@@ -1,5 +1,18 @@
 /* FORM (multi-field). Extends theme tokens. */
 .ap-form { display: flex; flex-direction: column; gap: 0.35rem; max-width: 560px; }
-.ap-form select.ap-input { font: inherit; }
+/* A <select> renders a NATIVE popup that is NOT painted on the page, so the
+   translucent --ap-surface composites over the UA's default WHITE and the light
+   --ap-fg text becomes unreadable. Native widgets need an OPAQUE background and
+   an explicit color-scheme; both flip with the theme via tokens. */
+.ap-form select.ap-input {
+  font: inherit;
+  color-scheme: var(--ap-color-scheme, dark);
+  background-color: var(--ap-bg);
+  color: var(--ap-fg);
+}
+.ap-form select.ap-input option {
+  background-color: var(--ap-bg);
+  color: var(--ap-fg);
+}
 .ap-form-submit { align-self: flex-start; margin-top: 0.7rem; }
 .ap-form-submit.is-selected { --ap-border: var(--ap-ok); color: var(--ap-ok); background: var(--ap-surface); }
