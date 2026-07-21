@@ -455,6 +455,71 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     const token = req.headers['x-control-token'] || q.get('token');
     return (CONTROL_TOKEN && token === CONTROL_TOKEN) || (ROLE_HASH && token === ROLE_HASH);
   }
+  // ── Plan 0482 A2 — THE IDENTITY SEAM ────────────────────────────────────────────────
+  // The ONE place role + userId are decided. Roles are an ALLOWLIST (a closed set); anything
+  // unrecognised is downgraded to participant and logged loudly (I7 — never a silent no-op).
+  // This is the seam an external identity provider (OAuth) later plugs into: replace the body,
+  // not the call sites. There must be exactly one caller (the `hello` handler).
+  //
+  // Gate policy per role:
+  //   participant          — always granted (the ungated default; no credential can be required)
+  //   presenter | ai       — control roles. Ungated deployments grant tokenless (LAN back-compat,
+  //                          asserted by test/unit/auth-role.test.mjs); when a credential IS
+  //                          configured the hello token must match CONTROL_TOKEN or ROLE_HASH.
+  //   gm                   — a PRIVILEGED READ role (see app/permissions.mjs DEFAULT_READ_POLICY:
+  //                          it reads peer votes, answers, chat, copresent). It was previously
+  //                          UNGATED — `?role=gm` handed any curious viewer the presenter's
+  //                          private slice. It now requires a credential UNCONDITIONALLY:
+  //                          when none is configured there is nothing to verify, so it is DENIED.
+  //                          gm remains a legitimate, reachable role — it is gated, not abolished.
+  const KNOWN_ROLES = new Set(['participant', 'presenter', 'ai', 'gm']);
+  const CONTROL_ROLES = new Set(['presenter', 'ai']);
+
+  /** True iff `token` matches a configured control credential. */
+  function credentialOk(token) {
+    return !!((CONTROL_TOKEN && token === CONTROL_TOKEN) || (ROLE_HASH && token === ROLE_HASH));
+  }
+
+  /**
+   * Decide the EFFECTIVE identity for a connection from its `hello` frame.
+   * Returns {userId, userName, role, isGuest, capScope?, capNonce?}.
+   * NEVER throws and NEVER returns a role outside KNOWN_ROLES.
+   */
+  function resolveIdentity(m, capGrant, socketId) {
+    // GUEST (capability link): identity comes from the authentic token, role HARD-FORCED to
+    // participant. The client cannot widen either.
+    if (capGrant) {
+      return {
+        userId: 'guest:' + capGrant.nonce,
+        userName: capGrant.name || ('guest:' + capGrant.nonce),
+        role: 'participant',
+        isGuest: true,
+        capScope: capGrant.scope,
+        capNonce: capGrant.nonce,
+      };
+    }
+    const userId = m.userId || ('anon-' + Math.random().toString(36).slice(2, 8));
+    const userName = m.userName || userId;
+    const asked = m.role || 'participant';
+    const deny = (reason) => {
+      log.warn('auth', 'role-denied', { socketId, userId, requested: String(asked), granted: 'participant', reason });
+      return { userId, userName, role: 'participant', isGuest: false };
+    };
+
+    if (!KNOWN_ROLES.has(asked)) return deny('unknown-role');       // closed set — no verbatim roles
+    if (asked === 'participant') return { userId, userName, role: 'participant', isGuest: false };
+
+    if (CONTROL_ROLES.has(asked)) {
+      const gated = !!(CONTROL_TOKEN || ROLE_HASH);
+      if (gated && !credentialOk(m.token)) return deny('bad-credential');
+      return { userId, userName, role: asked, isGuest: false };     // ungated ⇒ tokenless grant
+    }
+    // gm — credential required unconditionally; no credential configured ⇒ nothing to verify ⇒ deny.
+    if (!(CONTROL_TOKEN || ROLE_HASH)) return deny('gm-requires-credential-none-configured');
+    if (!credentialOk(m.token)) return deny('bad-credential');
+    return { userId, userName, role: 'gm', isGuest: false };
+  }
+
   const wss = new WebSocketServer({ server: httpServer, maxPayload: MAX_PAYLOAD });
   // Plan 0471 C1: a server-level socket error (bad handshake, etc.) must never reach
   // Node's default "Unhandled 'error'" path (which terminates the process).
@@ -470,7 +535,11 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     for (const [ws] of conns) { if (ws.readyState === 1) { try { send(ws, { t: 'ping', ts }); } catch {} } }
   }, PING_MS);
   heartbeat.unref?.();
-  function presence() { return [...conns.values()].map((c) => ({ userId: c.userId, userName: c.userName, role: c.role, eyesOn: c.eyesOn || null })); }
+  // Plan 0482 A2: presence reports IDENTIFIED connections only. A socket that has opened but not
+  // yet sent `hello` has no userId and no decided role — reporting it as a `participant` with
+  // userId:null is a phantom: it inflates counts and lets an observer read a role that the
+  // identity seam has not yet assigned. Presence is "who is here", not "how many sockets".
+  function presence() { return [...conns.values()].filter((c) => c.userId).map((c) => ({ userId: c.userId, userName: c.userName, role: c.role, eyesOn: c.eyesOn || null })); }
   // Full presence (incl. IP + socketId + current display id) pushed to CONTROL roles only, for the GM user list.
   function pushPresence() {
     // No-op unless a control client (presenter/ai) is actually listening — avoids building/sending
@@ -529,8 +598,6 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       const c = conns.get(ws);
       if (c) c.lastSeen = Date.now();   // liveness (X4)
       if (m.t === 'hello') {
-        c.userId = m.userId || ('anon-' + Math.random().toString(36).slice(2, 8));
-        c.userName = m.userName || c.userId;
         // Plan 0472 P4 (SECURITY): a signed, scoped, revocable GUEST capability link (?cap=<token>).
         // The HMAC is verified over the RAW payload bytes BEFORE any field is trusted; exp + revocation
         // are enforced; the rejection reason stays INTERNAL (a generic warn only — never the reason or
@@ -551,34 +618,14 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
             log.warn('cap', 'capability-disabled', { socketId: c.id });   // links disabled: no secret configured
           }
         }
-        if (capGrant) {
-          // GUEST identity: participant only. Attribution is bound to the token nonce (not client-claimed),
-          // so a guest can neither impersonate another userId nor promote itself.
-          c.role = 'participant';
-          c.isGuest = true;
-          c.capScope = capGrant.scope;
-          c.capNonce = capGrant.nonce;
-          c.userId = 'guest:' + capGrant.nonce;
-          if (capGrant.name) c.userName = capGrant.name;
-        } else {
-          // AUTH-1 / AUTH-ROLE: control roles require a credential when one is configured.
-          // GRANTED iff: ungated (no token AND no password hash) OR the hello token matches
-          // CONTROL_TOKEN (when set) OR it matches ROLE_HASH (the seeded password hash, when
-          // set). Otherwise downgrade to participant. CONTROL_TOKEN-only behaves exactly as
-          // before; neither configured ⇒ ungated (LAN-open back-compat).
-          let reqRole = m.role || 'participant';
-          if (reqRole === 'presenter' || reqRole === 'ai') {
-            const gated = !!(CONTROL_TOKEN || ROLE_HASH);
-            const ok = !gated
-              || (CONTROL_TOKEN && m.token === CONTROL_TOKEN)
-              || (ROLE_HASH && m.token === ROLE_HASH);
-            if (!ok) {
-              log.warn('auth', 'control-denied', { userId: c.userId, role: reqRole });
-              reqRole = 'participant';
-            }
-          }
-          c.role = reqRole;
-        }
+        // Plan 0482 A2: role + userId are decided in EXACTLY ONE function (resolveIdentity,
+        // the identity seam). Guest/control/gm/unknown-role policy all live there; this call
+        // site only applies the verdict.
+        const ident = resolveIdentity(m, capGrant, c.id);
+        c.userId = ident.userId;
+        c.userName = ident.userName;
+        c.role = ident.role;
+        if (ident.isGuest) { c.isGuest = true; c.capScope = ident.capScope; c.capNonce = ident.capNonce; }
         byUser.set(c.userId, ws);
         // welcome.role = the EFFECTIVE granted role, so the client learns if it was
         // silently downgraded (wrong/absent password) and can surface feedback.
