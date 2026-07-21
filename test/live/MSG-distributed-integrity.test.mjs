@@ -86,33 +86,46 @@ test('MSG-D — cross-client propagation, digest agreement, reconnect convergenc
     await waitContentFrame(alice); await waitContentFrame(bob);
     await collect(alice); await collect(bob);
 
-    // ---- D1: client -> server -> client -------------------------------------
-    // Alice writes her own answer slice (permitted: answers/*/{self}).
-    await contentFrame(alice).evaluate(() => window.Argus.answer('dtest', { from: 'alice', n: 41 }));
-    await until(() => server.store.get('answers/dtest/alice') !== undefined,
-      { label: 'alice answer reached the server' });
-    await until(async () => /alice/.test(await seen(bob)),
-      { timeout: 5000, label: "bob was DELIVERED alice's write" });
+    // ---- D1: client -> server -> client, on a SHARED path ------------------
+    // NB (S209): an earlier version wrote to `answers/` and asserted bob SAW it. That passed only
+    // because answers were world-readable — a PRIVACY LEAK that Plan 0471 deliberately closed
+    // (permissions.mjs: `answers` is now roles:['gm']). Asserting the old behaviour would have
+    // pressured a Generator into RE-OPENING the hole. Use `crud`, which is genuinely shared.
+    await contentFrame(alice).evaluate(() =>
+      window.Argus.op('crud/board/items', 'add', { id: 'a1', from: 'alice', n: 41 }));
+    await until(() => server.store.get('crud/board/items') !== undefined,
+      { label: "alice's shared write reached the server" });
+    await until(async () => /41/.test(await seen(bob)),
+      { timeout: 5000, label: "bob was DELIVERED alice's shared write" });
 
     const bobSaw = await seen(bob);
-    expect('D1 client->server->client: bob receives alice\'s VALUE (not just the path)',
-      /"n":41/.test(bobSaw), bobSaw.slice(0, 160));
+    expect('D1 client->server->client on a shared path', /41/.test(bobSaw), bobSaw.slice(0, 160));
+
+    // D1b — the PRIVACY half: a private write must NOT cross to a peer.
+    await contentFrame(alice).evaluate(() => window.Argus.answer('secret', { pin: 8675309 }));
+    await until(() => server.store.get('answers/secret/alice') !== undefined,
+      { label: "alice's private answer reached the server" });
+    await new Promise((r) => setTimeout(r, 600));
+    const bobAfter = await seen(bob);
+    expect('D1b a peer answer is NOT disclosed to another participant (INV-SEC-1)',
+      !/8675309/.test(bobAfter), bobAfter.slice(0, 160));
 
     // ---- D2: checksum agreement (server vs every client) --------------------
-    const srvAnswers = server.store.get('answers');
+    const srvAnswers = server.store.get('crud');
     const aState = await rebuilt(alice);
     const bState = await rebuilt(bob);
     const srvD = digest(srvAnswers);
-    const aD = digest(aState && aState.answers);
-    const bD = digest(bState && bState.answers);
+    const aD = digest(aState && aState.crud);
+    const bD = digest(bState && bState.crud);
     expect('D2 alice digest matches server', aD === srvD, `client=${aD} server=${srvD}`);
     expect('D2 bob digest matches server', bD === srvD, `client=${bD} server=${srvD}`);
 
     // ---- D3: reconnect convergence (state-machine maintenance) --------------
     await bob.close();                       // bob drops
-    await contentFrame(alice).evaluate(() => window.Argus.answer('dtest2', { from: 'alice', n: 7 }));
-    await until(() => server.store.get('answers/dtest2/alice') !== undefined,
-      { label: 'state advanced while bob was away' });
+    await contentFrame(alice).evaluate(() =>
+      window.Argus.op('crud/board/items', 'add', { id: 'a2', from: 'alice', n: 7 }));
+    await until(() => JSON.stringify(server.store.get('crud/board/items') || '').includes('a2'),
+      { label: 'shared state advanced while bob was away' });
 
     // NB: reconnect with debug=1. dbgLog() early-returns unless DEBUG, so
     // __apDebug.dump().state is INERT without it (app/presenter.html:194,210).
@@ -123,11 +136,11 @@ test('MSG-D — cross-client propagation, digest agreement, reconnect convergenc
     // Resync arrives as a fresh SNAPSHOT on hello -> read the snapshot-seeded view.
     await until(async () => {
       const s = await snapshotState(bob);
-      return !!(s && s.answers && s.answers.dtest2);
+      return JSON.stringify((s && s.crud) || '').includes('a2');
     }, { timeout: 8000, label: 'bob resynced the state he missed' });
 
-    const bAfter = digest(((await snapshotState(bob)) || {}).answers);
-    const srvAfter = digest(server.store.get('answers'));
+    const bAfter = digest(((await snapshotState(bob)) || {}).crud);
+    const srvAfter = digest(server.store.get('crud'));
     expect('D3 reconnected client converges to the server digest',
       bAfter === srvAfter, `client=${bAfter} server=${srvAfter}`);
 
