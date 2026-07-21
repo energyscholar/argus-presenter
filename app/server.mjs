@@ -16,7 +16,7 @@
  */
 import http from 'http';
 import { createHash } from 'node:crypto';
-import { readFileSync, readdirSync, statSync, existsSync, writeFileSync, watch, mkdirSync, unlinkSync, appendFileSync } from 'fs';
+import { readFileSync, readdirSync, statSync, existsSync, writeFileSync, watch, mkdirSync, unlinkSync, appendFileSync, lstatSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { tmpdir } from 'os';
@@ -409,7 +409,18 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
           let module;
           try { module = JSON.parse(body); } catch (e) { res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'invalid json' })); return; }
           try {
-            writeFileSync(join(MODULES_DIR, id + '.json'), JSON.stringify(module, null, 2));
+            const target = join(MODULES_DIR, id + '.json');
+            // Plan 0482 A7 (DATA-LOSS PREVENTION): writeFileSync FOLLOWS SYMLINKS. A module file in
+            // MODULES_DIR may be a symlink into a live source tree, so a write-back through it would
+            // silently overwrite the real source (and the fs watcher would then hot-reload the
+            // wreckage). Refuse LOUDLY rather than destroy the link target. lstat does not follow.
+            if (existsSync(target) && lstatSync(target).isSymbolicLink()) {
+              log.warn('modules', 'writeback-refused-symlink', { id, target, reason: 'refusing to write through a symlink' });
+              res.writeHead(409, { 'content-type': 'application/json; charset=utf-8' });
+              res.end(JSON.stringify({ error: 'refusing to write through a symlink', id }));
+              return;
+            }
+            writeFileSync(target, JSON.stringify(module, null, 2));
             moduleCache.delete(id);   // invalidate so the next read reflects the write
           } catch (e) { res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: String(e.message || e) })); return; }
           res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
