@@ -22,8 +22,9 @@ test('X1 — fresh connect gets a full snapshot; reconnect replays only missed o
   const server = await createServer({ port: 0 });
   const url = server.url().replace('http', 'ws');
   try {
-    // Seed 3 ops before anyone connects.
-    for (const v of ['a', 'b', 'c']) server.store.apply({ path: 'k/' + v, verb: 'set', value: v }, gm);
+    // Seed 3 ops before anyone connects. Plan 0471 C3: use the ALL-readable 'crud' surface
+    // so a participant actually receives the replayed diffs (default-deny hides unlisted paths).
+    for (const v of ['a', 'b', 'c']) server.store.apply({ path: 'crud/' + v, verb: 'set', value: v }, gm);
     expect(server.store.version() === 3, 'version=3 after seed');
 
     // Fresh connect -> full snapshot at v3.
@@ -34,8 +35,8 @@ test('X1 — fresh connect gets a full snapshot; reconnect replays only missed o
     c1.ws.close();
 
     // 2 more ops happen while u1 is away -> v5.
-    server.store.apply({ path: 'k/d', verb: 'set', value: 'd' }, gm);
-    server.store.apply({ path: 'k/e', verb: 'set', value: 'e' }, gm);
+    server.store.apply({ path: 'crud/d', verb: 'set', value: 'd' }, gm);
+    server.store.apply({ path: 'crud/e', verb: 'set', value: 'e' }, gm);
     expect(server.store.version() === 5, 'version=5 while away');
 
     // Reconnect reporting lastVersion=3 -> resync of exactly ops 4 and 5, NO snapshot.
