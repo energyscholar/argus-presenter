@@ -58,11 +58,11 @@ function transcribeClean(wavPath, model) {
 }
 
 // ---- run ONE config against ONE clip ----
-async function runOne({ clip, port, model, enableOpts, captureMs = 16000, label }) {
+async function runOne({ clip, port, model, enableOpts, captureMs = Number(process.env.CAPTURE_MS) || 18000, label }) {
   process.env.PRESENTER_WHISPER_MODEL = model || 'base.en';
   const server = await createServer({ port, voiceEnabled: true });
   server.voiceEnable('all');            // spawn + warm the ASR worker
-  await sleep(2800);                    // model load
+  await sleep(Number(process.env.WARM_MS) || 6000);   // model load (small.en is slow to warm)
   const browser = await launchVoice({ wavPath: clip });
   const page = await browser.newPage();
   await page.goto(server.url() + '/?role=participant&userId=bench&name=Bench', { waitUntil: 'domcontentloaded' });
@@ -108,8 +108,9 @@ const CONFIGS = GRIDS[GRID] || GRIDS.quick;
 let basePort = 4500;
 for (const clip of clips) {
   console.log('\n===== CLIP:', clip, '=====');
-  const ref = await transcribeClean(clip, 'base.en');
-  console.log('REF(base.en clean):', JSON.stringify(ref));
+  const refModel = process.env.REF_MODEL || 'small.en';
+  const ref = await transcribeClean(clip, refModel);
+  console.log(`REF(${refModel} clean):`, JSON.stringify(ref));
   for (const cfg of CONFIGS) {
     const r = await runOne({ clip, port: basePort++, model: cfg.model, enableOpts: cfg.enableOpts, label: cfg.label });
     const w = wer(ref, r.hyp);
