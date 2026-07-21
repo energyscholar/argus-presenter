@@ -180,7 +180,35 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // if its HMAC + exp are still valid. In-memory by design (short-lived tokens; a restart = new session).
   const revokedNonces = new Set();
   const conns = new Map();     // ws -> {id,userId,userName,role}
-  const byUser = new Map();    // userId -> ws
+  // Plan 0482 A4 — userId -> Set<ws>. One PERSON may hold several sockets (phone + laptop, or a
+  // reconnect race where the old socket has not yet been reaped). The old Map<userId,ws> OVERWROTE
+  // on collision, so every targeted push silently went to the newcomer and the incumbent went dark
+  // with no error anywhere. DECISION: FAN-OUT, not refuse — refusing would break the ordinary
+  // reconnect (the replacement socket would be turned away while the dead one still held the id).
+  // Targeted delivery now reaches every live socket for that userId; the collision is logged loudly.
+  const byUser = new Map();    // userId -> Set<ws>
+  /** Bind `ws` to `userId`. Logs loudly when this userId already has a live socket. */
+  function bindUser(userId, ws) {
+    let set = byUser.get(userId);
+    if (!set) { set = new Set(); byUser.set(userId, set); }
+    if (set.size && !set.has(ws)) {
+      log.warn('conn', 'duplicate-userId', { userId, existingSockets: set.size, action: 'fan-out',
+        note: 'targeted content now delivered to ALL sockets for this userId' });
+    }
+    set.add(ws);
+  }
+  /** Unbind exactly this socket (never the whole userId — a peer socket may still be live). */
+  function unbindUser(userId, ws) {
+    const set = byUser.get(userId);
+    if (!set) return;
+    set.delete(ws);
+    if (!set.size) byUser.delete(userId);
+    else log.info('conn', 'duplicate-userId-remaining', { userId, remainingSockets: set.size });
+  }
+  /** Every live socket for `userId` (delivery fan-out). */
+  function socketsFor(userId) { const s = byUser.get(userId); return s ? [...s] : []; }
+  /** A single representative socket for `userId` — the most recently bound. For single-answer paths. */
+  function latestFor(userId) { const s = socketsFor(userId); return s.length ? s[s.length - 1] : null; }
   let connSeq = 0;             // per-server connection counter -> stable socketId (S5-ready)
   const store = createStore(); // core session state machine (Plan 0435 group B)
   // Current DISPLAY per role / per user (C6): what a (re)connecting client should
@@ -568,7 +596,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     if (target === 'all' || target == null) return [...conns.keys()];
     if (['participant', 'presenter', 'ai'].includes(target))
       return [...conns.entries()].filter(([, c]) => c.role === target).map(([ws]) => ws);
-    const ws = byUser.get(target); return ws ? [ws] : [];   // by userId
+    return socketsFor(target);   // by userId — ALL of that person's live sockets (A4 fan-out)
   }
 
   wss.on('connection', (ws, req) => {
@@ -626,7 +654,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         c.userName = ident.userName;
         c.role = ident.role;
         if (ident.isGuest) { c.isGuest = true; c.capScope = ident.capScope; c.capNonce = ident.capNonce; }
-        byUser.set(c.userId, ws);
+        bindUser(c.userId, ws);
         // welcome.role = the EFFECTIVE granted role, so the client learns if it was
         // silently downgraded (wrong/absent password) and can surface feedback.
         // RT-26 consent surface: tell every client whether recognized speech is being written to
@@ -748,7 +776,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     ws.on('close', () => {
       const c = conns.get(ws);
       if (c && c.voice && c.voice.active) { if (c.voice.timer) clearTimeout(c.voice.timer); c.voice.active = false; voiceSessions = Math.max(0, voiceSessions - 1); }   // RT-14: drop an orphaned open segment
-      if (c && c.userId) byUser.delete(c.userId); conns.delete(ws); updateChatListeners(); emit('presence', presence());
+      if (c && c.userId) unbindUser(c.userId, ws); conns.delete(ws); updateChatListeners(); emit('presence', presence());
       pushPresence();   // Plan 0471 M4: refresh the control user-list on disconnect (connect already does)
       evaluateFloor();   // Plan 0473 P6: a disconnect can lower the load (speaker gone) — reassess the floor
     });
@@ -839,7 +867,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       // not a reply). Lets the GM thumbnail "what that user sees". OPSEC: role-gated above.
       case 'mirror': {
         const uid = a.userId;
-        const tws = byUser.get(uid);
+        const tws = latestFor(uid);   // A4: one representative socket — mirror returns ONE html
         const tc = tws ? conns.get(tws) : null;
         const desc = displayByUser.get(uid) || (tc && displayByRole[tc.role]) || null;
         const html = (desc && tc) ? descToHtml(tc, desc) : null;
@@ -860,10 +888,13 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       case 'reset_user': {
         const uid = a.userId;
         displayByUser.delete(uid);
-        const tws = byUser.get(uid);
-        const tc = tws ? conns.get(tws) : null;
-        const desc = tc ? displayByRole[tc.role] : null;
-        if (tws && tc) { if (desc) renderDisplay(tws, tc, desc); else send(tws, { t: 'clear' }); }
+        // A4: retarget EVERY socket this person holds — resetting only one leaves the other stale.
+        for (const tws of socketsFor(uid)) {
+          const tc = conns.get(tws);
+          if (!tc) continue;
+          const desc = displayByRole[tc.role];
+          if (desc) renderDisplay(tws, tc, desc); else send(tws, { t: 'clear' });
+        }
         pushPresence();
         break;
       }
@@ -1111,7 +1142,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   }
   // Deliver a server→client signal to a SPEAKER by userId (their live socket). Never silent: this is how
   // the wrap-up / close is surfaced to the person holding the floor.
-  function notifySpeaker(userId, msg) { const ws = byUser.get(userId); if (ws) send(ws, msg); }
+  function notifySpeaker(userId, msg) { for (const ws of socketsFor(userId)) send(ws, msg); }   // A4: every device they hold
   // Arm the budget timers for a FRESHLY-OPENED turn. Measured from turn-open and NOT reset when the turn
   // is extended (it bounds total turn duration — the whole point for a non-stop speaker). Cleared in
   // closeTurn. budgetMs <= 0 ⇒ no proactive budget (the hard backstop still applies).
@@ -1141,8 +1172,11 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     log.warn('voice', 'turn-budget-cap', { turnId, userId, budgetMs: t.budgetMs });
     notifySpeaker(userId, { t: 'turn_budget', state: 'closed', turnId, reason: 'budget', budgetMs: t.budgetMs, mode: (api.profile().perTurnBudget || {}).mode || 'soft' });
     // Yield the floor: finalize (do NOT discard) any active voice segment for this speaker.
-    const ws = byUser.get(userId); const c = ws ? conns.get(ws) : null;
-    if (c && c.voice && c.voice.active) { try { voiceSegFinalize(c, ws, {}); } catch (e) {} }
+    // A4: finalize an active voice segment on whichever of this speaker's sockets holds one.
+    for (const ws of socketsFor(userId)) {
+      const c = conns.get(ws);
+      if (c && c.voice && c.voice.active) { try { voiceSegFinalize(c, ws, {}); } catch (e) {} }
+    }
     closeTurn('budget');
   }
 
