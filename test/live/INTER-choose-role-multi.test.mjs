@@ -42,16 +42,16 @@ test('INTER — two users take different stations concurrently; answers stay sep
   const server = await createServer({ port: 0 });
   const browser = await launch();
   try {
-    const vonsydo = await connectUser(browser, server, { userId: 'vonsydo', userName: 'Von Sydo' });
-    const marina  = await connectUser(browser, server, { userId: 'marina',  userName: 'Marina' });
+    const userA = await connectUser(browser, server, { userId: 'user-a', userName: 'Ada Vance' });
+    const userB   = await connectUser(browser, server, { userId: 'user-b',  userName: 'Bo Reyes' });
     await until(() => {
       const ids = server.presence().map((u) => u.userId);
-      return ids.includes('vonsydo') && ids.includes('marina');
+      return ids.includes('user-a') && ids.includes('user-b');
     }, { label: 'both users connected' });
 
     server.pushComponent('all', 'form', FORM);
-    await waitContentFrame(vonsydo); await waitContentFrame(marina);
-    for (const p of [vonsydo, marina]) {
+    await waitContentFrame(userA); await waitContentFrame(userB);
+    for (const p of [userA, userB]) {
       await until(async () => {
         const f = contentFrame(p);
         if (!f) return false;
@@ -61,20 +61,20 @@ test('INTER — two users take different stations concurrently; answers stay sep
     }
 
     // Both submit — different names, different seats.
-    await takeStation(vonsydo, 'Von Sydo', 'sensors');
-    await takeStation(marina, 'Marina', 'gunner');
+    await takeStation(userA, 'Ada Vance', 'sensors');
+    await takeStation(userB, 'Bo Reyes', 'gunner');
 
-    await until(() => server.store.get(`answers/${PID}/vonsydo`) !== undefined
-                   && server.store.get(`answers/${PID}/marina`) !== undefined,
+    await until(() => server.store.get(`answers/${PID}/userA`) !== undefined
+                   && server.store.get(`answers/${PID}/userB`) !== undefined,
       { timeout: 5000, label: 'both answers reached the store' });
 
-    const v = server.store.get(`answers/${PID}/vonsydo`);
-    const m = server.store.get(`answers/${PID}/marina`);
+    const v = server.store.get(`answers/${PID}/userA`);
+    const m = server.store.get(`answers/${PID}/userB`);
 
-    expect('Von Sydo recorded with HIS name', v && v.pcName === 'Von Sydo', JSON.stringify(v));
-    expect('Von Sydo recorded on HIS seat',   v && v.seat === 'sensors',    JSON.stringify(v));
-    expect('Marina recorded with HER name',   m && m.pcName === 'Marina',   JSON.stringify(m));
-    expect('Marina recorded on HER seat',     m && m.seat === 'gunner',     JSON.stringify(m));
+    expect('User A recorded with their name', v && v.pcName === 'Ada Vance', JSON.stringify(v));
+    expect('User A recorded on their seat',   v && v.seat === 'sensors',    JSON.stringify(v));
+    expect('User B recorded with their name',   m && m.pcName === 'Bo Reyes',   JSON.stringify(m));
+    expect('User B recorded on their seat',     m && m.seat === 'gunner',     JSON.stringify(m));
     // The failure this guards: one submission overwriting or contaminating the other.
     expect('answers did not cross-contaminate', v.seat !== m.seat && v.pcName !== m.pcName,
       `${JSON.stringify(v)} vs ${JSON.stringify(m)}`);
