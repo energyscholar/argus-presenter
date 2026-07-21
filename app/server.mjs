@@ -1837,6 +1837,12 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       const mode = resultsMode === 'all' ? 'all' : 'control';
       log.info('poll', 'open', { promptId, options: (options || []).length, resultsMode: mode });
       polls.set(promptId, { spec: { prompt, options }, open: true, resultsMode: mode });
+      // Plan 0482 B4 — RUNTIME idempotency. Opening a poll reseeds spec/open, but the votes
+      // subtree used to survive, and tally() reads the store. So rehearse → close → open live
+      // on one server process and every prompt started PRE-VOTED with the rehearsal's ballots.
+      // Opening a poll is a fresh ballot by definition: clear the votes (and any cached
+      // aggregate) FIRST, so the seeded results below and every later tally start from zero.
+      serverApply({ path: 'polls/' + promptId + '/votes', verb: 'clear' });
       // D1: seed the store so the poll is a first-class state slice.
       serverApply({ path: 'polls/' + promptId + '/spec', verb: 'set', value: { prompt, options } });
       serverApply({ path: 'polls/' + promptId + '/open', verb: 'set', value: true });
