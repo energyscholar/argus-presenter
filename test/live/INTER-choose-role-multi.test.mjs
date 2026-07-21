@@ -64,12 +64,14 @@ test('INTER — two users take different stations concurrently; answers stay sep
     await takeStation(userA, 'Ada Vance', 'sensors');
     await takeStation(userB, 'Bo Reyes', 'gunner');
 
-    await until(() => server.store.get(`answers/${PID}/userA`) !== undefined
-                   && server.store.get(`answers/${PID}/userB`) !== undefined,
+    // NOTE: these path segments are the USER IDs ('user-a'/'user-b'), not the page
+    // handles (userA/userB). They look interchangeable and are not.
+    await until(() => server.store.get(`answers/${PID}/user-a`) !== undefined
+                   && server.store.get(`answers/${PID}/user-b`) !== undefined,
       { timeout: 5000, label: 'both answers reached the store' });
 
-    const v = server.store.get(`answers/${PID}/userA`);
-    const m = server.store.get(`answers/${PID}/userB`);
+    const v = server.store.get(`answers/${PID}/user-a`);
+    const m = server.store.get(`answers/${PID}/user-b`);
 
     expect('User A recorded with their name', v && v.pcName === 'Ada Vance', JSON.stringify(v));
     expect('User A recorded on their seat',   v && v.seat === 'sensors',    JSON.stringify(v));
