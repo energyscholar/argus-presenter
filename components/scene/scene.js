@@ -48,7 +48,10 @@
       wrap.appendChild(cell);
 
       var opts = Object.assign({}, item.opts || {});
-      ['userId', 'userName', 'channel'].forEach(function (k) { if (opts[k] == null && spec[k] != null) opts[k] = spec[k]; });
+      // Plan 0482 A3: viewerRole inherits to children exactly as userId does. Without it a
+      // nested scene rendered with role=null and its sees() filter passed EVERYTHING — the
+      // client-side defense-in-depth silently evaporated one level down.
+      ['userId', 'userName', 'channel', 'viewerRole'].forEach(function (k) { if (opts[k] == null && spec[k] != null) opts[k] = spec[k]; });
       var handle = window.ApComponents ? window.ApComponents.mount(item.component, cell, opts) : null;
       handles.push({ id: item.id || (item.component + '-' + i), component: item.component, handle: handle });
     });

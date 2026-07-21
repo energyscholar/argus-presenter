@@ -922,10 +922,31 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // Stamp identity + apply the OPSEC scene strip via the PERMISSION MODEL (G2):
   // an item is included only if this role may READ its visibility. The scene
   // component keeps a thin client-side filter as defense-in-depth.
+  // Plan 0482 A3 — RECURSIVE visibility strip. The old strip only ran when the TOP-LEVEL
+  // component was `scene`, and only at depth 1. A scene nested inside a scene keeps its
+  // children at items[i].opts.items, which were never inspected — so `visibility:'gm'` at
+  // depth 2 was serialised straight into a participant's srcdoc. The strip is now applied at
+  // EVERY depth and regardless of the enclosing component name: the server never emits bytes
+  // the viewer may not read. Copy-on-write — the caller's opts object is never mutated.
+  const VISIBILITY_MAX_DEPTH = 16;   // cycle/blow-up guard; deeper nesting is not stripped, so it is refused
+  function stripVisibility(role, opts, depth = 0) {
+    if (!opts || typeof opts !== 'object' || !Array.isArray(opts.items)) return opts;
+    if (depth >= VISIBILITY_MAX_DEPTH) {
+      log.warn('content', 'visibility-depth-exceeded', { depth, maxDepth: VISIBILITY_MAX_DEPTH, action: 'items-dropped' });
+      return Object.assign({}, opts, { items: [] });   // fail-closed: never emit unstripped content
+    }
+    const items = [];
+    for (const it of opts.items) {
+      if (!it || typeof it !== 'object') { items.push(it); continue; }
+      if (!store.perms.canSeeVisibility(role, it.visibility)) continue;   // dropped for this viewer
+      const childOpts = stripVisibility(role, it.opts, depth + 1);
+      items.push(childOpts === it.opts ? it : Object.assign({}, it, { opts: childOpts }));
+    }
+    return Object.assign({}, opts, { items });
+  }
   function stampFor(c, component, opts) {
     const o = Object.assign({}, opts, { userId: c.userId, userName: c.userName, channel: c.userId, viewerRole: c.role });
-    if (component === 'scene' && Array.isArray(o.items)) o.items = o.items.filter((it) => store.perms.canSeeVisibility(c.role, it.visibility));
-    return o;
+    return stripVisibility(c.role, o);
   }
   function sendComponentTo(ws, c, desc) {
     const o = stampFor(c, desc.component, desc.opts || {});
