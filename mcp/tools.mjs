@@ -72,7 +72,8 @@ export const coreTools = [
         promptId: { type: 'string' }, prompt: { type: 'string' },
         options: { type: 'array', items: { type: 'object', properties: { label: { type: 'string' }, value: {}, style: { type: 'string' } } } },
         target: { type: 'string', default: 'participant' },
-        resultsTarget: { type: 'string', description: 'Where to show live results, e.g. "presenter"' }
+        resultsTarget: { type: 'string', description: 'Where to show live results, e.g. "presenter"' },
+        resultsMode: { type: 'string', enum: ['control', 'all'], default: 'control', description: 'Plan 0471 D1: who sees the AGGREGATE tally — "control" (default; presenter/ai only) or "all" (everyone gets counts-only). Raw per-user votes are ALWAYS controller-only in both modes (ballot secrecy).' }
       }
     },
     handler: async (args) => need().openPoll(args)

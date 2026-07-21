@@ -60,6 +60,9 @@ export function validOp(op) {
 const OPLOG_MAX = 1000;
 // Bound on remembered opIds for dedup (B6).
 const SEEN_MAX = 4000;
+// Plan 0471 L1: max items in a participant-writable id-keyed collection (chat, map/markers,
+// crud/*/items). The rate limiter caps additions/sec; this caps TOTAL — evict oldest (FIFO).
+const COLLECTION_MAX = 1000;
 
 export function createStore({ permissions } = {}) {
   const perms = permissions || createPermissions();
@@ -147,6 +150,20 @@ export function createStore({ permissions } = {}) {
         if (id == null) return null;               // add requires an id-bearing item
         const p = path + '/' + id;
         _setPath(p, clone(value));
+        // Plan 0471 L1: cap the collection's TOTAL size — evict oldest (FIFO by insertion order).
+        // The diff carries the evictions (null = removed) so clients drop them too.
+        const coll = get(path);
+        if (coll && typeof coll === 'object' && !Array.isArray(coll)) {
+          const keys = Object.keys(coll);
+          if (keys.length > COLLECTION_MAX) {
+            const diff = { [p]: clone(value) };
+            for (let i = 0; i < keys.length - COLLECTION_MAX; i++) {
+              if (keys[i] === id) continue;        // never evict the just-added item
+              delete coll[keys[i]]; diff[path + '/' + keys[i]] = null;
+            }
+            return diff;
+          }
+        }
         return { [p]: clone(value) };
       }
       case 'remove': {
@@ -206,19 +223,22 @@ export function createStore({ permissions } = {}) {
   /** Copy of the retained op-log (optionally only entries with version > since). */
   function oplogSince(since = 0) { return oplog.filter((e) => e.version > since).map((e) => clone(e)); }
 
-  /** Recursively clone the tree, omitting any path this role may not READ (S7). */
-  function filterNode(obj, prefix, role) {
+  /** Recursively clone the tree, omitting any path this actor may not READ (S7).
+   *  Plan 0471 C3: `actor`={role,userId}. Under default-DENY a DENIED container must be
+   *  DESCENDED (not pruned) so allowed descendants beneath it still reach the snapshot. */
+  function filterNode(obj, prefix, actor) {
     const out = {};
     for (const k of Object.keys(obj)) {
-      const p = prefix ? prefix + '/' + k : k;
-      if (!perms.canRead(role, p)) continue;
-      const v = obj[k];
-      out[k] = (v && typeof v === 'object' && !Array.isArray(v)) ? filterNode(v, p, role) : clone(v);
+      const p = prefix ? prefix + '/' + k : k; const v = obj[k];
+      if (perms.canRead(actor, p)) { out[k] = clone(v); }                 // allowed (leaf or prefix) → whole subtree
+      else if (v && typeof v === 'object' && !Array.isArray(v)) {         // denied here → descend for allowed descendants
+        const sub = filterNode(v, p, actor); if (Object.keys(sub).length) out[k] = sub;
+      }                                                                    // denied leaf → drop
     }
     return out;
   }
-  /** Memento: a role-filtered plain-object snapshot + the current version. */
-  function snapshot(role) { return { version: _version, state: filterNode(state, '', role) }; }
+  /** Memento: an actor-filtered plain-object snapshot + the current version. */
+  function snapshot(actor) { return { version: _version, state: filterNode(state, '', actor) }; }
 
   return { state, get, _setPath, _delPath, reduce, apply, perms, version, oplogSince, snapshot };
 }

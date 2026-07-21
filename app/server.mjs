@@ -34,7 +34,11 @@ import { deriveTrust, annotate as annotateTrust } from './untrusted.mjs';
 
 // X6 resilience caps.
 const MAX_CONNS = 200;              // connection cap
-const MAX_PAYLOAD = 1024 * 1024;    // per-frame byte cap. S206: raised 256KB→1MB so a whole-utterance voice burst (VOICE_SEG_MAX_BYTES ≈937KB) is never rejected by ws with a 1009 close.
+// MERGE (S209): the two sides are NOT in tension — different caps, different jobs.
+// Keep BOTH. Reverting MAX_PAYLOAD to 256KB silently re-breaks voice capture (a whole-utterance
+// burst is ~937KB and ws closes with 1009) — that was one of the five stacked bugs fixed in S206.
+const MAX_PAYLOAD = 1024 * 1024;    // per-frame ws byte cap (S206: 256KB->1MB for voice bursts)
+const MAX_VALUE_BYTES = 64 * 1024;  // Plan 0471 M3: per-value cap (mirrors state.mjs) — lastResults path
 const DURABLE_OPS_PER_SEC = 50;     // per-conn durable-op rate (ephemeral is coalesced, not capped)
 
 // Plan 0468: the dot means CONNECTION LIVENESS only. A real heartbeat keeps a silent-but-
@@ -188,6 +192,8 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // self-only until the presenter turns this ON. In-memory session state (v0.1).
   let rosterVisibleToAttendees = false;
   const everSeen = new Set();  // userIds seen (to count reconnects)
+  const everSeenOrder = [];    // Plan 0471 L2: FIFO to bound everSeen (client controls userId)
+  const EVER_SEEN_MAX = 5000;
   let contentModule = null;    // Group I: the current content module { title?, beats:[{component,opts,requires?}] }
   let currentBeat = -1;        // index of the displayed beat
   // X3 telemetry sink (controller-read-only). Feedback from stress points.
@@ -209,7 +215,10 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   });
   const polls = new Map();     // promptId -> {spec, votes:Map(userId->{value,userName,ts}), open}
   const acks = new Map();      // ackId -> { message, requestedAt, target, by:Map(userId->{userName,at}) } — eyes-on handshake
+  const ACKS_MAX = 256;        // Plan 0471 M2: bound the number of distinct outstanding ackIds
   const lastResults = {};      // PRIM-results: promptId -> { userId -> {type,value} } (last beat result per user)
+  const lastResultsOrder = []; // Plan 0471 M3: FIFO of promptIds for LRU eviction of lastResults
+  const LAST_RESULTS_MAX = 500;// Plan 0471 M3: bound distinct promptIds retained
   const listeners = { presence: [], result: [], poll: [], transcript: [], inbox: [], turnComplete: [], barge_in: [] };
   const emit = (ev, data) => listeners[ev].forEach((cb) => { try { cb(data); } catch (e) {} });
 
@@ -347,12 +356,15 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         // AUT-1: module write-back. The Content Creator POSTs a module JSON; it lands in
         // MODULES_DIR so listModules()/the GM <select> discovers it. MUTATION → guarded:
         // AUTH-gated (when a control token is configured), path-safe id, hard size cap.
-        // AUTH: if a control token is set, require it (header or ?token=); else 403.
-        if (CONTROL_TOKEN) {
+        // Plan 0471 H1: gate on ANY control credential (was CONTROL_TOKEN-only, so a
+        // rolePassword/ROLE_HASH-gated deployment left this write endpoint OPEN). Mirror the
+        // WS control gate: require a token matching CONTROL_TOKEN OR ROLE_HASH when either is set.
+        if (CONTROL_TOKEN || ROLE_HASH) {
           const q = rawPath.split('?')[1] || '';
           const qtoken = new URLSearchParams(q).get('token');
           const token = req.headers['x-control-token'] || qtoken;
-          if (token !== CONTROL_TOKEN) { res.writeHead(403, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'forbidden' })); return; }
+          const ok = (CONTROL_TOKEN && token === CONTROL_TOKEN) || (ROLE_HASH && token === ROLE_HASH);
+          if (!ok) { res.writeHead(403, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'forbidden' })); return; }
         }
         // id guard: no path separators / traversal (reuse readModuleFile's rule).
         if (!/^[\w.-]+$/.test(id)) { res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'bad id' })); return; }
@@ -444,6 +456,9 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     return (CONTROL_TOKEN && token === CONTROL_TOKEN) || (ROLE_HASH && token === ROLE_HASH);
   }
   const wss = new WebSocketServer({ server: httpServer, maxPayload: MAX_PAYLOAD });
+  // Plan 0471 C1: a server-level socket error (bad handshake, etc.) must never reach
+  // Node's default "Unhandled 'error'" path (which terminates the process).
+  wss.on('error', (e) => { try { log.warn('wss', 'error', { err: String(e && e.message || e) }); } catch {} });
 
   function send(ws, msg) { try { ws.send(JSON.stringify(msg)); } catch (e) {} }
   // Plan 0468 (Part A0): the heartbeat. The server pings every open socket every PING_MS; the
@@ -497,12 +512,20 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     // heartbeat's pong) drives the connection-liveness dot. lastActive stays in the struct (still set on
     // deliberate interaction) but Plan 0468 no longer surfaces it or anything derived from it (G5).
     conns.set(ws, { id: 'c' + (++connSeq), userId: null, userName: null, role: 'participant', lastSeen: Date.now(), connectedAt: Date.now(), lastActive: 0, ip });
+    // Plan 0471 C1: a socket-level 'error' (frame > MAX_PAYLOAD → ws RangeError 1009, invalid
+    // UTF-8, bad RSV bits, ECONNRESET) must NOT hit Node's default handler and kill the process.
+    ws.on('error', (e) => {
+      try { log.warn('ws', 'socket-error', { socketId: (conns.get(ws) || {}).id, err: String(e && e.message || e) }); } catch {}
+      try { ws.close(1011); } catch {}
+    });
     ws.on('message', (buf, isBinary) => {
       // Plan 0470 (RT-6): the binary PCM lane branches BEFORE JSON.parse — audio is NEVER
       // parsed as JSON, is exempt from the durable-op cap, and is ignored unless the conn
       // has an active voice session (RT-7). Route it and return.
       if (isBinary) { handleVoiceBinary(conns.get(ws), ws, buf); return; }
       let m; try { m = JSON.parse(buf.toString()); } catch (e) { return; }
+      if (m === null || typeof m !== 'object') return;   // Plan 0471 C2: null/primitive frame → no dispatch (null.t would throw)
+      try {
       const c = conns.get(ws);
       if (c) c.lastSeen = Date.now();   // liveness (X4)
       if (m.t === 'hello') {
@@ -569,7 +592,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         // otherwise a full role-filtered snapshot (Memento).
         resyncOrSnapshot(ws, c, m.lastVersion);
         redisplayFor(ws, c);   // C6: re-push the currently-displayed content module
-        if (everSeen.has(c.userId)) telem.reconnects++; else everSeen.add(c.userId);
+        if (everSeen.has(c.userId)) telem.reconnects++; else { everSeen.add(c.userId); everSeenOrder.push(c.userId); if (everSeenOrder.length > EVER_SEEN_MAX) everSeen.delete(everSeenOrder.shift()); }   // Plan 0471 L2: bounded
         send(ws, { t: 'ping', ts: Date.now() });   // X3 RTT probe
         log.info('conn', 'hello', { socketId: c.id, userId: c.userId, role: c.role, lastVersion: m.lastVersion || 0 });
         updateChatListeners();   // P3
@@ -585,9 +608,20 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         // Auditor: only meaningful results (answer/continue) — drop lifecycle events (ready/step/change/
         // flow-complete) that carry the SAME promptId and would false-trigger DEL-2 branch nav (S190 gotcha).
         if (r.promptId != null && (r.type === 'answer' || r.type === 'continue')) {
-          lastResults[r.promptId] = lastResults[r.promptId] || {};
-          lastResults[r.promptId][r.userId] = { type: r.type, value: r.value };
-          pushResult(r);
+          // Plan 0471 M3: this path bypasses store.validOp, so enforce the 64KB value cap here,
+          // and bound lastResults to LAST_RESULTS_MAX distinct promptIds (FIFO evict).
+          let vsize = 0; try { vsize = JSON.stringify(r.value === undefined ? null : r.value).length; } catch { vsize = Infinity; }
+          if (vsize > MAX_VALUE_BYTES) {
+            log.warn('result', 'value-too-large', { promptId: r.promptId, userId: r.userId, bytes: vsize });
+          } else {
+            if (!lastResults[r.promptId]) {
+              lastResults[r.promptId] = {};
+              lastResultsOrder.push(r.promptId);
+              while (lastResultsOrder.length > LAST_RESULTS_MAX) { const old = lastResultsOrder.shift(); delete lastResults[old]; }
+            }
+            lastResults[r.promptId][r.userId] = { type: r.type, value: r.value };
+            pushResult(r);
+          }
         }
       } else if (m.t === 'op') {
         handleOp(c, m);
@@ -603,11 +637,14 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         emit('poll', { type: 'request', from: { userId: c.userId, userName: c.userName }, spec: m.spec });
       } else if (m.t === 'ack') {
         // Eyes-on acknowledgement: the viewer clicked CONFIRM on a requireAck chime.
+        // Plan 0471 M2: ONLY an OUTSTANDING chime (created by api.chime requireAck) accepts an
+        // ack. An unknown/attacker-chosen ackId is dropped — it no longer creates a map entry,
+        // so the `acks` map can't be grown by unauth {t:'ack'} frames.
         const ackId = (m && m.ackId) || 'ready';
+        const a = acks.get(ackId);
+        if (!a) { log.debug('ack', 'unknown-ackId', { socketId: c.id, ackId }); return; }
         c.eyesOn = Date.now();                              // this connection is confirmed watching (not AFK)
         c.lastActive = Date.now();                          // ATT: eyes-on CONFIRM click = deliberate interaction
-        let a = acks.get(ackId);
-        if (!a) { a = { message: null, requestedAt: null, target: 'all', by: new Map() }; acks.set(ackId, a); }
         a.by.set(c.userId, { userName: c.userName, at: c.eyesOn });
         log.info('ack', 'eyes-on', { ackId, userId: c.userId });
         pushPresence();                                    // control user-list reflects eyes-on immediately
@@ -659,11 +696,13 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
           handleOp(c, { path: 'chat', verb: 'add', value: { id, text: m.text, name: c.userName } });   // display slice (best-effort; perm-gated)
         }
       }
+      } catch (e) { try { log.warn('ws', 'dispatch-error', { err: String(e && e.message || e) }); } catch {} }   // Plan 0471 C2: defense-in-depth
     });
     ws.on('close', () => {
       const c = conns.get(ws);
       if (c && c.voice && c.voice.active) { if (c.voice.timer) clearTimeout(c.voice.timer); c.voice.active = false; voiceSessions = Math.max(0, voiceSessions - 1); }   // RT-14: drop an orphaned open segment
       if (c && c.userId) byUser.delete(c.userId); conns.delete(ws); updateChatListeners(); emit('presence', presence());
+      pushPresence();   // Plan 0471 M4: refresh the control user-list on disconnect (connect already does)
       evaluateFloor();   // Plan 0473 P6: a disconnect can lower the load (speaker gone) — reassess the floor
     });
   });
@@ -717,11 +756,11 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       send(ws, { t: 'resync', from: lv, to: store.version(), count: missed.length });
       for (const e of missed) {
         const visible = {};
-        for (const p of Object.keys(e.diff)) if (store.perms.canRead(c.role, p)) visible[p] = e.diff[p];
+        for (const p of Object.keys(e.diff)) if (store.perms.canRead({ role: c.role, userId: c.userId }, p)) visible[p] = e.diff[p];   // Plan 0471 C3: actor-aware read
         if (Object.keys(visible).length) send(ws, { t: 'host', msg: { source: 'argus-host', type: 'diff', diff: visible, by: e.by, version: e.version } });
       }
     } else {
-      send(ws, { t: 'snapshot', state: store.snapshot(c.role).state, version: store.version() });
+      send(ws, { t: 'snapshot', state: store.snapshot({ role: c.role, userId: c.userId }).state, version: store.version() });   // Plan 0471 C3: actor-aware snapshot
     }
   }
 
@@ -801,7 +840,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     let recipients = 0;
     for (const [ws, c] of conns.entries()) {
       const visible = {};
-      for (const p of Object.keys(diff)) if (store.perms.canRead(c.role, p)) visible[p] = diff[p];
+      for (const p of Object.keys(diff)) if (store.perms.canRead({ role: c.role, userId: c.userId }, p)) visible[p] = diff[p];   // Plan 0471 C3: actor-aware read (per-recipient vote redaction)
       if (Object.keys(visible).length) {
         send(ws, { t: 'host', msg: { source: 'argus-host', type: 'diff', diff: visible, by: meta.by, version: meta.version } });
         recipients++;
@@ -890,7 +929,14 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     if (poll) {
       if (!poll.open) return;   // closed -> denied
       const res = serverApply({ path: 'polls/' + pid + '/votes/' + c.userId, verb: 'set', value: r.value }, { userId: c.userId, role: c.role });
-      if (res && res.diff) emit('poll', { type: 'update', promptId: pid, ...tally(pid) });   // diff broadcast (serverApply) drives poll-results
+      if (res && res.diff) {
+        emit('poll', { type: 'update', promptId: pid, ...tally(pid) });   // controllers (presenter/ai) get raw vote diffs (override) → live poll-results
+        // Plan 0471 D1: raw per-user votes are ALWAYS controller-only (C3 default-deny). The
+        // AGGREGATE tally is what resultsMode governs. 'all' (public) → publish counts-only to a
+        // readable slice so EVERYONE gets the aggregate (never per-user rows). 'control' (default,
+        // private) → skip it; only controllers see the tally.
+        if (poll.resultsMode === 'all') { const t = tally(pid); serverApply({ path: 'polls/' + pid + '/results', verb: 'set', value: { tally: t.tally, count: t.count } }); }
+      }
     } else {
       serverApply({ path: 'answers/' + pid + '/' + c.userId, verb: 'set', value: r.value }, { userId: c.userId, role: c.role });
     }
@@ -1668,12 +1714,16 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       for (const ws of targets(target)) { sendComponentTo(ws, conns.get(ws), desc); count++; }
       return count;
     },
-    openPoll({ promptId, prompt, options, target = 'participant', resultsTarget = null }) {
-      log.info('poll', 'open', { promptId, options: (options || []).length });
-      polls.set(promptId, { spec: { prompt, options }, open: true });
+    openPoll({ promptId, prompt, options, target = 'participant', resultsTarget = null, resultsMode = 'control' }) {
+      // Plan 0471 D1: resultsMode 'control' (default, private — matches OPSEC) | 'all' (public aggregate).
+      const mode = resultsMode === 'all' ? 'all' : 'control';
+      log.info('poll', 'open', { promptId, options: (options || []).length, resultsMode: mode });
+      polls.set(promptId, { spec: { prompt, options }, open: true, resultsMode: mode });
       // D1: seed the store so the poll is a first-class state slice.
       serverApply({ path: 'polls/' + promptId + '/spec', verb: 'set', value: { prompt, options } });
       serverApply({ path: 'polls/' + promptId + '/open', verb: 'set', value: true });
+      serverApply({ path: 'polls/' + promptId + '/resultsMode', verb: 'set', value: mode });   // controllers act on it (participants: denied, harmless)
+      if (mode === 'all') serverApply({ path: 'polls/' + promptId + '/results', verb: 'set', value: { tally: {}, count: 0 } });   // seed readable aggregate
       // C6: remember the poll display so late joiners see the choice / live results.
       setDisplay(target, { kind: 'poll-choice', promptId });
       // Assemble a per-channel `choice` stamped with that channel's identity.
@@ -1879,7 +1929,10 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     // bell (default true) is carried in the frame: bell:false = SILENT ask (banner only, no
     // audio) — the client's onChime plays audio unless m.bell === false.
     chime: ({ message = 'Ready to start?', target = 'all', requireAck = false, ackId = 'ready', bell = true } = {}) => {
-      if (requireAck) { const prev = acks.get(ackId); acks.set(ackId, { message, requestedAt: Date.now(), target, by: (prev && prev.by) || new Map() }); }
+      if (requireAck) {
+        const prev = acks.get(ackId); acks.set(ackId, { message, requestedAt: Date.now(), target, by: (prev && prev.by) || new Map() });
+        while (acks.size > ACKS_MAX) { const oldest = acks.keys().next().value; if (oldest === ackId) break; acks.delete(oldest); }   // Plan 0471 M2: bound distinct ackIds (FIFO evict)
+      }
       return targets(target).map((ws) => send(ws, { t: 'chime', message, requireAck: !!requireAck, ackId, bell: bell !== false })).length;
     },
     // Eyes-on status for an ackId: who confirmed they're watching, and who (among current
@@ -1928,14 +1981,14 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       }));
       return { roster, summary };
     },
-    closePoll: (promptId) => { const p = polls.get(promptId); if (p) p.open = false; serverApply({ path: 'polls/' + promptId + '/open', verb: 'set', value: false }); return { promptId, ...tally(promptId) }; },
+    closePoll: (promptId) => { const p = polls.get(promptId); if (p) p.open = false; serverApply({ path: 'polls/' + promptId + '/open', verb: 'set', value: false }); const t = tally(promptId); if (p && p.resultsMode === 'all') serverApply({ path: 'polls/' + promptId + '/results', verb: 'set', value: { tally: t.tally, count: t.count } }); return { promptId, ...t }; },   // Plan 0471 D1: publish final aggregate in public mode
     // Debug snapshot for the ?debug overlay + the presenter_debug MCP tool.
     // state = current authoritative view (proto: polls; the core store extends this
     // in group C); opLog = the structured-log tail (role-redacted for the viewer).
     debugDump: (role = 'presenter') => ({
       presence: presence(),
       connections: [...conns.values()].map((c) => ({ socketId: c.id, userId: c.userId, role: c.role })),
-      state: { polls: [...polls.entries()].map(([id, p]) => ({ promptId: id, open: p.open, ...tally(id) })), store: store.snapshot(role).state },
+      state: { polls: [...polls.entries()].map(([id, p]) => ({ promptId: id, open: p.open, ...tally(id) })), store: store.snapshot({ role, userId: null }).state },
       version: store.version(),
       opLog: log.view(role, { max: 50 }),
       // Telemetry is controller-read-only (S7): only presenter/ai see the operational sink.
@@ -2023,7 +2076,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       const entries = store.oplogSince(0);
       const total = entries.length;
       const CONTROLLERS = new Set(['ai', 'presenter']);
-      const peerVisible = entries.filter((e) => e.role === 'participant' && store.perms.canRead('participant', e.path)).length;
+      const peerVisible = entries.filter((e) => e.role === 'participant' && store.perms.canRead({ role: 'participant', userId: null }, e.path)).length;   // Plan 0471 C3
       const teacher = entries.filter((e) => CONTROLLERS.has(e.role)).length;
       // Peer->peer response edges: a participant op preceded (within windowMs) by a
       // DIFFERENT participant's op = a peer responding to a peer.
@@ -2046,6 +2099,8 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     store,
     close: () => new Promise((res) => { clearInterval(heartbeat); /* Plan 0468 (INV-7) */ if (ephTimer) clearTimeout(ephTimer); for (const t of hotTimers.values()) clearTimeout(t); hotTimers.clear(); for (const w of [...inboxWaiters]) w.wake(); /* Plan 0472: drain pending long-poll waiters (resolve, no dangling) */ if (openTurn && openTurn.timer) { clearTimeout(openTurn.timer); openTurn.timer = null; } /* Plan 0473 P2: clear a pending turn-settling timer */ for (const [, c] of conns) { if (c.voice && c.voice.timer) clearTimeout(c.voice.timer); } if (asr) { try { asr.close(); } catch (e) {} asr = null; } watcher && watcher.close(); wss.clients.forEach((c) => c.close()); httpServer.close(() => res()); }),
     _http: httpServer,
+    _acks: acks,                 // Plan 0471 M2: test-only observability (bounded map)
+    _lastResults: lastResults,   // Plan 0471 M3: test-only observability (bounded object)
   };
 
   return new Promise((resolve) => { httpServer.listen(port, '127.0.0.1', () => resolve(api)); });
@@ -2057,9 +2112,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   // Real deployments are GATED out of the box: default the presenter password to
   // `password` (override via PRESENTER_ROLE_PASSWORD). This applies ONLY to the CLI
   // self-run — createServer() from tests stays ungated unless a credential is passed.
+  // Plan 0471 H1: default to a REAL control token (random when unset) so the module
+  // write-back never ships open — printed in the banner for the creator/writeback client.
+  const cliToken = process.env.PRESENTER_CONTROL_TOKEN || createHash('sha256').update('argus-cli-' + Date.now() + '-' + Math.random()).digest('hex').slice(0, 32);
   createServer({
     port: p,
-    controlToken: process.env.PRESENTER_CONTROL_TOKEN || null,
+    controlToken: cliToken,
     rolePassword: process.env.PRESENTER_ROLE_PASSWORD || 'password',
   }).then((s) => {
     const u = s.url();   // base like http://127.0.0.1:PORT (no trailing slash)
@@ -2067,5 +2125,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     console.log('  display :', u + '/');
     console.log('  control :', u + '/control');
     console.log('  creator :', u + '/creator');
+    console.log('  control token (x-control-token / ?token=):', cliToken);
   });
 }
