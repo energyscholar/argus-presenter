@@ -8,6 +8,28 @@
  */
 import { createServer } from '../app/server.mjs';
 import { assemble } from '../harness/assemble.mjs';
+import { readFileSync, existsSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// S210 — present_module could ONLY take beats inlined in the tool call, so an art-heavy
+// module (images are base64 data URIs; there is no static asset route) had to be pumped
+// through the AGENT's context to reach the stage — in practice impossible, which forced the
+// human to load it by hand from control.html. That is a design failure: the whole point of
+// the Presenter is that the AI drives it. Reading the module file HERE costs the agent
+// nothing and needs no server change. Mirrors server.mjs readModuleFile: same MODULES_DIR,
+// same path-traversal guard. See plans/0487-DESIGN-module-asset-archive.md for the
+// longer-term fix (assets out of the JSON entirely).
+const MCP_DIR = dirname(fileURLToPath(import.meta.url));
+const MODULES_DIR = process.env.PRESENTER_MODULES_DIR || join(MCP_DIR, '..', 'modules');
+function readModuleById(id) {
+  if (!/^[\w.-]+$/.test(id)) throw new Error('bad module id');   // no path traversal
+  const file = join(MODULES_DIR, id + '.json');
+  if (!existsSync(file)) throw new Error(`no such module: ${id}`);
+  const module = JSON.parse(readFileSync(file, 'utf8'));
+  if (!module || !Array.isArray(module.beats)) throw new Error(`module ${id} has no beats[]`);
+  return module;
+}
 
 let server = null;
 const need = () => { if (!server) throw new Error('presenter not started — call presenter_start first'); return server; };
@@ -28,8 +50,41 @@ export const coreTools = [
   {
     name: 'presenter_start',
     description: 'Start the Argus Presenter server. Returns the URL participants/presenter open.',
-    input: { type: 'object', properties: { port: { type: 'number', description: 'Port (default 4300 — the STANDARD, pinned AP port)' }, voice: { type: 'boolean', description: 'Enable inbound voice + ASR (default true when driven via MCP)' } } },
-    handler: async ({ port = AP_STANDARD_PORT, voice = true } = {}) => { if (server) return { url: server.url(), already: true }; server = await createServer({ port, voiceEnabled: voice }); return { url: server.url() }; }
+    input: { type: 'object', properties: {
+      port: { type: 'number', description: 'Port (default 4300 — the STANDARD, pinned AP port)' },
+      voice: { type: 'boolean', description: 'Enable inbound voice + ASR (default true when driven via MCP)' },
+      // S210: createServer() has always accepted a profile, but presenter_start did not expose it, so
+      // every MCP-driven session silently ran `wearable` — a SOLO profile with maxPending:1 and the
+      // floor disabled. For a table (GM + ~5 players) that is the wrong machine: use 'rpg', which
+      // summarizes ambient narrative instead of discarding it, keeps only questions/requests as work
+      // items, and enables floor control under load. See app/profiles.mjs.
+      profile: { type: 'string', description: "Session profile: 'wearable' (solo, DEFAULT), 'rpg' (GM + table), 'teaching' (class), etc. Wrong profile = wrong queue/floor/digest behaviour." },
+      // Plan 0488: every remaining createServer() option, so the agent can start ANY server the
+      // library can build. Coverage is asserted by test/unit/0488-surface-coverage.test.mjs.
+      controlToken: { type: 'string', description: 'Gate control actions + module write-back on this token.' },
+      rolePassword: { type: 'string', description: 'Password gating the presenter/ai/gm roles (hashed with roleSeed).' },
+      roleSeed: { type: 'string', description: 'Public salt for the role hash (default "argus-presenter").' },
+      capSecret: { type: 'string', description: 'HMAC secret enabling signed guest capability links (/?cap=…). Absent ⇒ all cap links rejected.' },
+      settlingMs: { type: 'number', description: 'Turn settling window override (else the profile decides).' },
+      queueMaxPending: { type: 'number', description: 'Max pending work items (wearable defaults to 1 — the S210 surprise).' },
+      queueTtlMs: { type: 'number', description: 'Pending work item TTL in ms.' },
+      perTurnBudgetMs: { type: 'number', description: 'Per-turn speaking budget override.' },
+      perTurnWrapMs: { type: 'number', description: 'Per-turn wrap-up cue override.' },
+      floorThresholds: { type: 'object', description: 'Floor-control thresholds override (e.g. {enabled:true}).' },
+    } },
+    handler: async ({ port = AP_STANDARD_PORT, voice = true, ...rest } = {}) => {
+      if (server) return { url: server.url(), already: true, note: 'already running — stop before changing profile or gates' };
+      const PASS = ['profile','controlToken','rolePassword','roleSeed','capSecret','settlingMs','queueMaxPending','queueTtlMs','perTurnBudgetMs','perTurnWrapMs','floorThresholds'];
+      const opts = { port, voiceEnabled: voice };
+      for (const k of PASS) if (rest[k] !== undefined) opts[k] = rest[k];
+      server = await createServer(opts);
+      return {
+        url: server.url(),
+        profile: (server.profile && server.profile().name) || rest.profile || 'wearable',
+        gated: !!(rest.controlToken || rest.rolePassword),
+        capLinks: !!rest.capSecret,
+      };
+    }
   },
   {
     name: 'presenter_stop',
@@ -110,9 +165,78 @@ export const coreTools = [
   },
   {
     name: 'present_module',
-    description: 'Load a content module (deck of beats) and show the first beat. beats = [{component, opts, requires?}].',
-    input: { type: 'object', required: ['beats'], properties: { title: { type: 'string' }, beats: { type: 'array', items: { type: 'object' } } } },
-    handler: async ({ title, beats }) => { const s = need(); s.setModule({ title, beats }); return { module: s.showBeat(0) ? { shown: 0, ...s.getModule() && { beats: beats.length } } : { beats: beats.length } }; }
+    description: 'Load a content module (deck of beats) and show the first beat. Pass moduleId to load a module BY NAME from the modules directory (preferred — art-heavy decks never touch the agent context; use presenter_modules to list ids), or beats = [{component, opts, requires?}] to supply them inline.',
+    input: { type: 'object', properties: { moduleId: { type: 'string', description: 'Module id (filename without .json) in MODULES_DIR — e.g. "s15-live". Takes precedence over beats.' }, title: { type: 'string' }, beats: { type: 'array', items: { type: 'object' } } } },
+    handler: async ({ moduleId, title, beats }) => {
+      const s = need();
+      let loadedFrom = null;
+      if (moduleId) {
+        const m = readModuleById(moduleId);
+        beats = m.beats;
+        title = title || (m.manifest && m.manifest.title) || moduleId;
+        loadedFrom = moduleId;
+      }
+      if (!Array.isArray(beats)) throw new Error('present_module needs either moduleId or beats[]');
+      s.setModule({ title, beats });
+      const shown = s.showBeat(0);
+      return { module: { ...(shown ? { shown: 0 } : {}), beats: beats.length, title, ...(loadedFrom ? { loadedFrom } : {}) } };
+    }
+  },
+  {
+    name: 'show_beat',
+    description: 'Show a beat of the CURRENT module BY ID (or by index) — random access, not linear. A tabletop module is a CATALOG, not a deck: the players decide the order, so the GM cues a scene by name ("the logs", "the museum") and it appears. Use presenter_beats to list the ids.',
+    input: { type: 'object', properties: { beatId: { type: 'string', description: 'Beat id from the loaded module' }, index: { type: 'number', description: 'Zero-based beat index (used only when beatId is absent)' } } },
+    handler: async ({ beatId, index } = {}) => {
+      const s = need();
+      const mod = s.getModule && s.getModule();
+      const beats = (mod && mod.beats) || [];
+      if (!beats.length) throw new Error('no module loaded — call present_module first');
+      let i = -1;
+      if (beatId != null) {
+        i = beats.findIndex((b) => b && b.id === beatId);
+        if (i < 0) throw new Error(`no beat "${beatId}" — ids: ${beats.map((b) => b && b.id).filter(Boolean).join(', ')}`);
+      } else if (Number.isInteger(index)) {
+        i = index;
+      } else throw new Error('show_beat needs beatId or index');
+      if (i < 0 || i >= beats.length) throw new Error(`index out of range 0..${beats.length - 1}`);
+      s.showBeat(i);
+      return { shown: i, beatId: beats[i] && beats[i].id, component: beats[i] && beats[i].component };
+    }
+  },
+  {
+    name: 'presenter_beats',
+    description: 'List the beats of the CURRENTLY loaded module (index, id, component, title) — the cue sheet for show_beat. This is the GM catalog: what can be put on screen right now, in any order.',
+    input: { type: 'object', properties: {} },
+    handler: async () => {
+      const s = need();
+      const mod = s.getModule && s.getModule();
+      const beats = (mod && mod.beats) || [];
+      return {
+        title: mod && mod.title,
+        count: beats.length,
+        beats: beats.map((b, i) => ({ index: i, id: b && b.id, component: b && b.component, title: (b && b.opts && (b.opts.title || b.opts.speaker || b.opts.prompt)) || null, target: (b && b.target) || 'all' }))
+      };
+    }
+  },
+  {
+    name: 'presenter_modules',
+    description: 'List the content modules available on disk (id, title, beat count) — the ids accepted by present_module({moduleId}). Reads MODULES_DIR directly; does not require the server to be started.',
+    input: { type: 'object', properties: {} },
+    handler: async () => {
+      if (!existsSync(MODULES_DIR)) return { dir: MODULES_DIR, modules: [] };
+      const { readdirSync } = await import('node:fs');
+      const modules = readdirSync(MODULES_DIR)
+        .filter((f) => f.endsWith('.json') && !f.endsWith('.series.json'))
+        .map((f) => {
+          const id = f.slice(0, -5);
+          try {
+            const m = readModuleById(id);
+            return { id, title: (m.manifest && m.manifest.title) || id, beats: m.beats.length };
+          } catch (e) { return null; }
+        })
+        .filter(Boolean);
+      return { dir: MODULES_DIR, modules };
+    }
   },
   {
     name: 'next_beat',
