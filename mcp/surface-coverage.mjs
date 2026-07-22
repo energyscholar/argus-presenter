@@ -58,6 +58,7 @@ export const API_COVERAGE = {
   reloadClients:       { tool: 'reload_clients' },
   raf:                 { tool: 'presenter_raf' },
   chime:               { tool: 'presenter_bell' },
+  speak:               { tool: 'presenter_speak' },   // Plan 0491 §10 minimum working slice
   pushComponent:       { tool: 'push_component' },
   presence:            { tool: 'presenter_attendance' },
   store:               { declined: VIA_MCP_STATE },

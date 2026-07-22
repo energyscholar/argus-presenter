@@ -2059,6 +2059,10 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       }
       return targets(target).map((ws) => send(ws, { t: 'chime', message, requireAck: !!requireAck, ackId, bell: bell !== false })).length;
     },
+    // SPEAK (Plan 0491 §10, minimum working slice): on-device speechSynthesis, driven by a
+    // transient frame — exactly like chime, NO setDisplay, so it never re-fires on reconnect.
+    // Clamp server-side (~300 chars): the spoken channel is a précis, not the record (§2.3).
+    speak: (text, target = 'all') => targets(target).map((ws) => send(ws, { t: 'speak', text: String(text || '').slice(0, 300) })).length,
     // Eyes-on status for an ackId: who confirmed they're watching, and who (among current
     // viewers of the requested target) is still pending — the AFK signal.
     getAck: (ackId = 'ready') => {
