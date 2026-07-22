@@ -336,6 +336,7 @@
         }
       } catch(e){}
     }
+    else if (m.t === 'speak') { apSpeak(m.text); }   // Plan 0491 §10: on-device TTS, see AP-SPEAK block below
     else if (m.t === 'turn_budget') {
       // Plan 0473 P5 (proactive per-turn budget, NEVER silent): the SERVER decides; the client only
       // RENDERS the cue (a display affordance) and, on 'closed', YIELDS the mic. No heavy logic here —
@@ -397,6 +398,78 @@
     }
   }
   connect();
+
+  // ---- SPEAK (server {t:'speak'} ← MCP presenter_speak, Plan 0491 §10 minimum working slice) -------
+  // On-device speechSynthesis: no audio ever crosses the network. Four traps (§2.3), all silent
+  // failures if skipped:
+  //  1. localService MUST be preferred — the OPSEC guarantee; a remote ("Google …") voice would
+  //     silently reintroduce the cloud dependency §0 G1 rejected. No local voice ⇒ log, don't fall back.
+  //  2. getVoices() is [] on first call in most browsers; resolve the real list on 'voiceschanged'.
+  //  3. cancel() before every speak() — replace-don't-queue AND the iOS queue-lock workaround.
+  //  4. iOS needs a user gesture before the first utterance — primed in the mic-enable click handler.
+  var apSpeakVoice = null;
+
+  // Plan 0492: rank the LOCAL voices by quality instead of taking the first one Array.find hits
+  // (typically eSpeak-NG — thin and low-amplitude by construction). All three lists below are
+  // PREFERENCES, NOT REQUIREMENTS: an unlisted voice still scores (mid tier / "other" accent) and
+  // remains selectable, so a ChromeOS voice-pack update can never silently mute the lane.
+  // Generic quality-marker substrings, not device-specific voice names (Plan 0492 §3.1 — C1 waived).
+  var AP_VOICE_QUALITY_HIGH = ['natural', 'neural', 'enhanced', 'premium', 'wavenet', 'siri'];
+  var AP_VOICE_QUALITY_LOW  = ['espeak', 'mbrola', 'festival', 'pico', 'flite'];
+  // Accent preference, read off v.lang (structural — the API does expose language).
+  var AP_VOICE_ACCENTS = { 'en-ie': 4, 'en-gb': 3, 'en-au': 2, 'en-nz': 2 };
+  // HEURISTIC ONLY, NOT A CAPABILITY: SpeechSynthesisVoice exposes no gender field, so this is a
+  // guess from the name. It is the last and weakest term — it orders, it never gates.
+  var AP_FEMALE_VOICE_NAMES = ['female', 'fiona', 'moira', 'karen', 'serena', 'kate', 'samantha',
+                               'siobhan', 'tessa', 'victoria', 'zira', 'hazel', 'susan', 'amelie'];
+
+  function apVoiceMatches(name, list){
+    for (var i = 0; i < list.length; i++) { if (name.indexOf(list[i]) !== -1) return true; }
+    return false;
+  }
+  // Lexicographic score over three terms: quality tier (dominant) > accent > female-name guess.
+  // Quality outranks accent deliberately — an eSpeak Irish voice is still the thin voice we are
+  // escaping. Pure function of the voice object: no randomness, no clock, no external state.
+  function apVoiceRank(v){
+    var name = (v.name || '').toLowerCase();
+    var lang = (v.lang || '').toLowerCase().replace('_', '-');
+    var quality = 1;                                             // unknown names score mid
+    if (apVoiceMatches(name, AP_VOICE_QUALITY_HIGH)) quality = 2;
+    else if (apVoiceMatches(name, AP_VOICE_QUALITY_LOW)) quality = 0;
+    var accent = AP_VOICE_ACCENTS[lang] || (lang.indexOf('en') === 0 ? 1 : 0);
+    var female = apVoiceMatches(name, AP_FEMALE_VOICE_NAMES) ? 1 : 0;
+    return (quality * 100) + (accent * 10) + female;
+  }
+
+  function apPickVoice(){
+    var voices = (window.speechSynthesis && speechSynthesis.getVoices()) || [];
+    if (!voices.length) return;   // still unresolved; voiceschanged will retry
+    // OPSEC GATE FIRST (trap 1): ranking only ever sees the already-filtered local set, so no code
+    // path below — including the empty-set branch — can reach a localService === false voice.
+    var local = voices.filter(function(v){ return v.localService === true; });
+    if (!local.length) {
+      apSpeakVoice = null;
+      console.warn('[ap-speak] no local (on-device) voice available — refusing to use a remote voice (Plan 0491 §2.3 trap 1)');
+      return;
+    }
+    // Array.prototype.sort is stable, so equal-ranked voices keep enumeration order: same list in,
+    // same voice out.
+    apSpeakVoice = local.slice().sort(function(a, b){ return apVoiceRank(b) - apVoiceRank(a); })[0];
+    console.log('[ap-speak] voice:', apSpeakVoice.name, apSpeakVoice.lang);
+  }
+  if (window.speechSynthesis) {
+    apPickVoice();
+    speechSynthesis.addEventListener('voiceschanged', apPickVoice);
+  }
+  function apSpeak(text){
+    if (!window.speechSynthesis || !text) return;
+    if (!apSpeakVoice) apPickVoice();          // one more try in case voiceschanged hasn't fired yet
+    if (!apSpeakVoice) { console.warn('[ap-speak] dropped — no local voice (OPSEC guard)'); return; }
+    speechSynthesis.cancel();                  // trap 3: replace-don't-queue + iOS queue-lock workaround
+    var u = new SpeechSynthesisUtterance(text);
+    u.voice = apSpeakVoice;
+    speechSynthesis.speak(u);
+  }
 
   // ---- CHIME (server {t:'chime'} ← MCP presenter_bell / presenter_verify_watching) ----------------
   // The human keeps this tab in the background while the AI builds a deck; a gentle
@@ -591,6 +664,9 @@
       window.__apVoicePaint = paint;   // let server-initiated enable()/stop refresh this row
       vbtn.addEventListener('click', function(e){
         e.stopPropagation(); vmsg.textContent = '';
+        // Plan 0491 §2.3 trap 4: prime speechSynthesis on THIS gesture — iOS requires a user
+        // gesture before the first utterance; a zero-length one unlocks the queue for later real speech.
+        try { if (window.speechSynthesis) speechSynthesis.speak(new SpeechSynthesisUtterance('')); } catch(err){}
         if (window.APVoice && window.APVoice.enabled) { try { window.APVoice.disable(); } catch(err){} paint(); return; }
         vbtn.disabled = true; vbtn.textContent = '🎙 Mic: requesting…';
         Promise.resolve().then(function(){ return window.APVoice && window.APVoice.enable(); })
