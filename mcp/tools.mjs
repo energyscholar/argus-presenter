@@ -260,6 +260,15 @@ export const coreTools = [
     handler: async ({ message = 'Ready to start?', target = 'all' } = {}) => ({ chimed: need().chime({ message, target }) })
   },
   {
+    name: 'presenter_speak',
+    description: 'Speak text aloud on connected displays via on-device speechSynthesis (Plan 0491 §10, minimum working slice) — no audio crosses the network. The spoken form is a SHORT PRÉCIS ONLY (server clamps to ~300 chars): acknowledgements, short answers, anything time-critical. Long content, analysis, lists, and code belong in the text lane, not here.',
+    input: { type: 'object', required: ['text'], properties: {
+      text: { type: 'string', description: 'Short précis to speak aloud (clamped server-side to ~300 chars)' },
+      target: { type: 'string', default: 'all', description: 'userId | all | participant | presenter | ai' }
+    } },
+    handler: async ({ text, target = 'all' } = {}) => ({ spoken: need().speak(text, target) })
+  },
+  {
     name: 'presenter_verify_watching',
     description: 'On-demand eyes-on handshake: chime + banner WITH a CONFIRM ("I\'m watching") button the viewer must click — proves eyes-on / not AFK. The banner persists until confirmed; poll presenter_check_ack to see who confirmed. Set bell:false to ask SILENTLY (banner only, no audio).',
     input: { type: 'object', properties: {
