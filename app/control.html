@@ -202,17 +202,24 @@
         </div>
       </div>
     </section>
+    <!-- S210: the Module panel is only used at load time, then it is dead weight on a small
+         screen. Collapse it into its <summary> once a module is loaded; the summary keeps
+         showing WHICH module is live, so collapsing never costs the GM information. -->
     <section>
-      <h2>Module</h2>
-      <div class="row">
-        <select id="mod-select" style="flex:1 1 auto"><option value="">— select a module —</option></select>
-        <button id="mod-refresh" class="mini" title="rescan">⟳</button>
-      </div>
-      <div id="mod-info" style="margin-top:6px;font-size:12px;color:var(--dim)"></div>
-      <div class="row" style="margin-top:6px">
-        <button id="mod-load" class="primary" disabled>Validate &amp; Load</button>
-        <span id="mod-valid"></span>
-      </div>
+      <details id="mod-details" open>
+        <summary style="cursor:pointer;list-style:none;font:600 12px/1.4 inherit;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);user-select:none">
+          Module<span id="mod-current" style="text-transform:none;letter-spacing:0;color:var(--ink);font-weight:400"></span>
+        </summary>
+        <div class="row" style="margin-top:8px">
+          <select id="mod-select" style="flex:1 1 auto"><option value="">— select a module —</option></select>
+          <button id="mod-refresh" class="mini" title="rescan">⟳</button>
+        </div>
+        <div id="mod-info" style="margin-top:6px;font-size:12px;color:var(--dim)"></div>
+        <div class="row" style="margin-top:6px">
+          <button id="mod-load" class="primary" disabled>Validate &amp; Load</button>
+          <span id="mod-valid"></span>
+        </div>
+      </details>
     </section>
   </div>
 </header>
@@ -332,7 +339,12 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
       $('mod-load').disabled=false; renderOutline();
     }).catch(function(){ $('mod-info').textContent='Error loading module'; $('mod-load').disabled=true; });
   };
-  $('mod-load').onclick=function(){ if(!module) return; control('load_module',{module:module}); curBeat=-1; renderNav(); $('btn-start').disabled=false; };
+  $('mod-load').onclick=function(){ if(!module) return; control('load_module',{module:module}); curBeat=-1; renderNav(); $('btn-start').disabled=false;
+    // S210: loaded ⇒ the picker is done doing its job. Collapse it and surface the live
+    // module's title on the summary so the GM still knows what is loaded at a glance.
+    var t=(module.manifest&&module.manifest.title)||$('mod-select').value||'';
+    var cur=$('mod-current'); if(cur) cur.textContent = t? ' · '+t : '';
+    var d=$('mod-details'); if(d) d.open=false; };
   $('mod-refresh').onclick=refreshModules;
 
   // SCH-2: Series picker — the level above Module. Choosing a series queues its first module

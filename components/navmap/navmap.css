@@ -1,0 +1,13 @@
+/* NAVMAP ship token — content-anchored, counter-scaled, draggable by anyone. */
+.ap-navmap-token { position: absolute; z-index: 7; cursor: grab; touch-action: none; user-select: none; text-align: center; }
+.ap-navmap-token.is-dragging { cursor: grabbing; }
+.ap-navmap-ship {
+  width: 26px; height: 11px; margin: 0 auto; border-radius: 4px;
+  background: #c8dcff; box-shadow: 0 0 12px rgba(160,200,255,0.75), 0 0 3px #fff;
+}
+.ap-navmap-token.is-dragging .ap-navmap-ship { background: #fff; box-shadow: 0 0 18px rgba(200,225,255,0.95); }
+.ap-navmap-label { margin-top: 3px; font-size: 0.72rem; letter-spacing: 0.08em; color: #9fc0ff; white-space: nowrap; text-shadow: 0 0 4px #000; }
+.ap-navmap-token::after {
+  content: ''; position: absolute; left: 50%; top: 5px; width: 34px; height: 34px; margin: -17px 0 0 -17px;
+  border: 1px solid rgba(160,200,255,0.35); border-radius: 50%; pointer-events: none;
+}
