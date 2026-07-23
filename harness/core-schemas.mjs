@@ -51,6 +51,13 @@ export const coreSchemas = {
     { name: 'cta', type: 'string' },
     { name: 'promptId', type: 'string' },
   ] },
+  // Plan 0493 §8 — the standard markdown text-response card. `html` is SERVER-SANITISED markdown output
+  // (app/markdown.mjs), never author-supplied raw HTML; present_text is the only intended writer.
+  prose: { fields: [
+    { name: 'html', type: 'string', default: '' },
+    { name: 'title', type: 'string' },
+    { name: 'chrome', type: 'boolean', default: true },
+  ] },
   card: { fields: [
     { name: 'title', type: 'string' },
     { name: 'subtitle', type: 'string' },

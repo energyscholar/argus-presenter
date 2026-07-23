@@ -31,6 +31,7 @@ import { selectProfile, DEFAULT_PROFILE } from './profiles.mjs';
 import { createHeuristicSummarizer } from './summarizer.mjs';
 import { buildDigest } from './digests.mjs';
 import { deriveTrust, annotate as annotateTrust } from './untrusted.mjs';
+import { renderMarkdown } from './markdown.mjs';
 
 // X6 resilience caps.
 const MAX_CONNS = 200;              // connection cap
@@ -2011,6 +2012,20 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         commsMode = set; log.info('pvs', pvs ? 'mode' : 'mode-no-pvs', { mode: set });
       }
       return { ok: true, mode: commsMode, pvsOpen: !!(pvs && pvs.open) };
+    },
+    // presentText({text,title,target}): Plan 0493 §8 — the STANDARD text-response surface. Renders
+    // markdown SERVER-SIDE into sanitised HTML (app/markdown.mjs — every text segment escaped, so even
+    // untrusted text is escaped-not-executed, S11) and pushes it to the `prose` card, replacing the
+    // current display (like show_beat). This is what §7 calls "the card": the presenter-mode default is
+    // present_text(markdown) + a one-line presenter_speak pointer. Dense is fine — Bruce reads fast — and
+    // long content scrolls in the card rather than clipping. Returns the delivery count + a byte size.
+    presentText: ({ text = '', title = null, target = 'all' } = {}) => {
+      const html = renderMarkdown(text);
+      const opts = { html };
+      if (title != null) opts.title = String(title);
+      const n = api.pushComponent(target, 'prose', opts, 'argus', []);
+      log.info('present', 'text', { target, chars: String(text).length, html: html.length });
+      return { presented: n, target, chars: String(text).length, htmlBytes: html.length };
     },
     // Test/observability seam — inject an inbox item through the REAL emit path (turn assignment,
     // trust derivation, waiter wake). Mirrors the WS voice/text ingress without a socket. `_`-prefixed,
