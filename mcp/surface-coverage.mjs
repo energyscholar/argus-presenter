@@ -88,6 +88,12 @@ export const API_COVERAGE = {
   resolveWork:         { tool: 'presenter_resolve' },
   deferWork:           { tool: 'presenter_defer' },
 
+  // --- PVS lifecycle (Plan 0493)
+  pvsStart:            { tool: 'presenter_pvs_start' },
+  pvsStop:             { tool: 'presenter_pvs_stop' },
+  pvsState:            { tool: 'presenter_status' },
+  _emitInboxForTest:   { declined: 'test-only ingress seam — injects an inbox item through the real emit path without a socket' },
+
   // --- sensing
   situation:           { tool: 'presenter_situation' },
   getInbox:            { tool: 'presenter_inbox' },

@@ -455,8 +455,14 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       // credential when one is configured — parity with the presence feed + module write-back. Ungated
       // server (LAN/tests, no credential) → open, like the rest of the control surface.
       if (!httpControlAuthed(req)) { res.writeHead(403, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'forbidden' })); return; }
-      const cid = new URLSearchParams((req.url.split('?')[1] || '')).get('c') || 'default';
-      Promise.resolve(api.situation({ consumerId: 'ctl:' + cid })).then((sit) => {
+      // Plan 0493 R2 — a PVS watcher passes ?consumer=<id> for its OWN namespaced cursor (pvs:<id>),
+      // distinct from the control.html digest cursor (?c=<id> ⇒ ctl:<id>). Previously ?consumer= was
+      // ignored and every caller collapsed onto ctl:default, so the watcher and control.html silently
+      // consumed each other's turns. `consumer` (if present) wins; else the control `c` cursor.
+      const qp = new URLSearchParams((req.url.split('?')[1] || ''));
+      const consumerParam = qp.get('consumer');
+      const consumerId = consumerParam ? pvsConsumerKey(consumerParam) : ('ctl:' + (qp.get('c') || 'default'));
+      Promise.resolve(api.situation({ consumerId })).then((sit) => {
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
         res.end(JSON.stringify(sit));
       }).catch((e) => { res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: String((e && e.message) || e) })); });
@@ -1085,6 +1091,18 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // registers ONE waiter here; it is resolved (and removed) on the next emit, at its timeout, or on
   // server close. Never left dangling — no leaked timers or promises.
   const inboxWaiters = new Set();
+  // ---- Plan 0493: PVS (Presenter Voice Session) lifecycle + comms mode (server-held state) ----
+  // A PVS is confined to ONE agent session (§5); the terminator is the harness Monitor dying + an
+  // explicit presenter_pvs_stop. State lives here (in-process) because a server restart ENDS the PVS
+  // (the in-memory delivery cursor need not outlive the process), and because the comms MODE must be
+  // stamped onto every delivered envelope (§6) — so the server, not the agent, is its authority.
+  const PVS_MODES = new Set(['pocket', 'presenter', 'terminal']);   // §6 — closed set, keyed on Bruce's attention
+  const PVS_DEFAULT_MODE = 'presenter';                             // §6/§8 — "assume I am looking at Presenter"
+  let commsMode = PVS_DEFAULT_MODE;                                 // Phase B — the outbound channel-mix knob
+  let pvs = null;   // null = no PVS open; else { open, consumer, openedAt, session }
+  // Namespace the PVS delivery cursor (R2) so a watcher and a manual presenter_transcript read can NEVER
+  // consume each other's turns. The consumer id is sanitized to a bounded, injection-free key.
+  function pvsConsumerKey(consumer) { return 'pvs:' + String(consumer || 'default').replace(/[^\w.-]/g, '').slice(0, 64); }
   // ---- Plan 0473 P2: TURN COALESCING (fragments -> turns) ----
   // A speaker's CONSECUTIVE inbox items (voice OR typed text) are grouped into a TURN by a per-speaker
   // SETTLING WINDOW read from the ACTIVE PROFILE (api.profile().settlingMs — wearable = 400ms; consumed
@@ -1494,6 +1512,11 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   function buildSituation(consumerId, recentN = RECENT_TURNS_N) {
     const last = situationCursors.get(consumerId) || 0;
     const since = inbox.filter((i) => i.seq > last);   // bounded: the ring is capped at TRANSCRIPT_RING
+    // Plan 0493 R3 — a lost turn must be LOUD. If the oldest undelivered item's seq skips past last+1,
+    // the items last+1..firstSeq-1 aged out of the ring before THIS consumer ever saw them (or the
+    // consumer was armed past them). Surface a visible "⚠ N turns missed" marker — never a silent gap.
+    let missed = 0;
+    if (since.length && since[0].seq > last + 1) missed = since[0].seq - last - 1;
     situationCursors.set(consumerId, inboxSeq);         // advance the cursor to everything now shown
     evaluateFloor();   // Plan 0473 P6: this read caught the consumer up (backlog reduced) — reassess the floor
     const att = api.attendance({ viewerRole: 'ai' });
@@ -1522,7 +1545,16 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         digest: buildDigest(ACTIVE_PROFILE.digestContent, { queue, recentTurns }),
       },
       recentTurns,
-      newSinceLastRead: { count: since.length, turns: coalesceTurns(since, recentN).map((t) => annotateTrust(t, t.trust)) },
+      // Plan 0493 §6 — the comms MODE is carried on every delivered envelope so each poll tells the
+      // agent how to answer (advisory to the agent; the server never enforces it).
+      mode: commsMode,
+      newSinceLastRead: {
+        count: since.length,
+        turns: coalesceTurns(since, recentN).map((t) => annotateTrust(t, t.trust)),
+        // Plan 0493 R3 — the gap marker travels WITH the delivery. missed>0 ⇒ N turns were lost.
+        missed,
+        ...(missed > 0 ? { missedMarker: '⚠ ' + missed + ' turns missed' } : {}),
+      },
       // Plan 0473 P7: the ROLLING SUMMARY — continuity for context OLDER than the recent-N turns.
       // A PRECOMPUTED, BOUNDED snapshot (this is a pure read of the incrementally-maintained state via
       // the F-10 seam — it NEVER blocks/computes on read), so a long session is not amnesiac past N.
@@ -1936,6 +1968,43 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     setSpeaking: (on) => setSpeaking(on),
     // isSpeaking(): is the agent's outbound reply currently playing (barge-in armed)? Observability hook.
     isSpeaking: () => speaking,
+    // ---- Plan 0493 Phase A/B — PVS lifecycle + comms mode (server-held, session-scoped) ----
+    // pvsStart({mode,consumer,session}): OPEN a PVS. Returns resumeCursor (R1) = the delivery cursor
+    // this consumer resumes FROM — never "now" on a re-arm (the S212 bug that lost turns 12/13). On a
+    // genuine FIRST open the cursor is baselined at the current live seq (do not replay pre-session
+    // backlog); a re-arm (the consumer already has a held cursor) PRESERVES it, so the unread gap
+    // REPLAYS. Does NOT open a mic (§5) — presenter_voice_enable is a separate, deliberate act.
+    pvsStart: ({ mode, consumer = 'argusmon', session = null } = {}) => {
+      const key = pvsConsumerKey(consumer);
+      const reopening = !!(pvs && pvs.open);
+      if (mode != null && PVS_MODES.has(mode)) commsMode = mode;   // an explicit mode wins; else keep the standing mode
+      // R1: baseline the delivery cursor ONLY when this consumer has none yet (fresh open). Re-arm keeps it.
+      if (!situationCursors.has(key)) situationCursors.set(key, inboxSeq);
+      const resumeCursor = situationCursors.get(key);
+      pvs = { open: true, consumer: key, openedAt: (pvs && pvs.openedAt) || Date.now(), session: session != null ? session : (pvs && pvs.session) || null };
+      log.info('pvs', 'start', { consumer: key, mode: commsMode, resumeCursor, liveCursor: inboxSeq, reopening });
+      return { open: true, mode: commsMode, consumer: key, resumeCursor, liveCursor: inboxSeq, sessionId: SESSION_ID, session: pvs.session, reopened: reopening };
+    },
+    // pvsStop({}): CLOSE the PVS. Idempotent (§5 — stopping a closed PVS succeeds quietly). Drops the
+    // delivery cursor so a later PVS re-baselines rather than inheriting an orphan cursor.
+    pvsStop: () => {
+      const wasOpen = !!(pvs && pvs.open);
+      const key = pvs && pvs.consumer;
+      if (key) situationCursors.delete(key);
+      if (wasOpen) log.info('pvs', 'stop', { consumer: key });
+      pvs = null;
+      return { stopped: true, wasOpen };
+    },
+    // pvsState(): the current PVS record for presenter_status. Always reports a mode (the standing
+    // default when no PVS is open — §8).
+    pvsState: () => (pvs && pvs.open)
+      ? { open: true, mode: commsMode, consumer: pvs.consumer, openedAt: pvs.openedAt, session: pvs.session,
+          deliveredCursor: situationCursors.get(pvs.consumer) || 0, liveCursor: inboxSeq }
+      : { open: false, mode: commsMode },
+    // Test/observability seam — inject an inbox item through the REAL emit path (turn assignment,
+    // trust derivation, waiter wake). Mirrors the WS voice/text ingress without a socket. `_`-prefixed,
+    // like the other test hooks; not part of the driving surface.
+    _emitInboxForTest: (spec = {}) => { const e = emitInbox(spec); return annotateTrust(e, e.trust); },
     // Plan 0473 P4 — WORK-QUEUE operator surface (server-tracked status/owner; the agent holds nothing).
     // workItems(): the current ACTIONABLE queue (pending + claimed), prioritized + bounded (aged pruned).
     workItems: () => queueView(),
