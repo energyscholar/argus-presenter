@@ -216,6 +216,16 @@ export const coreTools = [
     }
   },
   {
+    name: 'present_text',
+    description: "Plan 0493 §8 (the standard text-response surface): render MARKDOWN to a legible, theme-consistent ARGUS·RESPONSE card on the stage. `text` is markdown — headings, bullet/numbered lists, bold/italic, inline + fenced code, blockquotes, and simple tables. Rendered SERVER-SIDE to sanitised HTML (every text segment is escaped, so untrusted text is escaped, never executed) and long content SCROLLS in the card, never clips. This is the DEFAULT outbound payload in `presenter` comms mode: author your answer ONCE in markdown (the same text you'd write to the terminal) and land it here, then speak only a one-line pointer with presenter_speak. Do NOT use presenter_speak for lists/analysis/code — Bruce reads far faster than speech plays. Replaces the current display like show_beat.",
+    input: { type: 'object', required: ['text'], properties: {
+      text: { type: 'string', description: 'Markdown body (headings/lists/bold/italic/code/tables). Dense is fine — Bruce reads fast; do not dumb it down or truncate for the display.' },
+      title: { type: 'string', description: 'Optional heading shown under the ARGUS·RESPONSE chrome.' },
+      target: { type: 'string', default: 'all', description: 'userId | all | participant | presenter | ai' }
+    } },
+    handler: async ({ text, title = null, target = 'all' } = {}) => need().presentText({ text, title, target })
+  },
+  {
     name: 'show_beat',
     description: 'Show a beat of the CURRENT module BY ID (or by index) — random access, not linear. A tabletop module is a CATALOG, not a deck: the players decide the order, so the GM cues a scene by name ("the logs", "the museum") and it appears. Use presenter_beats to list the ids.',
     input: { type: 'object', properties: { beatId: { type: 'string', description: 'Beat id from the loaded module' }, index: { type: 'number', description: 'Zero-based beat index (used only when beatId is absent)' } } },

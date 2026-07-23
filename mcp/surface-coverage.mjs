@@ -60,6 +60,7 @@ export const API_COVERAGE = {
   chime:               { tool: 'presenter_bell' },
   speak:               { tool: 'presenter_speak' },   // Plan 0491 §10 minimum working slice
   pushComponent:       { tool: 'push_component' },
+  presentText:         { tool: 'present_text' },   // Plan 0493 §8 — standard markdown text-response card
   presence:            { tool: 'presenter_attendance' },
   store:               { declined: VIA_MCP_STATE },
   // GAP #4 of the S210 six: the server CAN push raw HTML (server.mjs:1820) and no tool exposes
