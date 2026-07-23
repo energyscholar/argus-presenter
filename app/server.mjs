@@ -2001,6 +2001,17 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       ? { open: true, mode: commsMode, consumer: pvs.consumer, openedAt: pvs.openedAt, session: pvs.session,
           deliveredCursor: situationCursors.get(pvs.consumer) || 0, liveCursor: inboxSeq }
       : { open: false, mode: commsMode },
+    // commsMode(set?): Plan 0493 Phase B — GET (no arg) or SET the comms mode (§6). Returns the
+    // effective mode. An unknown value is REFUSED (the closed-set / tail-de-index trap) and the mode is
+    // left unchanged. Mode is advisory to the agent — the server never blocks a speak/push on it; it
+    // only stores it and stamps it on every delivered envelope so the agent knows how to answer.
+    commsMode: (set) => {
+      if (set != null) {
+        if (!PVS_MODES.has(set)) return { ok: false, reason: 'unknown-mode', mode: commsMode, modes: [...PVS_MODES] };
+        commsMode = set; log.info('pvs', pvs ? 'mode' : 'mode-no-pvs', { mode: set });
+      }
+      return { ok: true, mode: commsMode, pvsOpen: !!(pvs && pvs.open) };
+    },
     // Test/observability seam — inject an inbox item through the REAL emit path (turn assignment,
     // trust derivation, waiter wake). Mirrors the WS voice/text ingress without a socket. `_`-prefixed,
     // like the other test hooks; not part of the driving surface.

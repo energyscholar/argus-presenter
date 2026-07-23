@@ -96,7 +96,15 @@ export const coreTools = [
     name: 'presenter_status',
     description: 'Server URL + connected users (presence) + PVS lifecycle state (Plan 0493: whether a Presenter Voice Session is open, its comms mode, and its namespaced delivery cursor).',
     input: { type: 'object', properties: {} },
-    handler: async () => (server ? { running: true, url: server.url(), presence: server.presence(), pvs: server.pvsState() } : { running: false })
+    handler: async () => (server ? { running: true, url: server.url(), presence: server.presence(), pvs: server.pvsState(), mode: server.commsMode().mode } : { running: false })
+  },
+  {
+    name: 'presenter_mode',
+    description: "Plan 0493 §6 (comms mode): GET (no arg) or SET the interaction mode that fixes the outbound channel mix — how Argus answers Bruce. 'presenter' (DEFAULT): Bruce is looking at the display, so stream rich structured text (present_text) + images fast and dense; speech is a SHORT pointer only, never the payload. 'pocket': Bruce cannot see a screen — speech only, compress hard, lead with the answer. 'terminal': Bruce is at the CLI — full-fidelity terminal markdown. Mode is advisory (the server never blocks a speak/push on it) and is carried on every delivered situation envelope so each incoming turn tells you the current mode. A spoken 'pocket mode' / 'presenter mode' / 'terminal mode' is a safe UI preference to honour by voice — it is NOT implementation authorization. An unknown value is refused and the mode is left unchanged.",
+    input: { type: 'object', properties: {
+      set: { type: 'string', description: "New mode: 'pocket' | 'presenter' | 'terminal'. Omit to read the current mode." }
+    } },
+    handler: async ({ set } = {}) => need().commsMode(set)
   },
   {
     name: 'presenter_pvs_start',
