@@ -94,9 +94,34 @@ export const coreTools = [
   },
   {
     name: 'presenter_status',
-    description: 'Server URL + connected users (presence).',
+    description: 'Server URL + connected users (presence) + PVS lifecycle state (Plan 0493: whether a Presenter Voice Session is open, its comms mode, and its namespaced delivery cursor).',
     input: { type: 'object', properties: {} },
-    handler: async () => (server ? { running: true, url: server.url(), presence: server.presence() } : { running: false })
+    handler: async () => (server ? { running: true, url: server.url(), presence: server.presence(), pvs: server.pvsState() } : { running: false })
+  },
+  {
+    name: 'presenter_pvs_start',
+    description: 'Plan 0493 (PVS lifecycle): OPEN a Presenter Voice Session — the server-held state that makes Bruce\'s spoken turns arrive like typed input. Returns resumeCursor (the delivery cursor to resume FROM — NEVER re-arm your Monitor at the live cursor: that is the S212 bug that silently dropped turns) and the namespaced `consumer` id (R2 — distinct from presenter_transcript\'s cursor, so a watcher and a manual read never eat each other\'s turns) plus watchUrl. A re-arm within the same session REPLAYS the unread gap. This does NOT open a mic — call presenter_voice_enable separately (opening a delivery channel and requesting a human\'s mic are different acts). A PVS is confined to ONE agent session: STOP it with presenter_pvs_stop or at session end; a server restart ends it. Anything Bruce says while no PVS is open is NOT delivered as an event (it stays readable in the transcript). Arm your harness Monitor against watchUrl (or the ws subscribe path) — MCP cannot push, only a Monitor makes a turn arrive unprompted.',
+    input: { type: 'object', properties: {
+      mode: { type: 'string', description: "Comms mode: 'presenter' (DEFAULT — display-primary, stream text fast, speech a short pointer), 'pocket' (speech only, compress hard), 'terminal' (full terminal markdown). Omit to keep the standing mode." },
+      consumer: { type: 'string', description: 'Namespaced cursor id for this watcher (default "argusmon"). Kept distinct from presenter_transcript so reads and the watcher do not consume each other.' },
+      session: { type: 'string', description: 'Optional label for the agent session that owns this PVS (recorded, reported in presenter_status).' }
+    } },
+    handler: async ({ mode, consumer = 'argusmon', session } = {}) => {
+      const s = need();
+      const r = s.pvsStart({ mode, consumer, session });
+      return {
+        ...r,
+        consumerParam: consumer,
+        watchUrl: s.url() + '/api/situation?consumer=' + encodeURIComponent(consumer),
+        note: 'Arm a persistent Monitor against watchUrl (server holds your cursor — no `since` needed) OR the ws subscribe path. resumeCursor is where delivery resumes; never re-arm at the live cursor. This did NOT open a mic — use presenter_voice_enable for that.'
+      };
+    }
+  },
+  {
+    name: 'presenter_pvs_stop',
+    description: 'Plan 0493 (PVS lifecycle): CLOSE the Presenter Voice Session. Idempotent — stopping a closed PVS succeeds quietly. Tear down your harness Monitor (TaskStop) too; the PVS closing and the watcher stopping are both required (§5). After this, spoken turns are no longer delivered as events.',
+    input: { type: 'object', properties: {} },
+    handler: async () => need().pvsStop()
   },
   {
     name: 'push_component',
