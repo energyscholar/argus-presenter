@@ -1148,6 +1148,45 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   }
   // Fan a freshly-emitted inbox entry out to every live subscriber (called from emitInbox).
   function fanOutToSubscribers(entry) { for (const [ws, sub] of pvsSubscribers) deliverTurnToSub(ws, sub, entry); }
+  // ---- Plan 0493 Phase E — echo & hallucination hygiene (§10) ----
+  // E1 (TTS loopback): S212 — Argus's own presenter_speak output was picked up by the mic and
+  // re-transcribed as three verbatim "Bruce" turns. echoCancellation in the capture graph is necessary
+  // but proven insufficient, so we dedupe at the DELIVERY layer: a voice turn that closely matches a
+  // recent spoken payload (within a short window) is flagged echo:true and NOT delivered as a Bruce turn.
+  const ECHO_WINDOW_MS = 12000;                 // a loopback is re-heard within a few seconds of speaking
+  const recentSpeak = [];                       // { norm, ts } — bounded ring of recently-spoken payloads
+  const normText = (t) => String(t == null ? '' : t).toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  function recordSpeak(text) {
+    const norm = normText(text); if (!norm) return;
+    recentSpeak.push({ norm, ts: Date.now() });
+    while (recentSpeak.length > 20) recentSpeak.shift();
+  }
+  function wordJaccard(a, b) {
+    const A = new Set(a.split(' ')), B = new Set(b.split(' '));
+    if (!A.size || !B.size) return 0;
+    let inter = 0; for (const w of A) if (B.has(w)) inter++;
+    return inter / (A.size + B.size - inter);
+  }
+  function isEcho(text) {
+    const norm = normText(text); if (!norm) return false;
+    const now = Date.now();
+    for (let i = recentSpeak.length - 1; i >= 0; i--) {
+      const r = recentSpeak[i];
+      if (now - r.ts > ECHO_WINDOW_MS) continue;
+      if (r.norm === norm) return true;                                              // verbatim loopback
+      if (r.norm.length >= 8 && (r.norm.includes(norm) || norm.includes(r.norm))) return true;  // partial
+      if (wordJaccard(r.norm, norm) >= 0.8) return true;                             // near-duplicate
+    }
+    return false;
+  }
+  // E2 (near-silence hallucinations): whisper emits confident boilerplate on near-silence. The server
+  // FLAGS a match as advisory (suspectHallucination) — it is still delivered; the AGENT decides. The
+  // canonical set is documented in the PVS skill (Auditor half); this is a small, bounded seed.
+  const HALLUCINATION_BOILERPLATE = [
+    'thank you', 'thanks for watching', 'thank you for watching',
+    'subs by www zeoranger co uk', 'subtitles by', 'please subscribe',
+  ];
+  function isBoilerplate(text) { const n = normText(text); return !!n && HALLUCINATION_BOILERPLATE.some((b) => n === b || n.includes(b)); }
   // ---- Plan 0473 P2: TURN COALESCING (fragments -> turns) ----
   // A speaker's CONSECUTIVE inbox items (voice OR typed text) are grouped into a TURN by a per-speaker
   // SETTLING WINDOW read from the ACTIVE PROFILE (api.profile().settlingMs — wearable = 400ms; consumed
@@ -1396,6 +1435,13 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       ts: Date.now(), sessionId: sessionId || SESSION_ID,
     };
     if (own === true) entry.own = true;   // Plan 0473 P13: the agent's OWN outbound reply (never fenced/queued/self-barged)
+    // Plan 0493 Phase E — hygiene flags on inbound VOICE turns only (never the agent's own reply).
+    // echo:true ⇒ a TTS loopback; it is NOT delivered as a Bruce turn (E1). suspectHallucination is
+    // advisory only — still delivered, the agent decides (E2).
+    if (kind === 'voice' && own !== true) {
+      if (isEcho(text)) entry.echo = true;
+      if (isBoilerplate(text) && (entry.conf == null || entry.conf < 0.6)) entry.suspectHallucination = true;
+    }
     inbox.push(entry); if (inbox.length > TRANSCRIPT_RING) inbox.shift();
     assignTurn(entry);   // Plan 0473 P2: attach turnId + turnComplete (may settle the prior turn) BEFORE emit
     persistInboxItem(entry);   // RT-26: no-op unless PRESENTER_TRANSCRIPT_PERSIST is ON (voice AND text)
@@ -1571,7 +1617,8 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       .map(([id, p]) => ({ promptId: id, prompt: p.spec && p.spec.prompt, open: true, ...tally(id) }));
     // Plan 0473 P9: DELIMIT-AS-DATA at serve time — participant/guest turns are fenced (untrusted
     // content the agent must treat as data, never as commands); self/controller turns pass through.
-    const recentTurns = coalesceTurns(inbox, recentN).map((t) => annotateTrust(t, t.trust));
+    // Plan 0493 E1 — echo loopbacks are never surfaced as turns (poll path); the ws path skips them too.
+    const recentTurns = coalesceTurns(inbox.filter((i) => i.echo !== true), recentN).map((t) => annotateTrust(t, t.trust));
     // Plan 0473 P4: the WORK QUEUE — judgment items, prioritized + bounded (aged/expired pruned).
     const queue = queueView();
     return {
@@ -1597,7 +1644,9 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       mode: commsMode,
       newSinceLastRead: {
         count: since.length,
-        turns: coalesceTurns(since, recentN).map((t) => annotateTrust(t, t.trust)),
+        // Plan 0493 E1 — an echo loopback advances the cursor (so it never re-delivers) but is NOT
+        // surfaced as a Bruce turn: filter it out of the delivered set.
+        turns: coalesceTurns(since.filter((i) => i.echo !== true), recentN).map((t) => annotateTrust(t, t.trust)),
         // Plan 0493 R3 — the gap marker travels WITH the delivery. missed>0 ⇒ N turns were lost.
         missed,
         ...(missed > 0 ? { missedMarker: '⚠ ' + missed + ' turns missed' } : {}),
@@ -2205,7 +2254,11 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     // SPEAK (Plan 0491 §10, minimum working slice): on-device speechSynthesis, driven by a
     // transient frame — exactly like chime, NO setDisplay, so it never re-fires on reconnect.
     // Clamp server-side (~300 chars): the spoken channel is a précis, not the record (§2.3).
-    speak: (text, target = 'all') => targets(target).map((ws) => send(ws, { t: 'speak', text: String(text || '').slice(0, 300) })).length,
+    speak: (text, target = 'all') => {
+      const clamped = String(text || '').slice(0, 300);
+      recordSpeak(clamped);   // Plan 0493 E1: remember what we said so its mic loopback can be deduped
+      return targets(target).map((ws) => send(ws, { t: 'speak', text: clamped })).length;
+    },
     // Eyes-on status for an ackId: who confirmed they're watching, and who (among current
     // viewers of the requested target) is still pending — the AFK signal.
     getAck: (ackId = 'ready') => {
