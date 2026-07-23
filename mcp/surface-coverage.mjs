@@ -92,6 +92,7 @@ export const API_COVERAGE = {
   pvsStart:            { tool: 'presenter_pvs_start' },
   pvsStop:             { tool: 'presenter_pvs_stop' },
   pvsState:            { tool: 'presenter_status' },
+  commsMode:           { tool: 'presenter_mode' },
   _emitInboxForTest:   { declined: 'test-only ingress seam — injects an inbox item through the real emit path without a socket' },
 
   // --- sensing
