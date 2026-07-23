@@ -643,6 +643,28 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       // see a client whose every frame is garbage (previously an entirely silent `return`).
       let m; try { m = JSON.parse(buf.toString()); } catch (e) { telem.frameErrors++; return; }
       if (m === null || typeof m !== 'object') { telem.frameErrors++; return; }   // Plan 0471 C2: null/primitive frame → no dispatch (null.t would throw)
+      // Plan 0493 Phase D — PVS ws transport. A subscriber is read-only: once subscribed, the ONLY frame
+      // it may send is pvs_unsubscribe; everything else (ops, votes, voice) is ignored (it is not a
+      // participant). This branch runs BEFORE the participant dispatch so a subscriber can never act.
+      if (pvsSubscribers.has(ws)) {
+        if (m.t === 'pvs_unsubscribe') { pvsSubscribers.delete(ws); try { send(ws, { t: 'pvs_unsubscribed' }); } catch {} }
+        return;
+      }
+      if (m.t === 'pvs_subscribe') {
+        // Become a SUBSCRIBER: leave the participant set (no roster/floor/backpressure weight, cannot
+        // send ops). Share the namespaced delivery cursor (R2); replay the unread backlog from it (R1),
+        // then stream live. If no PVS baseline exists yet, baseline at the live seq (don't flood).
+        const key = pvsConsumerKey(m.consumer || 'argusmon');
+        const cc = conns.get(ws); if (cc && cc.userId) unbindUser(cc.userId, ws);
+        conns.delete(ws); updateChatListeners(); emit('presence', presence()); evaluateFloor();
+        if (!situationCursors.has(key)) situationCursors.set(key, inboxSeq);
+        const from = situationCursors.get(key);
+        pvsSubscribers.set(ws, { consumer: key });
+        send(ws, { t: 'pvs_subscribed', consumer: key, resumeCursor: from, mode: commsMode });
+        for (const it of inbox.filter((i) => i.seq > from)) deliverTurnToSub(ws, pvsSubscribers.get(ws), it);   // replay
+        log.info('pvs', 'subscribe', { consumer: key, resumeFrom: from });
+        return;
+      }
       try {
       const c = conns.get(ws);
       if (c) c.lastSeen = Date.now();   // liveness (X4)
@@ -795,6 +817,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       } catch (e) { try { log.warn('ws', 'dispatch-error', { err: String(e && e.message || e) }); } catch {} }   // Plan 0471 C2: defense-in-depth
     });
     ws.on('close', () => {
+      if (pvsSubscribers.has(ws)) { pvsSubscribers.delete(ws); log.info('pvs', 'unsubscribe-close', {}); }   // Plan 0493 D: socket close ends the watch (S12)
       const c = conns.get(ws);
       if (c && c.voice && c.voice.active) { if (c.voice.timer) clearTimeout(c.voice.timer); c.voice.active = false; voiceSessions = Math.max(0, voiceSessions - 1); }   // RT-14: drop an orphaned open segment
       if (c && c.userId) unbindUser(c.userId, ws); conns.delete(ws); updateChatListeners(); emit('presence', presence());
@@ -1104,6 +1127,27 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // Namespace the PVS delivery cursor (R2) so a watcher and a manual presenter_transcript read can NEVER
   // consume each other's turns. The consumer id is sanitized to a bounded, injection-free key.
   function pvsConsumerKey(consumer) { return 'pvs:' + String(consumer || 'default').replace(/[^\w.-]/g, '').slice(0, 64); }
+  // ---- Plan 0493 Phase D — ws transport (Monitor({ws})) ----
+  // A read-only transcript SUBSCRIBER: a socket that sends {t:'pvs_subscribe'} is a subscriber, NOT a
+  // participant — removed from `conns`, so it is absent from the roster, carries no floor/backpressure
+  // weight, and cannot send ops. It shares the SAME namespaced delivery cursor (R2) as the poll path, so
+  // a spoken turn lands at ASR latency (removing the up-to-3 s poll wait, S12) and the watch ENDS when the
+  // socket closes (teardown is a transport property). The 3 s /api/situation poll stays as the fallback.
+  const pvsSubscribers = new Map();   // ws -> { consumer: <namespaced key> }
+  // A deliverable turn: has text, is a settled (final) result, and is NOT the agent's own reply.
+  function pvsDeliverable(entry) { return !!(entry && entry.final !== false && entry.text && entry.own !== true); }
+  // Send ONE turn event to a subscriber and advance the shared delivery cursor. Echo-suppressed turns
+  // (Phase E) are advanced-past but NOT sent — the cursor still moves so they never re-deliver.
+  function deliverTurnToSub(ws, sub, entry) {
+    const key = sub.consumer;
+    if (situationCursors.get(key) >= entry.seq) return;   // already delivered through this cursor
+    situationCursors.set(key, entry.seq);                 // advance regardless of send (no re-delivery)
+    if (!pvsDeliverable(entry)) return;
+    if (entry.echo === true) return;                       // Phase E: a TTS-loopback echo is not a Bruce turn
+    send(ws, { t: 'turn', mode: commsMode, ...annotateTrust(entry, entry.trust) });
+  }
+  // Fan a freshly-emitted inbox entry out to every live subscriber (called from emitInbox).
+  function fanOutToSubscribers(entry) { for (const [ws, sub] of pvsSubscribers) deliverTurnToSub(ws, sub, entry); }
   // ---- Plan 0473 P2: TURN COALESCING (fragments -> turns) ----
   // A speaker's CONSECUTIVE inbox items (voice OR typed text) are grouped into a TURN by a per-speaker
   // SETTLING WINDOW read from the ACTIVE PROFILE (api.profile().settlingMs — wearable = 400ms; consumed
@@ -1368,6 +1412,8 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     maybeBargeIn({ userId, userName, role: role || null, seq: entry.seq }, entry.own === true);
     // Wake every pending long-poll waiter (each resolves with what arrived and removes itself).
     for (const w of [...inboxWaiters]) w.wake();
+    // Plan 0493 Phase D — push the turn to any ws subscriber at ASR latency (no poll wait).
+    fanOutToSubscribers(entry);
     log.info('voice', 'inbox', { kind, userId, seq: entry.seq, len: (text || '').length });
     return entry;
   }
@@ -2027,6 +2073,8 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       log.info('present', 'text', { target, chars: String(text).length, html: html.length });
       return { presented: n, target, chars: String(text).length, htmlBytes: html.length };
     },
+    // Test/observability hook: live PVS ws subscriber count (assert no leak + teardown-on-close).
+    getPvsSubscriberCount: () => pvsSubscribers.size,
     // Test/observability seam — inject an inbox item through the REAL emit path (turn assignment,
     // trust derivation, waiter wake). Mirrors the WS voice/text ingress without a socket. `_`-prefixed,
     // like the other test hooks; not part of the driving surface.

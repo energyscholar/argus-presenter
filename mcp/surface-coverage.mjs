@@ -94,6 +94,7 @@ export const API_COVERAGE = {
   pvsStop:             { tool: 'presenter_pvs_stop' },
   pvsState:            { tool: 'presenter_status' },
   commsMode:           { tool: 'presenter_mode' },
+  getPvsSubscriberCount: { declined: 'test-only observability — live ws subscriber count (leak/teardown assertions)' },
   _emitInboxForTest:   { declined: 'test-only ingress seam — injects an inbox item through the real emit path without a socket' },
 
   // --- sensing
