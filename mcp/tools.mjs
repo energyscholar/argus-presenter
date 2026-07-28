@@ -133,7 +133,7 @@ export const coreTools = [
   },
   {
     name: 'push_component',
-    description: 'Assemble a component (or a scene) and push it to a target (userId | "all" | role).',
+    description: 'Assemble a component (or a scene) and push it to a target (userId | "all" | role). ⏹ To wipe the stage back to the default branding image: presenter_default_branding.',
     input: {
       type: 'object',
       required: ['component'],
@@ -197,8 +197,23 @@ export const coreTools = [
     handler: async ({ staleMs = 10000 } = {}) => need().health({ staleMs })
   },
   {
+    // ⏹ THE PANIC BUTTON. Bruce, 2026-07-27: there must be an obvious "return to default
+    // image / branding" for BOTH human and AI operators, findable on reboot without
+    // reading source. api.clear() already did this, but was NEVER exposed over MCP — 33
+    // tools could put things on screen and none could take them off. Named so it sorts
+    // next to the other presenter_* verbs and reads unambiguously in a tool list.
+    name: 'presenter_default_branding',
+    description: '⏹ RETURN TO DEFAULT IMAGE (BRANDING). Clears the display on every connected client and drops the stored display descriptor, so reconnecting clients also land on the default Argus Presenter branding rather than stale content. This is the safe reset — use it whenever you are unsure what is on screen, at the end of a session, or if anything unexpected is showing.',
+    input: { type: 'object', properties: { target: { type: 'string', default: 'all', description: "Which display(s) to reset; 'all' by default." } } },
+    handler: async ({ target = 'all' } = {}) => ({
+      reset_to_branding: true,
+      target,
+      clients_cleared: need().clear(target)
+    })
+  },
+  {
     name: 'present_module',
-    description: 'Load a content module (deck of beats) and show the first beat. Pass moduleId to load a module BY NAME from the modules directory (preferred — art-heavy decks never touch the agent context; use presenter_modules to list ids), or beats = [{component, opts, requires?}] to supply them inline.',
+    description: 'Load a content module (deck of beats) and show the first beat. Pass moduleId to load a module BY NAME from the modules directory (preferred — art-heavy decks never touch the agent context; use presenter_modules to list ids), or beats = [{component, opts, requires?}] to supply them inline. ⏹ To wipe the stage back to the default branding image: presenter_default_branding.',
     input: { type: 'object', properties: { moduleId: { type: 'string', description: 'Module id (filename without .json) in MODULES_DIR — e.g. "s15-live". Takes precedence over beats.' }, title: { type: 'string' }, beats: { type: 'array', items: { type: 'object' } } } },
     handler: async ({ moduleId, title, beats }) => {
       const s = need();
@@ -217,7 +232,7 @@ export const coreTools = [
   },
   {
     name: 'present_text',
-    description: "Plan 0493 §8 (the standard text-response surface): render MARKDOWN to a legible, theme-consistent ARGUS·RESPONSE card on the stage. `text` is markdown — headings, bullet/numbered lists, bold/italic, inline + fenced code, blockquotes, and simple tables. Rendered SERVER-SIDE to sanitised HTML (every text segment is escaped, so untrusted text is escaped, never executed) and long content SCROLLS in the card, never clips. This is the DEFAULT outbound payload in `presenter` comms mode: author your answer ONCE in markdown (the same text you'd write to the terminal) and land it here, then speak only a one-line pointer with presenter_speak. Do NOT use presenter_speak for lists/analysis/code — Bruce reads far faster than speech plays. Replaces the current display like show_beat.",
+    description: "Plan 0493 §8 (the standard text-response surface): render MARKDOWN to a legible, theme-consistent ARGUS·RESPONSE card on the stage. `text` is markdown — headings, bullet/numbered lists, bold/italic, inline + fenced code, blockquotes, and simple tables. Rendered SERVER-SIDE to sanitised HTML (every text segment is escaped, so untrusted text is escaped, never executed) and long content SCROLLS in the card, never clips. This is the DEFAULT outbound payload in `presenter` comms mode: author your answer ONCE in markdown (the same text you'd write to the terminal) and land it here, then speak only a one-line pointer with presenter_speak. Do NOT use presenter_speak for lists/analysis/code — Bruce reads far faster than speech plays. Replaces the current display like show_beat. ⏹ To wipe the stage back to the default branding image: presenter_default_branding.",
     input: { type: 'object', required: ['text'], properties: {
       text: { type: 'string', description: 'Markdown body (headings/lists/bold/italic/code/tables). Dense is fine — Bruce reads fast; do not dumb it down or truncate for the display.' },
       title: { type: 'string', description: 'Optional heading shown under the ARGUS·RESPONSE chrome.' },
@@ -227,7 +242,7 @@ export const coreTools = [
   },
   {
     name: 'show_beat',
-    description: 'Show a beat of the CURRENT module BY ID (or by index) — random access, not linear. A tabletop module is a CATALOG, not a deck: the players decide the order, so the GM cues a scene by name ("the logs", "the museum") and it appears. Use presenter_beats to list the ids.',
+    description: 'Show a beat of the CURRENT module BY ID (or by index) — random access, not linear. A tabletop module is a CATALOG, not a deck: the players decide the order, so the GM cues a scene by name ("the logs", "the museum") and it appears. Use presenter_beats to list the ids. ⏹ To wipe the stage back to the default branding image: presenter_default_branding.',
     input: { type: 'object', properties: { beatId: { type: 'string', description: 'Beat id from the loaded module' }, index: { type: 'number', description: 'Zero-based beat index (used only when beatId is absent)' } } },
     handler: async ({ beatId, index } = {}) => {
       const s = need();

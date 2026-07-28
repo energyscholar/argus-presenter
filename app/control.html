@@ -66,6 +66,13 @@
   /* P2.7: presenter-screen launcher — fixed immediately LEFT of the preview dock
      (dock: right:96px + 302px wide + 8px gap). Width grows leftward; right edge is stable. */
   #btn-present{position:fixed;top:4px;right:406px;z-index:59;font-size:12px;padding:5px 10px;}
+  /* Bruce 2026-07-27: an OBVIOUS "return to default image / branding" for the human
+     operator, mirroring the presenter_default_branding MCP tool for the AI. Deliberately
+     high-contrast and always visible in the top frame — this is the "what is on screen?
+     make it stop" control, and it must be findable cold, after a reboot, without hunting. */
+  #btn-branding{position:fixed;top:4px;right:544px;z-index:59;font-size:12px;padding:5px 10px;
+    font-weight:600;border:1px solid #b45309;background:#78350f;color:#fde68a;border-radius:4px;cursor:pointer;}
+  #btn-branding:hover{background:#92400e;color:#fff;}
   #np-meta{font-size:12px;}#np-meta b{color:#fff;}
   #viewingas{font-size:11px;color:var(--warn);}
   .sec{border:1px solid #1c2a44;border-radius:6px;margin:5px 0;}
@@ -146,6 +153,8 @@
 <button id="led-btn" title="Settings" aria-haspopup="true" aria-label="Connection and settings"><span id="led2"></span></button>
 <!-- P2.7: presenter-screen launcher — fixed in the top frame, immediately LEFT of the preview dock -->
 <button id="btn-present" title="Open (or refocus) the presenter display window">⧉ Presenter screen</button>
+<!-- RETURN TO DEFAULT IMAGE — the human twin of the presenter_default_branding MCP tool. -->
+<button id="btn-branding" title="Clear every display back to the default Argus Presenter branding image. Safe: content can be re-shown afterwards.">⏹ Default image</button>
 <!-- P2.5/P2.7: Live Preview dock — fixed in the top frame, left of the green dot; the
      live-preview checkbox now sits UNDER the dot (see #livepreview-lbl CSS) -->
 <div id="pvdock">
@@ -461,6 +470,9 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   // unlock hash) — read at CLICK time so a mid-session unlock is picked up; never a
   // hardcoded hash. name: the explicit ?name= if one was given, else 'Presenter'
   // (identity.userName defaults to 'Control', which names THIS page, not the display).
+  // RETURN TO DEFAULT IMAGE (branding). Routes through the same api.clear() the MCP tool
+  // presenter_default_branding uses, so human and AI operators hit one code path.
+  $('btn-branding').onclick=function(){ control('clear',{target:'all'}); };
   $('btn-present').onclick=function(){
     var u='/?role=presenter&name='+encodeURIComponent(q.get('name')||'Presenter');
     if(identity.token) u+='&token='+encodeURIComponent(identity.token);
