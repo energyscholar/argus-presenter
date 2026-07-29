@@ -17,13 +17,15 @@
 import http from 'http';
 import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync, statSync, existsSync, writeFileSync, watch, mkdirSync, unlinkSync, appendFileSync, lstatSync } from 'fs';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import { dirname, join } from 'path';
 import { tmpdir } from 'os';
 import { WebSocketServer } from 'ws';
 import { assemble } from '../harness/assemble.mjs';
+import { loadManifests, pluginDir, buildStationRegistry, pluginServerModule } from '../harness/plugins.mjs';
 import * as log from './log.mjs';
 import { createStore, isEphemeral, validOp } from './state.mjs';
+import { ALL as ALL_READ_ROLES } from './permissions.mjs';
 import { validate, summarize } from './validate.mjs';
 import { createAsr } from './asr.mjs';
 import { verifyCapability, mintCapability } from '../lib/capability.mjs';
@@ -85,6 +87,19 @@ function stripVoiceBlocks(html) { return html.replace(VOICE_BLOCK_RE, ''); }
 export function renderPresenterPage(voiceEnabled) {
   const html = readFileSync(PAGE, 'utf8');
   return voiceEnabled ? html : stripVoiceBlocks(html);
+}
+
+/**
+ * Plan 0514 §5 — the seat-name slug. lowercase · non-[a-z0-9] → '-' · collapse repeats ·
+ * trim · cap 24 chars. Empty ⇒ 'anon'. Same link ⇒ same userId, every time. That is the
+ * whole point: two players sharing one nameless link land on the same seat, which is correct
+ * because identical links are indistinguishable by construction.
+ */
+export function slugForSeat(name) {
+  const s = String(name == null ? '' : name)
+    .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+/g, '-')
+    .replace(/^-|-$/g, '').slice(0, 24).replace(/-$/, '');
+  return s || 'anon';
 }
 
 // AUTH-ROLE (P5.5): standard seeded hash. The plaintext password NEVER travels —
@@ -216,6 +231,23 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // be shown. A descriptor is re-rendered per connection on hello.
   const displayByRole = {};    // role -> descriptor
   const displayByUser = new Map(); // userId -> descriptor (per-user override)
+  // Plan 0508 — SPOTLIGHT: userIds a controller has allowed to promote their own station display
+  // to everyone. Default-deny; nothing here until a controller grants it. spotlightLast throttles.
+  const spotlight = new Set();
+  const spotlightLast = new Map();
+
+  // ── Plan 0514 §3 — the STATION REGISTRY. Plugin DATA, read through the ONE manifest loader.
+  // Validation throws HERE, at load, so a malformed registry stops the server starting instead
+  // of surprising a live session. No plugin declares stations ⇒ an empty registry ⇒ every
+  // station surface below is inert and a teaching deployment sees no change whatsoever.
+  const stationRegistry = buildStationRegistry(loadManifests(), { log });
+  // Plan 0514 §4.2a — the SEAT RESOLVER. Core stores NO seat→station map (§13.2): it asks the
+  // plugin at the moment it needs a value and forgets it. Null until a plugin registers one, in
+  // which case stations are inert.
+  let seatResolver = null;
+  // Plan 0514 §9 — tools contributed by a plugin's server module. Core keeps the list; it has no
+  // idea what any of them do.
+  const pluginTools = new Map();
   // ATT (Plan 0466, decision 1): presenter-gated "roster visible to attendees", DEFAULT OFF.
   // Presenter/ai always see the full roster; a participant attendance-request is answered
   // self-only until the presenter turns this ON. In-memory session state (v0.1).
@@ -544,6 +576,36 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         capNonce: capGrant.nonce,
       };
     }
+    // Plan 0514 §5 / §5.1 — SEAT PROVISIONING, BY UID. When the link carries a station selector,
+    // identity is DERIVED from the link and nothing else: userId = <stationCode>-<slug(userName)>,
+    // always, one rule, no branch. That is what makes a reload return the SAME seat (0508 D3: an
+    // anon seat minted a fresh userId on every reload and orphaned both its station and its
+    // spotlight grant).
+    //
+    // §5.1 (Bruce, S220) — the selector is an INTEGER uid looked up in the registry. Absent,
+    // non-numeric or unknown ⇒ the deployment default. There is NO string matching here: a uid
+    // cannot be misspelled into a different station, whereas `?station=damage-control` silently
+    // seated the DEFAULT station because that station's code was `dc`. The userId is derived from the RESOLVED
+    // station, so `?stationUID=999&n=Les` yields <defaultCode>-les and never a bogus seat.
+    if (m.stationUID !== undefined && !stationRegistry.isEmpty()) {
+      const askedUid = Number.isInteger(m.stationUID) ? m.stationUID : null;
+      const st = stationRegistry.get(askedUid) || stationRegistry.get(stationRegistry.defaultUid);
+      const rawName = typeof m.userName === 'string' ? m.userName : '';
+      const seatUserId = st.stationCode + '-' + slugForSeat(rawName);
+      const seatUserName = rawName.trim() ? rawName : 'NAME UNKNOWN';
+      const askedRole = m.role || 'participant';
+      if (!KNOWN_ROLES.has(askedRole)) {
+        log.warn('auth', 'role-denied', { socketId, userId: seatUserId, requested: String(askedRole), granted: 'participant', reason: 'unknown-role' });
+        return { userId: seatUserId, userName: seatUserName, role: 'participant', isGuest: false, stationUid: st.stationUid };
+      }
+      if (askedRole !== 'participant') {
+        const gated = !!(CONTROL_TOKEN || ROLE_HASH);
+        if (CONTROL_ROLES.has(askedRole) && (!gated || credentialOk(m.token))) return { userId: seatUserId, userName: seatUserName, role: askedRole, isGuest: false, stationUid: st.stationUid };
+        if (askedRole === 'gm' && gated && credentialOk(m.token)) return { userId: seatUserId, userName: seatUserName, role: 'gm', isGuest: false, stationUid: st.stationUid };
+        log.warn('auth', 'role-denied', { socketId, userId: seatUserId, requested: String(askedRole), granted: 'participant', reason: 'bad-credential' });
+      }
+      return { userId: seatUserId, userName: seatUserName, role: 'participant', isGuest: false, stationUid: st.stationUid };
+    }
     const userId = m.userId || ('anon-' + Math.random().toString(36).slice(2, 8));
     const userName = m.userName || userId;
     const asked = m.role || 'participant';
@@ -585,14 +647,26 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // yet sent `hello` has no userId and no decided role — reporting it as a `participant` with
   // userId:null is a phantom: it inflates counts and lets an observer read a role that the
   // identity seam has not yet assigned. Presence is "who is here", not "how many sockets".
-  function presence() { return [...conns.values()].filter((c) => c.userId).map((c) => ({ userId: c.userId, userName: c.userName, role: c.role, eyesOn: c.eyesOn || null })); }
+  // Plan 0514 §8: presence carries stationUid — the roster column that makes a byte-exact
+  // mis-seat visible within seconds, and the share-target dropdown's source. Core stores NO
+  // occupancy: it ASKS the plugin at the moment it builds the feed and then forgets (t0514-39).
+  function presence() { return [...conns.values()].filter((c) => c.userId).map((c) => ({ userId: c.userId, userName: c.userName, role: c.role, eyesOn: c.eyesOn || null, stationUid: seatStationUid(c.userId) })); }
   // Full presence (incl. IP + socketId + current display id) pushed to CONTROL roles only, for the GM user list.
   function pushPresence() {
     // No-op unless a control client (presenter/ai) is actually listening — avoids building/sending
     // the presence feed on every display change when nobody's watching.
     const ctl = [...conns.values()].filter((c) => c.role === 'presenter' || c.role === 'ai');
     if (!ctl.length) return;
-    const users = [...conns.values()].map((c) => ({ userId: c.userId, userName: c.userName, role: c.role, ip: c.ip, socketId: c.id, lastSeen: c.lastSeen, display: displayIdFor(c), eyesOn: c.eyesOn || null }));
+    // Plan 0514 §7 — the control roster gains a station column, which is what makes a byte-exact
+    // mis-seat (a mis-cased `?station=` lands on the default, silently) VISIBLE within seconds
+    // moment the player says "I can't see my screen". The LABEL is for a human to read; the uid
+    // is the identifier. A stationCode still never reaches the wire (canon §3).
+    const users = [...conns.values()].map((c) => {
+      const uid = seatStationUid(c.userId);
+      const st = uid == null ? null : stationRegistry.get(uid);
+      return { userId: c.userId, userName: c.userName, role: c.role, ip: c.ip, socketId: c.id, lastSeen: c.lastSeen, display: displayIdFor(c), eyesOn: c.eyesOn || null,
+        stationUid: uid, stationLabel: st ? st.stationLabel : null };
+    });
     for (const [ws, c] of conns.entries()) if (c.role === 'presenter' || c.role === 'ai') send(ws, { t: 'presence', users });
   }
   // PRIM-results: forward a beat result (answer/continue) to CONTROL roles ONLY (presenter/ai),
@@ -704,7 +778,25 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         // disk. Default false (ephemeral-only) — saving people's words silently is a consent violation.
         // For a GUEST (capability link), surface guest:true + the granted scope so the client knows
         // exactly what it may do (talk/type) — the same consent/transparency surface as any participant.
-        send(ws, { t: 'welcome', userId: c.userId, socketId: c.id, role: c.role, transcriptPersisting: TRANSCRIPT_PERSIST, ...(c.isGuest ? { guest: true, scope: c.capScope } : {}) });
+        // Plan 0514 §4.2a / §8 — seat this connection at a station. select() is where "every
+        // failure path lands on the default station" is implemented: an unresolvable uid comes back as the
+        // default, never as an error, and never as a disconnect. Core records nothing.
+        let seat = null;
+        if (stationsActive()) {
+          try { seat = seatResolver.select(c.userId, ident.stationUid != null ? ident.stationUid : stationRegistry.defaultUid); }
+          catch (e) { log.warn('station', 'resolver-select-failed', { userId: c.userId, err: String(e && e.message || e) }); }
+        }
+        // Plan 0514 §8: the registry, this seat's station and its spotlight grant all ride the
+        // welcome, so a client rebuilds its selector AND RESTORES ITS OWN STATE ON RECONNECT —
+        // the 0508 D1 class of bug, designed out rather than patched.
+        send(ws, { t: 'welcome', userId: c.userId, userName: c.userName, socketId: c.id, role: c.role, transcriptPersisting: TRANSCRIPT_PERSIST,
+          ...(c.isGuest ? { guest: true, scope: c.capScope } : {}),
+          ...(stationsActive() ? {
+            stationRegistry: stationRegistry.wire(),
+            stationSelectorLabel: stationRegistry.selectorLabel,
+            stationUid: seat && seat.uid != null ? seat.uid : stationRegistry.defaultUid,
+            spotlightGranted: spotlight.has(c.userId),
+          } : {}) });
         // C4/X1: converge the (re)connecting client. If it reports a lastVersion we
         // can still replay from the op-log, send only the MISSED ops (resync);
         // otherwise a full role-filtered snapshot (Memento).
@@ -766,6 +858,87 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         a.by.set(c.userId, { userName: c.userName, at: c.eyesOn });
         log.info('ack', 'eyes-on', { ackId, userId: c.userId });
         pushPresence();                                    // control user-list reflects eyes-on immediately
+      } else if (m.t === 'station-select') {
+        // Plan 0514 §8 — SELF-SCOPED and UNGATED, by the same zero-privilege argument as
+        // station-show: it changes only what the caller sees. Core hands the request to the
+        // plugin, which validates and RECORDS it, and renders whatever comes back.
+        if (!stationsActive()) { send(ws, { t: 'station', ok: false, reason: 'no-stations' }); }
+        else {
+          let seat = null;
+          try { seat = seatResolver.select(c.userId, m.stationUid); }
+          catch (e) { log.warn('station', 'resolver-select-failed', { userId: c.userId, err: String(e && e.message || e) }); }
+          // Unknown/absent uid ⇒ the plugin answered with the deployment default. Never a throw,
+          // never a disconnect — §5's single failure rule, applied on the wire.
+          if (!seat) send(ws, { t: 'station', ok: false, reason: 'no-stations' });
+          else {
+            renderStationTo(ws, c, seat);
+            c.lastActive = Date.now();
+            send(ws, { t: 'station', ok: true, stationUid: seat.uid });
+            log.info('station', 'selected', { userId: c.userId, stationUid: seat.uid });
+            pushPresence();
+          }
+        }
+      } else if (m.t === 'station-default') {
+        // Plan 0514 §7 — ⟲ Show default. Idle branding for THIS socket only; displayByUser is
+        // untouched, so `▣ My station screen` still works afterwards. Deliberately NOT
+        // api.showDefault / default branding — those are controller-scoped and clear the stored
+        // descriptor for everyone.
+        send(ws, { t: 'clear' });
+        c.lastActive = Date.now();
+        send(ws, { t: 'station', ok: true, defaulted: true });
+      } else if (m.t === 'station-show') {
+        // Plan 0508 — STATION SCREEN (self-scoped, ungated). Zero privilege: it shows you only
+        // what is already yours, so a participant may always call it. Lets a player park on a
+        // shared beat, then flick back to their own station without asking the GM.
+        // Plan 0514 §13.2 — the SOURCE is now the seat's STATION (machine → registry →
+        // descriptor), never displayByUser. That map is the transient per-seat push layer and a
+        // module load clears it, which is exactly why every seat's station used to vanish on
+        // `present_module` (§13.1). §13.4 records the accepted consequence: this button now means
+        // "show my station", which is what it says. With no stations declared it keeps its 0508
+        // meaning, so a teaching deployment is untouched.
+        if (stationsActive()) {
+          const seat = seatStation(c.userId);
+          if (seat) { renderStationTo(ws, c, seat); c.lastActive = Date.now(); }
+          else send(ws, { t: 'station', ok: false, reason: 'no-station' });
+        } else {
+          const desc = displayByUser.get(c.userId);
+          if (desc) { renderDisplay(ws, c, desc); c.lastActive = Date.now(); }
+          else send(ws, { t: 'station', ok: false, reason: 'no-station' });
+        }
+      } else if (m.t === 'station-share') {
+        // Plan 0508 — SPOTLIGHT. Promote the caller's OWN station display to everyone. This IS an
+        // escalation (a participant changing what the room sees), so it is default-DENY and must be
+        // granted per-user by a controller (api.spotlight). Throttled: one share per 3 s per user.
+        // Plan 0514 §6.2: the grant model, the throttle and the targets are UNCHANGED — only the
+        // SOURCE moved, from displayByUser to the seat's station. Two lines, inside an existing
+        // handler; not a new sharing subsystem.
+        const seatForShare = stationsActive() ? seatStation(c.userId) : null;
+        const desc = seatForShare
+          ? ((seatForShare.descriptor) || stationPlaceholder(seatForShare.uid, c))
+          : displayByUser.get(c.userId);
+        if (!spotlight.has(c.userId)) { send(ws, { t: 'station', ok: false, reason: 'not-granted' }); log.warn('station', 'share-denied', { userId: c.userId }); }
+        else if (!desc) send(ws, { t: 'station', ok: false, reason: 'no-station' });
+        else if (Date.now() - (spotlightLast.get(c.userId) || 0) < 3000) send(ws, { t: 'station', ok: false, reason: 'too-fast' });
+        else {
+          spotlightLast.set(c.userId, Date.now());
+          c.lastActive = Date.now();
+          // Target: 'all', a ROLE, or a single userId — one-by-one is deliberate, so a player can
+          // walk one crewmate through a readout without taking over every screen.
+          const tgt = (typeof m.target === 'string' && m.target) ? m.target : 'all';
+          // SHARE IS TRANSIENT PROJECTION — it deliberately does NOT go through pushComponent.
+          // pushComponent calls setDisplay, and setDisplay('all') does displayByUser.clear(): a
+          // single share would wipe EVERY seat's station, the sharer's included, and "▣ My station
+          // screen" would answer "nothing has been sent to your seat" for the rest of the session.
+          // (Caught by t0508 T7.) So we render straight to the sockets and touch no descriptor:
+          // stations stay durable, the projection lasts until the next push. Each viewer is still
+          // rendered in THEIR own context, so identity stamping and the OPSEC strip still apply —
+          // never a verbatim copy of the sharer's HTML.
+          let n = 0;
+          if (desc.kind === 'component') for (const t of targets(tgt)) { sendComponentTo(t, conns.get(t), desc); n++; }
+          log.info('station', 'shared', { userId: c.userId, target: tgt, to: n, component: desc.component });
+          send(ws, { t: 'station', ok: true, shared: n });
+          emit('presence', presence());
+        }
       } else if (m.t === 'attendance-request') {
         // ATT (Plan 0466 §2.5): request/reply — NO standing push. Redaction is SERVER-SIDE,
         // keyed on the CONNECTION's authoritative role. Control/ai always get the full roster;
@@ -820,7 +993,14 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       if (pvsSubscribers.has(ws)) { pvsSubscribers.delete(ws); log.info('pvs', 'unsubscribe-close', {}); }   // Plan 0493 D: socket close ends the watch (S12)
       const c = conns.get(ws);
       if (c && c.voice && c.voice.active) { if (c.voice.timer) clearTimeout(c.voice.timer); c.voice.active = false; voiceSessions = Math.max(0, voiceSessions - 1); }   // RT-14: drop an orphaned open segment
-      if (c && c.userId) unbindUser(c.userId, ws); conns.delete(ws); updateChatListeners(); emit('presence', presence());
+      if (c && c.userId) unbindUser(c.userId, ws); conns.delete(ws); updateChatListeners();
+      // Plan 0514 §4.2a — tell the plugin the seat is gone, but only when this PERSON has no
+      // live socket left (A4: one person may hold several). Without release() a disconnected
+      // seat lingers in occupants and the roster drifts inside one session.
+      if (c && c.userId && stationsActive() && !socketsFor(c.userId).length) {
+        try { seatResolver.release(c.userId); } catch (e) { log.warn('station', 'resolver-release-failed', { userId: c.userId, err: String(e && e.message || e) }); }
+      }
+      emit('presence', presence());
       pushPresence();   // Plan 0471 M4: refresh the control user-list on disconnect (connect already does)
       evaluateFloor();   // Plan 0473 P6: a disconnect can lower the load (speaker gone) — reassess the floor
     });
@@ -1062,6 +1242,123 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   function redisplayFor(ws, c) {
     const desc = displayByUser.get(c.userId) || displayByRole[c.role];
     if (desc) renderDisplay(ws, c, desc);
+  }
+
+  // ── Plan 0514 — STATIONS ─────────────────────────────────────────────────────────────────
+  // DIVISION OF LABOUR (§13.2), and it is the whole point of the plan: core relays the registry
+  // and renders the descriptor it is handed; the PLUGIN validates, records and answers. Core
+  // holds no occupancy — so no display/module code path can reach it, and "a module load must
+  // not clear stations" stops being a discipline and becomes something the architecture asserts.
+
+  /** Stations are live only when a registry exists AND a plugin registered a seat resolver. */
+  function stationsActive() { return !stationRegistry.isEmpty() && !!seatResolver; }
+
+  /** Ask the plugin what this seat holds. Cheap + synchronous by contract; never cached here. */
+  function seatStation(userId) {
+    if (!stationsActive()) return null;
+    try { return seatResolver.get(userId) || null; }
+    catch (e) { log.warn('station', 'resolver-get-failed', { userId, err: String(e && e.message || e) }); return null; }
+  }
+
+  /** The uid this seat holds, or null when stations are inert. For `welcome` and presence. */
+  function seatStationUid(userId) { const s = seatStation(userId); return s && s.uid != null ? s.uid : null; }
+
+  /**
+   * The CORE GENERIC PLACEHOLDER (§6.1): what a station with no screen descriptor renders.
+   * Built from REGISTRY VALUES ONLY — core must not contain a single station name (t0514-15).
+   */
+  function stationPlaceholder(uid, c) {
+    const st = stationRegistry.get(uid);
+    return {
+      kind: 'component', component: 'card', theme: 'argus', requires: [],
+      opts: {
+        title: (st && st.icon ? st.icon + ' ' : '') + (st ? st.stationLabel : ''),
+        subtitle: c.userName || '',
+        body: 'no active screen for this station yet',
+      },
+    };
+  }
+
+  /**
+   * Render a seat's OWN station to that socket. Deliberately does NOT touch displayByUser —
+   * a station is durable system state, a per-seat push is transient, and 0514 §13.1 exists
+   * because both used to live in the same map.
+   */
+  function renderStationTo(ws, c, seat) {
+    const desc = (seat && seat.descriptor) || stationPlaceholder(seat && seat.uid, c);
+    renderDisplay(ws, c, desc);
+    return desc;
+  }
+
+  /**
+   * Plan 0514 §4.2 — load each plugin's optional server module and hand it the NEUTRAL
+   * registration context. Core knows only that a plugin may have server-side code: it has no
+   * idea what any of it means and contains no domain vocabulary.
+   *
+   * An import (or a register()) that throws is LOGGED AND SWALLOWED — a broken plugin degrades
+   * the deployment to a plain Presenter, it never takes the server down mid-session (t0514-30).
+   */
+  async function loadPluginServerModules() {
+    let manifests = {};
+    try { manifests = loadManifests(); } catch (e) { log.warn('plugin', 'manifests-unreadable', { err: String(e && e.message || e) }); return; }
+    for (const [name, manifest] of Object.entries(manifests)) {
+      const rel = pluginServerModule(manifest);
+      if (!rel) continue;                                   // no `server` key ⇒ nothing loaded
+      try {
+        const mod = await import(pathToFileURL(join(pluginDir(name), rel)).href);
+        if (typeof mod.register !== 'function') { log.warn('plugin', 'server-module-has-no-register', { plugin: name, file: rel }); continue; }
+        mod.register(pluginContext(name));
+        log.info('plugin', 'server-module-loaded', { plugin: name, file: rel });
+      } catch (e) {
+        log.warn('plugin', 'server-module-failed', { plugin: name, file: rel, err: String(e && e.message || e) });
+      }
+    }
+  }
+
+  /** The neutral surface a plugin's server module gets. Nothing here names a domain. */
+  function pluginContext(name) {
+    return {
+      // The shared store, with writes routed through the broadcasting reducer so a plugin's
+      // state changes reach subscribed components. The ACTOR is the caller's to choose:
+      // OVERRIDE_ROLES = {presenter, ai, system}; anything else is default-DENY and is counted
+      // as `denied`, NOT thrown (app/permissions.mjs) — i.e. it fails quietly. Write as `system`.
+      store: {
+        get: (path) => store.get(path),
+        apply: (op, actor) => serverApply(op, actor || { userId: 'plugin:' + name, role: 'system' }),
+        version: () => store.version(),
+        perms: store.perms,
+      },
+      // READ is default-DENY with an allow-list (Plan 0471 C3) and a missed rule renders a
+      // component BLANK, never leaks. A plugin therefore declares its own readable prefix
+      // rather than core hardcoding one — which also keeps core free of domain vocabulary.
+      allowRead: (prefix, roles = ALL_READ_ROLES) => {
+        if (typeof prefix !== 'string' || !prefix || prefix.includes('/')) throw new Error('allowRead expects a single top-level prefix');
+        store.perms.readPolicy.push({ glob: prefix, roles: roles.slice() });
+        log.info('plugin', 'read-prefix-allowed', { plugin: name, prefix, roles });
+      },
+      on: (ev, cb) => { if (listeners[ev]) listeners[ev].push(cb); },
+      emit,
+      log,
+      // §9 — a plugin may contribute tools. They are NOT in mcp/tools.mjs, because their
+      // vocabulary is the plugin's; core just holds the list and dispatches by name.
+      addTool: (tool) => {
+        if (!tool || typeof tool.name !== 'string' || typeof tool.handler !== 'function') throw new Error('addTool expects {name, handler}');
+        pluginTools.set(tool.name, { ...tool, plugin: name });
+        log.info('plugin', 'tool-registered', { plugin: name, tool: tool.name });
+      },
+      // The station rows this deployment declared, so the plugin can resolve uid → screen.
+      stations: stationRegistry,
+      // §4.2a — request/response, not fire-and-forget. Core calls select() on join and on
+      // {t:'station-select'}, get() whenever it builds welcome/presence, release() on disconnect.
+      provideSeatResolver: (r) => {
+        if (!r || typeof r.select !== 'function' || typeof r.get !== 'function' || typeof r.release !== 'function') {
+          throw new Error('provideSeatResolver expects {select, get, release}');
+        }
+        if (seatResolver) { log.warn('plugin', 'seat-resolver-already-registered', { plugin: name }); return; }
+        seatResolver = r;
+        log.info('plugin', 'seat-resolver-registered', { plugin: name });
+      },
+    };
   }
 
   // D2: shim a component 'answer' into a store op. Poll answers -> a per-user vote
@@ -1996,6 +2293,53 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     getPoll: (promptId) => { const votes = store.get('polls/' + promptId + '/votes') || {}; return { promptId, ...tally(promptId), votes: Object.keys(votes).map((userId) => ({ userId, value: votes[userId] })) }; },
     // Hot-reload clients in place (swap client/server code without dropping them).
     reloadClients: (target = 'all', delay = 0) => targets(target).map((ws) => send(ws, { t: 'reload', delay })).length,
+    // Plan 0508 — grant/revoke a seat's right to promote its own station display to everyone.
+    // Tells that seat immediately so its Config panel can show or hide the Share control.
+    spotlight(userId, granted = true) {
+      if (granted) spotlight.add(userId); else { spotlight.delete(userId); spotlightLast.delete(userId); }
+      for (const ws of socketsFor(userId)) send(ws, { t: 'station', ok: true, granted: !!granted });
+      log.info('station', granted ? 'spotlight-granted' : 'spotlight-revoked', { userId });
+      pushPresence();
+      return { userId, granted: !!granted, holders: [...spotlight] };
+    },
+    spotlightHolders: () => [...spotlight],
+    // ── Plan 0514 §9 — the agent's read of the room and its hand on a seat ────────────────
+    /** The declared registry (never a stationCode — canon §3) plus which seat holds what. */
+    stations() {
+      return {
+        stationSelectorLabel: stationRegistry.selectorLabel,
+        stationDefaultUid: stationRegistry.defaultUid,
+        stations: stationRegistry.wire(),
+        seats: presence().map((p) => ({ userId: p.userId, userName: p.userName, stationUid: p.stationUid })),
+      };
+    },
+    /** Seat a player who cannot manage the dropdown. Unresolvable ⇒ the default, never an error. */
+    stationSet(userId, stationUid) {
+      if (!stationsActive()) return { userId, stationUid: null, ok: false, reason: 'no-stations' };
+      const seat = seatResolver.select(userId, stationUid);
+      for (const ws of socketsFor(userId)) { const c = conns.get(ws); if (c) { renderStationTo(ws, c, seat); send(ws, { t: 'station', ok: true, stationUid: seat.uid }); } }
+      log.info('station', 'set', { userId, stationUid: seat.uid });
+      pushPresence();
+      return { userId, stationUid: seat.uid, ok: true };
+    },
+    /** Tools a plugin contributed through register() (§4.2). Core holds the list, not the meaning. */
+    pluginTools: () => [...pluginTools.values()].map((t) => ({ name: t.name, description: t.description || '', input: t.input || null, plugin: t.plugin })),
+    /** Dispatch one plugin tool by name. Unknown name ⇒ a listed error, never a throw into the room. */
+    async callPluginTool(name, args = {}) {
+      const t = pluginTools.get(name);
+      if (!t) return { ok: false, error: `no such plugin tool: ${name}`, available: [...pluginTools.keys()] };
+      try { return { ok: true, result: await t.handler(args || {}) }; }
+      catch (e) { return { ok: false, error: String(e && e.message || e) }; }
+    },
+    // Plan 0508 — tell every control page to re-scan MODULES_DIR. Lets Argus drop a new module on
+    // disk mid-session and have it appear in the GM's picker without a reload or a restart.
+    modulesChanged(id = null) {
+      let n = 0;
+      for (const [ws, c] of conns.entries())
+        if (c.role === 'presenter' || c.role === 'ai') { send(ws, { t: 'module-changed', id }); n++; }
+      log.info('module', 'modules-changed', { id, notified: n });
+      return n;
+    },
     // Plan 0470: REQUEST that a target enable inbound voice. This only sends {t:'voice_enable'};
     // the client still goes through the browser mic-permission prompt (uncoerceable, RT-9) — it
     // can never silently hot a participant's mic. Also warms the recognizer (RT-25).
@@ -2444,7 +2788,11 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     _lastResults: lastResults,   // Plan 0471 M3: test-only observability (bounded object)
   };
 
-  return new Promise((resolve) => { httpServer.listen(port, '127.0.0.1', () => resolve(api)); });
+  // Plan 0514 §4.2: plugin server modules are loaded BEFORE the api is handed out, so a caller
+  // that gets a server back gets one whose plugins have already registered.
+  return new Promise((resolve) => {
+    httpServer.listen(port, '127.0.0.1', async () => { await loadPluginServerModules(); resolve(api); });
+  });
 }
 
 // Runnable standalone: `node app/server.mjs [port]`

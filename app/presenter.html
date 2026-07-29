@@ -95,13 +95,28 @@
 <button id="led-btn" title="Settings" aria-haspopup="true" aria-label="Connection and settings"><span id="led"></span></button>
 <button id="ap-goto-control" title="Open (or refocus) the presenter control window" style="display:none">⧉ Control</button>
 <div id="ap-config" role="dialog" aria-label="Settings">
+  <!-- Plan 0514 §7 — the panel was getting cluttered, so it is GROUPED: You · Your screen ·
+       Display · Presenter. The old row labelled "Role (User/Presenter)" is the PRIVILEGE axis
+       (userRole) and is now labelled "Access", because adding a second thing called Role to the
+       same panel is exactly the collision naming canon §6 forbids. -->
+  <h4>You</h4>
+  <!-- The station selector is HIDDEN unless a plugin declares stations, so a deployment with no
+       stations (e.g. teaching) sees no change whatsoever. -->
+  <div class="row" id="cfg-station-row" style="display:none"><span class="k" id="cfg-station-label">Station</span> <select id="cfg-station-select"></select></div>
+  <div class="row" id="cfg-name-row" style="display:none"><span class="k">Name</span> <span id="cfg-name"></span></div>
+  <h4>Your screen</h4>
+  <!-- Plan 0508 — STATION SCREEN. "My station" is self-scoped and always available.
+       Plan 0514 §13.4: it now means "show MY STATION", which is what the button says — the source
+       is the seat's station, not the last thing pushed to the seat.
+       "Share" is default-hidden and appears only when a controller grants this seat the spotlight —
+       it promotes your own station view to everyone so you can talk the table through it. -->
+  <div class="row"><button id="cfg-station" title="Show your own station screen. Only you see this.">▣ My station screen</button></div>
+  <div class="row" id="cfg-share-row" style="display:none"><button id="cfg-station-share" title="Put YOUR station screen on everyone's display so you can explain it.">◉ Share my screen with everyone</button></div>
+  <div class="row"><button id="cfg-station-default" title="Go back to the idle display. Only you see this.">⟲ Show default</button></div>
+  <div class="row"><span id="cfg-station-msg" style="font-size:11px;color:#8fe6a8"></span></div>
   <h4>Display</h4>
   <div class="row"><span class="k">Zoom</span> <button data-scale="0.9">90%</button><button data-scale="1">100%</button><button data-scale="1.25">125%</button><button data-scale="1.5">150%</button></div>
   <div class="row"><span class="k">Contrast</span> <button id="cfg-contrast">High-contrast: off</button></div>
-  <div class="row"><span class="k">Role</span> <button id="cfg-role-user" class="sel">User</button> <button id="cfg-role-presenter">Presenter</button></div>
-  <div class="row" id="cfg-role-pwgroup" style="display:none"><input id="cfg-role-pw" type="password" placeholder="presenter password" autocomplete="off"> <button id="cfg-role-go">Unlock</button><span id="cfg-role-msg"></span></div>
-  <div class="row" id="cfg-control-row" style="display:none"><button id="cfg-open-control">▮ Show Presenter Control</button></div>
-  <div class="row" style="margin-top:8px"><button id="cfg-attendance">👁 Show attendance</button></div>
   <!-- AP-VOICE:BEGIN -->
   <!-- Plan 0470 (RT-27): the ONLY voice on/off control lives here in Settings — never as
        standalone chrome. Default OFF (Tier-0 stub only, nothing loaded). ON => APVoice.enable()
@@ -109,7 +124,12 @@
        Plan 0473 P0: this whole block is STRIPPED server-side when PRESENTER_VOICE_ENABLED is off. -->
   <div class="row" id="cfg-voice-row" style="margin-top:8px"><span class="k">Voice</span> <button id="cfg-voice-toggle" aria-pressed="false">🎙 Mic: off</button><span id="cfg-voice-msg" style="color:#f97;font-size:11px;flex-basis:100%;margin:0"></span></div>
   <!-- AP-VOICE:END -->
+  <div class="row" style="margin-top:8px"><button id="cfg-attendance">👁 Show attendance</button></div>
   <div class="rd" id="cfg-readout"></div>
+  <h4>Presenter</h4>
+  <div class="row"><span class="k">Access</span> <button id="cfg-role-user" class="sel">User</button> <button id="cfg-role-presenter">Presenter</button></div>
+  <div class="row" id="cfg-role-pwgroup" style="display:none"><input id="cfg-role-pw" type="password" placeholder="presenter password" autocomplete="off"> <button id="cfg-role-go">Unlock</button><span id="cfg-role-msg"></span></div>
+  <div class="row" id="cfg-control-row" style="display:none"><button id="cfg-open-control">▮ Show Presenter Control</button></div>
   <div class="row" style="margin-top:8px"><button id="cfg-close">Close</button></div>
 </div>
 <!-- ATT (Plan 0466 §2.7, reworked Plan 0468): attendance overlay — participant render = names · role ·
@@ -148,9 +168,26 @@
   var ROLE_KEY = NS + ':role';
   var savedRole = null;
   try { savedRole = localStorage.getItem(ROLE_KEY); } catch(e){}
+  // Plan 0514 §5 / §5.1 — SEAT PROVISIONING, BY UID.
+  //   ?stationUID=4   the SELECTOR. An integer looked up in the registry server-side.
+  //   ?station=…      COSMETIC ONLY. Its VALUE is never read or matched — that is what stops it
+  //                   becoming load-bearing again. Its mere PRESENCE only marks the link as
+  //                   addressed to a seat, so a uid-less link still derives a stable
+  //                   <defaultCode>-<name> identity instead of a fresh random one per reload.
+  // Absent, non-numeric or unknown ⇒ the deployment's default station, silently, never an error.
+  // `?role=` means ONLY the privilege axis (naming canon §1); it is not a station alias.
+  var uidParam = q.get('stationUID');
+  var stationUID = (uidParam != null && uidParam !== '' && /^-?\d+$/.test(uidParam)) ? parseInt(uidParam, 10) : null;
+  var seatLinked = uidParam != null || q.get('station') != null;   // this link is addressed to a seat
+  var nameParam = q.get('name') || q.get('n');
   var identity = {
     userId: q.get('userId') || q.get('u') || ('anon-' + Math.random().toString(36).slice(2,8)),
-    userName: q.get('name') || q.get('n') || 'Guest',
+    // A seat link with no name shows as NAME UNKNOWN, literally and never blank (§5). Without a
+    // seat link the long-standing 'Guest' default is unchanged.
+    userName: nameParam || (seatLinked ? '' : 'Guest'),
+    // Always sent (null when the link carries none) so the server resolves the seat rather than
+    // falling back to the anonymous identity path.
+    stationUID: seatLinked ? stationUID : undefined,
     role: q.get('role') || savedRole || 'participant',
     // Token pass-through: when a PRESENTER_CONTROL_TOKEN is configured server-side,
     // ?token=… in the URL satisfies the AUTH-1 gate for a control role. Default: none (open).
@@ -296,13 +333,23 @@
     dbgLog(m);
     if (m.t === 'ping') { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t:'pong', ts:m.ts })); return; }   // X3 RTT
     if (m.t === 'chat_listeners') { updateChat(m.n); return; }   // P3
-    if (m.t === 'welcome') { dbg.socketId = m.socketId || null; dbgRender(); grantedRole = (typeof m.role === 'string') ? m.role : null; if (typeof onWelcomeRole === 'function') onWelcomeRole(m.role); updateGotoControl(); }
+    if (m.t === 'welcome') { dbg.socketId = m.socketId || null; dbgRender(); grantedRole = (typeof m.role === 'string') ? m.role : null; if (typeof onWelcomeRole === 'function') onWelcomeRole(m.role);
+      // Plan 0514 §5/§8 — identity is SERVER-AUTHORITATIVE: a seat link's userId is derived
+      // server-side from the resolved station, so adopt what came back rather than what we guessed.
+      if (typeof m.userId === 'string') identity.userId = m.userId;
+      if (typeof m.userName === 'string') identity.userName = m.userName;
+      renderWho();
+      // The registry + this seat's station + its spotlight grant ride the welcome, so a reconnect
+      // RESTORES the client's own state instead of losing it (the 0508 D1 class of bug).
+      if (typeof window.__apOnStationWelcome === 'function') window.__apOnStationWelcome(m);
+      updateGotoControl(); }
     else if (m.t === 'snapshot') { lastSnapshot = m; if (typeof m.version === 'number') lastVersion = m.version; if (frame && frame.contentWindow) frame.contentWindow.postMessage({ source:'argus-host', type:'snapshot', state:m.state, version:m.version }, '*'); }
     else if (m.t === 'content') showContent(m.html);
     else if (m.t === 'clear') showIdle();
     else if (m.t === 'reload') setTimeout(function(){ location.reload(); }, m.delay || 0);
     else if (m.t === 'chime') { onChime(m); }
     else if (m.t === 'attendance') { onAttendance(m); }
+    else if (m.t === 'station') { if (typeof window.__apOnStation === 'function') window.__apOnStation(m); }   // Plan 0508
     /* AP-VOICE:BEGIN */
     else if (m.t === 'voice_enable') {
       // Plan 0470 (RT-9): a REQUEST only. enable() triggers the browser mic-permission prompt
@@ -589,6 +636,85 @@
   (function(){
     var open = document.getElementById('cfg-attendance'); if (open) open.addEventListener('click', function(e){ e.stopPropagation(); openAttendance(); });
     var close = document.getElementById('att-close'); if (close) close.addEventListener('click', function(e){ e.stopPropagation(); closeAttendance(); });
+    // ---- Plan 0508: station screen + spotlight share -------------------------------------
+    var stMsg = document.getElementById('cfg-station-msg');
+    function stSay(t, bad){ if (!stMsg) return; stMsg.textContent = t || ''; stMsg.style.color = bad ? '#f97' : '#8fe6a8';
+      if (t) setTimeout(function(){ if (stMsg.textContent === t) stMsg.textContent = ''; }, 4000); }
+    var stBtn = document.getElementById('cfg-station');
+    if (stBtn) stBtn.addEventListener('click', function(e){ e.stopPropagation();
+      if (ws && ws.readyState === 1) { ws.send(JSON.stringify({ t:'station-show' })); stSay('showing your station'); }
+    });
+    var shBtn = document.getElementById('cfg-station-share');
+    if (shBtn) shBtn.addEventListener('click', function(e){ e.stopPropagation();
+      if (ws && ws.readyState === 1) { ws.send(JSON.stringify({ t:'station-share' })); }
+    });
+    // ---- Plan 0514 §7: ⟲ Show default -------------------------------------------------------
+    // Self-scoped and ungated by the same argument as station-show: it changes only what the
+    // CALLER sees. Deliberately NOT presenter_default_branding, which is controller-scoped and
+    // clears the stored descriptor for everyone.
+    var dfBtn = document.getElementById('cfg-station-default');
+    if (dfBtn) dfBtn.addEventListener('click', function(e){ e.stopPropagation();
+      if (ws && ws.readyState === 1) { ws.send(JSON.stringify({ t:'station-default' })); stSay('showing the default display'); }
+    });
+    // ---- Plan 0514 §7: the station selector --------------------------------------------------
+    // Options carry the UID as their value — a stationCode never reaches the wire (canon §3).
+    // Grouped by the registry's own `group`, ordered by its own `sortOrder`: one source of truth
+    // for both, so a registry edit cannot desync the picker from the art.
+    var selEl = document.getElementById('cfg-station-select');
+    if (selEl) selEl.addEventListener('change', function(){
+      if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t:'station-select', stationUid: parseInt(selEl.value, 10) }));
+    });
+    window.__apOnStationWelcome = function(m){
+      var row = document.getElementById('cfg-station-row');
+      var nameRow = document.getElementById('cfg-name-row');
+      var reg = m && m.stationRegistry;
+      if (!Array.isArray(reg) || !reg.length || !selEl) { if (row) row.style.display = 'none'; if (nameRow) nameRow.style.display = 'none'; return; }
+      if (row) row.style.display = '';
+      if (nameRow) { nameRow.style.display = ''; document.getElementById('cfg-name').textContent = identity.userName || 'NAME UNKNOWN'; }
+      var lab = document.getElementById('cfg-station-label');
+      if (lab && typeof m.stationSelectorLabel === 'string') lab.textContent = m.stationSelectorLabel;
+      selEl.innerHTML = '';
+      var groups = {}, order = [];
+      reg.slice().sort(function(a,b){ return (a.sortOrder||0) - (b.sortOrder||0); }).forEach(function(st){
+        var g = st.group || '';
+        if (!groups[g]) { groups[g] = []; order.push(g); }
+        groups[g].push(st);
+      });
+      order.forEach(function(g){
+        var parent = selEl;
+        if (g) { parent = document.createElement('optgroup'); parent.label = g; selEl.appendChild(parent); }
+        groups[g].forEach(function(st){
+          var o = document.createElement('option');
+          o.value = String(st.stationUid);
+          o.textContent = (st.icon ? st.icon + ' ' : '') + st.stationLabel;
+          parent.appendChild(o);
+        });
+      });
+      if (m.stationUid != null) selEl.value = String(m.stationUid);
+      // The spotlight grant rides the welcome too, so a reconnect restores the Share control
+      // instead of hiding it until the GM happens to re-grant (0508 D1).
+      var shareRow = document.getElementById('cfg-share-row');
+      if (shareRow) shareRow.style.display = m.spotlightGranted ? '' : 'none';
+    };
+    // Server replies / grant notices land here (dispatched from the ws handler below).
+    window.__apOnStation = function(m){
+      if (typeof m.granted === 'boolean') {
+        var row = document.getElementById('cfg-share-row');
+        if (row) row.style.display = m.granted ? '' : 'none';
+        stSay(m.granted ? 'you can share your screen with the table' : '', false);
+        return;
+      }
+      if (m.ok && m.stationUid != null) {
+        if (selEl) selEl.value = String(m.stationUid);
+        stSay('showing your station');
+        return;
+      }
+      if (m.ok) { if (m.defaulted) return; stSay('shared with ' + (m.shared || 0) + ' screens'); return; }
+      stSay({ 'no-station': 'nothing has been sent to your seat yet',
+              'no-stations': 'this session has no stations',
+              'not-granted': 'sharing is not enabled for your seat',
+              'too-fast': 'wait a moment before sharing again' }[m.reason] || 'unavailable', true);
+    };
     if (attEl) attEl.addEventListener('click', function(e){ e.stopPropagation(); });   // don't let clicks bubble to the config click-away closer
     document.addEventListener('keydown', function(e){ if (e.key === 'Escape' && attEl.classList.contains('open')) closeAttendance(); });
   })();
