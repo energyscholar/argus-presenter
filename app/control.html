@@ -12,10 +12,10 @@
      transport, Module select/Validate&Load) plus the fixed right-side cluster (presenter-
      screen button · enlarged preview dock · green dot with the live-preview checkbox under
      it). CONTENT-SPECIFIC controls (outline/ToC, series nav) live in the lower-left column.
-     min-height clears the enlarged 300×196 preview; padding-right keeps in-flow content out
+     min-height clears the enlarged 360×235 preview (Plan 0508); padding-right keeps in-flow content out
      from under the fixed cluster (transport buttons never occluded). Bruce approved the
      vertical growth. */
-  #topframe{grid-column:1/3;min-height:206px;padding-right:550px;box-sizing:border-box;display:flex;flex-direction:column;gap:8px;}
+  #topframe{grid-column:1/3;min-height:245px;padding-right:610px;box-sizing:border-box;display:flex;flex-direction:column;gap:8px;}
   h1{margin:0;font-size:15px;letter-spacing:.04em;display:flex;align-items:flex-start;gap:10px;}
   #tf-sections{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start;}
   #tf-sections>section{flex:1 1 240px;min-width:200px;}
@@ -54,8 +54,10 @@
      P2.7: preview ENLARGED 150×98 → 300×196 (same 600×392 iframe, scale .25 → .5); dock
      moved to right:96px so the live-preview checkbox fits UNDER the dot at the right edge. */
   #pvdock{position:fixed;top:4px;right:96px;z-index:59;display:flex;flex-direction:column;gap:3px;}
-  #preview{width:300px;height:196px;border:1px solid #2a3a5a;border-radius:6px;overflow:hidden;background:#050510;flex:0 0 auto;position:relative;}
-  #preview iframe{border:0;width:600px;height:392px;transform:scale(.5);transform-origin:top left;pointer-events:none;}
+  /* Plan 0508: Bruce uses the Live Preview constantly — enlarged a further 20% (300x196 -> 360x235,
+     iframe scale .5 -> .6). Same 600x392 source frame, so nothing else in the layout moves. */
+  #preview{width:360px;height:235px;border:1px solid #2a3a5a;border-radius:6px;overflow:hidden;background:#050510;flex:0 0 auto;position:relative;}
+  #preview iframe{border:0;width:600px;height:392px;transform:scale(.6);transform-origin:top left;pointer-events:none;}
   #preview .pvlabel{position:absolute;left:0;right:0;bottom:0;font-size:9px;text-align:center;background:rgba(0,0,0,.6);color:var(--dim);padding:1px;}
   #pvwarn{display:none;position:absolute;inset:0;flex-direction:column;align-items:center;justify-content:center;gap:2px;background:#160c05;text-align:center;}
   #pvwarn .pvwarn-main{font-size:11px;color:var(--warn);}
@@ -497,6 +499,9 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
         +'<b class="cp" data-copy="'+esc(u.userId)+'" title="copy userId">'+esc(u.userName||u.userId)+'</b>'
         +'<span class="u-meta"><span class="cp" data-copy="'+esc(u.ip||'')+'" title="copy IP">'+esc(u.ip||'—')+'</span>'
         +' <span class="cp" data-copy="'+esc(u.socketId)+'" title="copy socketId">'+esc(u.socketId)+'</span>'
+        // Plan 0514 §7 / 0508 §4.1 item 7 — the STATION column. Byte-exact seat links mean a
+        // mis-cased ?station= lands silently on the default; this column is how you see that.
+        +'<br>station: '+esc(u.stationLabel||'—')
         +'<br>sees: '+esc(u.display||'—')+(seen?(' · '+seen):'')+(eyes?(' · '+eyes):'')
         +' <span class="u-copy" data-copy="'+esc(rowText)+'" title="copy row">⧉</span>'
         +' <span class="u-reset" data-reset="'+esc(u.userId)+'" title="reset to default (follow role display)">↺ default</span></span>';

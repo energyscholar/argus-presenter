@@ -17,3 +17,7 @@ modules/*.json
 # Local plugin installs stay out of the public repo (domain plugins are installed
 # locally under plugins/<name>/ and are never committed; core stays neutral)
 plugins/starship-ops/
+
+# Content SOURCE also stays out (modules/*.json above only covers built output).
+# Session decks live in the private campaign repo; core stays neutral.
+modules/_src/

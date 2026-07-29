@@ -87,6 +87,9 @@
     }
     function placeTip(e) {
       var r = viewport.getBoundingClientRect();
+      // Clamp the box to what the viewport can actually hold BEFORE measuring, so a long
+      // tip wraps to a readable column instead of running off the page on a small window.
+      tip.style.maxWidth = Math.min(560, Math.max(180, r.width - 24)) + 'px';
       var x = e.clientX - r.left + 14, y = e.clientY - r.top + 18;
       var tw = tip.offsetWidth, th = tip.offsetHeight;
       if (x + tw > r.width - 4) x = e.clientX - r.left - 14 - tw;   // flip left near the right edge
@@ -158,14 +161,27 @@
     }
     var hasExplicitView = opts.x != null || opts.y != null || opts.scale != null;
     var viewTouched = hasExplicitView;   // a live view (op/snapshot/drag) must not be refit later
+    // opts.fit — how the art is sized into the viewport on first render:
+    //   'contain' (DEFAULT, unchanged): whole viewBox visible, letterboxed on the
+    //             off-aspect axis. Correct for art that uses its full square.
+    //   'cover'  : scale up until the viewport is FULL, cropping the overflow.
+    //             For panel art — a wide readout centred in a square viewBox — a
+    //             16:9 screen wastes ~47% of its height under 'contain'. 'cover'
+    //             fills it and crops only the empty margin the panel never uses.
+    // Cropping is the whole point of 'cover', so only set it on art whose content
+    // sits inside the safe band (S17 station panels: 744x424 of an 800x800 box).
+    var fitCover = opts.fit === 'cover';
     function zoomToFit() {
       // clientWidth/Height = the padding box content coords are relative to
       // (getBoundingClientRect would include the 1px border and skew centering).
       var vw = viewport.clientWidth, vh = viewport.clientHeight;
       if (!vw || !vh) return;
       var sz = intrinsicSize();
-      var s = Math.min(vw / sz.w, vh / sz.h) || 1;
+      var fit = fitCover ? Math.max : Math.min;
+      var s = fit(vw / sz.w, vh / sz.h) || 1;
       view.scale = s;
+      // Centred either way. Under 'cover' these go negative — the overflow is
+      // split evenly and clipped by .ap-map-viewport's overflow:hidden.
       view.x = (vw - sz.w * s) / 2;
       view.y = (vh - sz.h * s) / 2;
       apply();

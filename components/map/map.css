@@ -59,10 +59,20 @@
    viewport-anchored so its size never scales with the content zoom. */
 .ap-map-tip {
   position: absolute; z-index: 8; pointer-events: none;
-  background: rgba(5, 8, 18, 0.92); border: 1px solid var(--ap-border);
-  border-radius: 6px; padding: 0.4rem 0.6rem;
-  font-family: var(--ap-font-ui); font-size: 0.78rem; line-height: 1.35;
-  color: var(--ap-fg); white-space: nowrap;
+  background: rgba(5, 8, 18, 0.96); border: 1px solid var(--ap-border);
+  border-radius: 6px; padding: 0.5rem 0.7rem;
+  font-family: var(--ap-font-ui); font-size: 0.78rem; line-height: 1.45;
+  color: var(--ap-fg);
+  /* Plan 0508: was `white-space: nowrap`, which turned any wordy data-tip into ONE
+     unbreakable line that ran off the page — the flip-left logic cannot rescue a tip
+     wider than the viewport. Wrap into a box instead; JS clamps max-width to the
+     actual viewport each time it is placed. */
+  white-space: normal;
+  max-width: 34rem;
+  overflow-wrap: break-word; word-break: break-word;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.55);
 }
-.ap-map-tip-line:first-child { font-weight: 700; color: var(--ap-accent); }
+.ap-map-tip-line { margin: 0 0 0.28rem 0; }
+.ap-map-tip-line:last-child { margin-bottom: 0; }
+.ap-map-tip-line:first-child { font-weight: 700; color: var(--ap-accent); letter-spacing: 0.02em; }
 @media (prefers-reduced-motion: reduce) { .ap-map-click-ring { animation: none; opacity: 0.35; transform: scale(0.7); } }

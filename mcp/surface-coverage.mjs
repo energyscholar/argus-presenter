@@ -74,8 +74,19 @@ export const API_COVERAGE = {
   showBeat:            { tool: 'show_beat' },
   nextBeat:            { tool: 'next_beat' },
   appendBeat:          { tool: 'append_beat' },
-  showDefault:         { declined: 'NOT YET EXPOSED — owed; show_beat({beatId: manifest.defaultBeatId}) reaches the same screen today.' },
-  prevBeat:            { declined: 'NOT YET EXPOSED — owed. Asymmetric with next_beat, which is its own smell; a table needs to step BACK.' },
+  showDefault:         { tool: 'presenter_home' },        // Plan 0508 — the owed gap, now closed
+  prevBeat:            { tool: 'prev_beat' },              // Plan 0508 — next_beat is no longer asymmetric
+  // Plan 0508 (spotlight + live module rescan). Both shipped with the station work; the guard
+  // caught them missing here, which is exactly its job.
+  spotlight:           { tool: 'presenter_spotlight' },
+  modulesChanged:      { tool: 'presenter_refresh_modules' },
+  // Plan 0514 — stations. The registry is core-owned DATA (declared by a plugin); occupancy is
+  // NOT core's and is asked for on demand, so there is nothing here for an agent to corrupt.
+  stations:            { tool: 'presenter_stations' },
+  stationSet:          { tool: 'presenter_station_set' },
+  pluginTools:         { tool: 'presenter_plugin_tool' },
+  callPluginTool:      { tool: 'presenter_plugin_tool' },
+  spotlightHolders:    { declined: 'NOT YET EXPOSED — owed. Who currently holds a share grant is READ-only state; it belongs on presenter_status/attendance alongside the roster rather than in its own tool. Grant/revoke is already reachable via presenter_spotlight.' },
 
   // --- polls
   openPoll:            { tool: 'open_poll' },

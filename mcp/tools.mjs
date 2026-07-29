@@ -8,6 +8,7 @@
  */
 import { createServer } from '../app/server.mjs';
 import { assemble } from '../harness/assemble.mjs';
+import { tunnelConfigured, tunnelStatus, tunnelUp, tunnelDown } from './tunnel.mjs';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -34,6 +35,10 @@ function readModuleById(id) {
 let server = null;
 const need = () => { if (!server) throw new Error('presenter not started — call presenter_start first'); return server; };
 
+// S220 — did THIS process bring the public ingress up? presenter_stop tears down only what
+// presenter_start raised; a tunnel that was already running when we arrived is somebody else's.
+let tunnelRaisedByUs = false;
+
 // STANDARD Argus Presenter port — pinned in code so the MCP-driven URL is ALWAYS the same
 // (http://127.0.0.1:4300). Never let presenter_start default to a random port again.
 const AP_STANDARD_PORT = 4300;
@@ -49,9 +54,13 @@ const MCP_CONSUMER_ID = 'mcp-stdio';
 export const coreTools = [
   {
     name: 'presenter_start',
-    description: 'Start the Argus Presenter server. Returns the URL participants/presenter open.',
+    description: 'Start the Argus Presenter — the whole REACHABLE surface, not just the process: binds the server AND raises the configured public ingress (tunnel), then verifies the PUBLIC url answers. Returns the local url, the public url participants actually open, and the ingress state. S220: a local 200 proves the process is listening and proves NOTHING about whether anyone else can reach it — do not report a session as up on the strength of the local bind.',
     input: { type: 'object', properties: {
       port: { type: 'number', description: 'Port (default 4300 — the STANDARD, pinned AP port)' },
+      // S220 — see mcp/tunnel.mjs. Default ON, because "start the presenter" means participants
+      // can reach it; a deployment with no PRESENTER_TUNNEL_START configured is unaffected.
+      tunnel: { type: 'boolean', description: 'Raise the configured public ingress too (default TRUE). Set false to bind locally only. No-op when no ingress is configured.' },
+      tunnelTimeoutMs: { type: 'number', description: 'How long to wait for the ingress to come up AND the public url to answer (default 30000).' },
       voice: { type: 'boolean', description: 'Enable inbound voice + ASR (default true when driven via MCP)' },
       // S210: createServer() has always accepted a profile, but presenter_start did not expose it, so
       // every MCP-driven session silently ran `wearable` — a SOLO profile with maxPending:1 and the
@@ -72,31 +81,75 @@ export const coreTools = [
       perTurnWrapMs: { type: 'number', description: 'Per-turn wrap-up cue override.' },
       floorThresholds: { type: 'object', description: 'Floor-control thresholds override (e.g. {enabled:true}).' },
     } },
-    handler: async ({ port = AP_STANDARD_PORT, voice = true, ...rest } = {}) => {
-      if (server) return { url: server.url(), already: true, note: 'already running — stop before changing profile or gates' };
+    handler: async ({ port = AP_STANDARD_PORT, voice = true, tunnel = true, tunnelTimeoutMs = 30000, ...rest } = {}) => {
+      if (server) return { url: server.url(), already: true, note: 'already running — stop before changing profile or gates', tunnel: await tunnelStatus() };
       const PASS = ['profile','controlToken','rolePassword','roleSeed','capSecret','settlingMs','queueMaxPending','queueTtlMs','perTurnBudgetMs','perTurnWrapMs','floorThresholds'];
       const opts = { port, voiceEnabled: voice };
       for (const k of PASS) if (rest[k] !== undefined) opts[k] = rest[k];
       server = await createServer(opts);
+
+      // Raise the ingress AFTER the bind, so the first public request has something to hit.
+      let ingress = { configured: tunnelConfigured(), skipped: true };
+      if (tunnel && tunnelConfigured()) {
+        ingress = await tunnelUp({ verify: true, timeoutMs: tunnelTimeoutMs });
+        if (ingress.started && (ingress.active !== false)) tunnelRaisedByUs = true;
+      }
+
+      const gated = !!(rest.controlToken || rest.rolePassword);
+      const publicUrl = ingress.publicUrl || null;
       return {
         url: server.url(),
+        publicUrl,
         profile: (server.profile && server.profile().name) || rest.profile || 'wearable',
-        gated: !!(rest.controlToken || rest.rolePassword),
+        gated,
         capLinks: !!rest.capSecret,
+        tunnel: ingress,
+        // Reachable + ungated is the posture worth saying out loud rather than discovering later.
+        ...(publicUrl && !gated ? { warning: 'PUBLICLY REACHABLE AND UNGATED — anyone with the url is in. Pass controlToken/rolePassword to gate.' } : {}),
       };
     }
   },
   {
     name: 'presenter_stop',
-    description: 'Stop the presenter server.',
-    input: { type: 'object', properties: {} },
-    handler: async () => { if (server) { await server.close(); server = null; } return { stopped: true }; }
+    description: 'Stop the presenter server, and lower the public ingress IF this process raised it (a tunnel that was already up when we started is left alone). Pass tunnel:true to lower it regardless, tunnel:false to leave it up.',
+    input: { type: 'object', properties: {
+      tunnel: { type: 'boolean', description: 'Force the ingress down (true) or leave it up (false). Omit for the default: lower it only if presenter_start raised it.' }
+    } },
+    handler: async ({ tunnel } = {}) => {
+      if (server) { await server.close(); server = null; }
+      const lower = (typeof tunnel === 'boolean') ? tunnel : tunnelRaisedByUs;
+      let ingress = { skipped: true, note: tunnelRaisedByUs ? 'left up by request' : 'not raised by this process — left as found' };
+      if (lower && tunnelConfigured()) { ingress = await tunnelDown(); tunnelRaisedByUs = false; }
+      return { stopped: true, tunnel: ingress };
+    }
   },
   {
     name: 'presenter_status',
-    description: 'Server URL + connected users (presence) + PVS lifecycle state (Plan 0493: whether a Presenter Voice Session is open, its comms mode, and its namespaced delivery cursor).',
+    description: 'Server URL + connected users (presence) + PVS lifecycle state (Plan 0493: whether a Presenter Voice Session is open, its comms mode, and its namespaced delivery cursor) + PUBLIC INGRESS state (S220: whether the tunnel is up and whether the public url actually answers — the local bind says nothing about reachability).',
     input: { type: 'object', properties: {} },
-    handler: async () => (server ? { running: true, url: server.url(), presence: server.presence(), pvs: server.pvsState(), mode: server.commsMode().mode } : { running: false })
+    handler: async () => (server
+      ? { running: true, url: server.url(), presence: server.presence(), pvs: server.pvsState(), mode: server.commsMode().mode, tunnel: await tunnelStatus() }
+      : { running: false, tunnel: await tunnelStatus() })
+  },
+  {
+    // S220 — Bruce: raising the tunnel "should be a Presenter MCP item associated with MCP
+    // startup". presenter_start does it automatically; this is the explicit handle for the times
+    // it did not, or the tunnel died mid-session, or you just want to know.
+    name: 'presenter_tunnel',
+    description: 'PUBLIC INGRESS control (S220). action:"status" (default) reports whether the ingress is configured, active, and whether the PUBLIC url actually answers — a local 200 proves nothing about reachability. action:"start" raises it and waits for the public url to answer. action:"stop" lowers it. presenter_start already raises it; use this to re-raise a tunnel that died mid-session, or to take the session off the public internet without stopping the server. Deployments with no ingress configured get {configured:false} and nothing happens.',
+    input: { type: 'object', properties: {
+      action: { type: 'string', enum: ['status', 'start', 'stop'], description: 'status (default) | start | stop' },
+      timeoutMs: { type: 'number', description: 'start only: how long to wait for the ingress AND the public url (default 30000)' }
+    } },
+    handler: async ({ action = 'status', timeoutMs = 30000 } = {}) => {
+      if (action === 'start') {
+        const r = await tunnelUp({ verify: true, timeoutMs });
+        if (r.started && r.active !== false) tunnelRaisedByUs = true;
+        return r;
+      }
+      if (action === 'stop') { const r = await tunnelDown(); tunnelRaisedByUs = false; return r; }
+      return tunnelStatus();
+    }
   },
   {
     name: 'presenter_mode',
@@ -303,6 +356,18 @@ export const coreTools = [
     handler: async () => ({ beat: need().nextBeat() })
   },
   {
+    name: 'prev_beat',
+    description: 'Step the current content module BACK one beat (all viewers follow). The mirror of next_beat — without it a GM who overshoots can only jump by id via show_beat. Returns null at the start of the module.',
+    input: { type: 'object', properties: {} },
+    handler: async () => ({ beat: need().prevBeat() })
+  },
+  {
+    name: 'presenter_home',
+    description: "Return the stage to the CURRENT module's title/default beat (manifest.defaultBeatId). If the module declares no default beat — or no module is loaded — this clears to the idle branding instead. Same cascade as the Control page's Home button.",
+    input: { type: 'object', properties: {} },
+    handler: async () => ({ home: need().showDefault() })
+  },
+  {
     name: 'append_beat',
     description: 'Append a beat to the current content module (AI co-author). beat = {component, opts, requires?}.',
     input: { type: 'object', required: ['beat'], properties: { beat: { type: 'object' } } },
@@ -342,6 +407,43 @@ export const coreTools = [
     description: 'Check the eyes-on acknowledgement for an ackId: who has confirmed they are watching (with timestamps) and who is still pending (the AFK signal). Poll this after presenter_verify_watching and wait until acked before presenting.',
     input: { type: 'object', properties: { ackId: { type: 'string', default: 'ready', description: 'The ackId passed to presenter_verify_watching' } } },
     handler: async ({ ackId = 'ready' } = {}) => need().getAck(ackId)
+  },
+  {
+    name: 'presenter_spotlight',
+    description: 'Plan 0508 (SPOTLIGHT — give the players the stage): grant or revoke a SEAT\'s right to promote its own station screen to every display. Default-DENY: nothing is shareable until granted. The granted seat gets a "◉ Share my screen with everyone" button in its Config panel; pressing it re-pushes THAT SEAT\'s current per-user display to all (throttled to one share per 3 s, re-rendered per viewer so OPSEC stripping still applies — never a verbatim copy of their HTML). Use this so a player (e.g. the Sensor Operator) can talk the table through their own readout instead of the GM narrating it. Pair with push_component{target:<userId>} to stock that seat\'s station first.',
+    input: { type: 'object', properties: { userId: { type: 'string', description: 'Seat slug, e.g. "participant-a"' }, granted: { type: 'boolean', default: true, description: 'false revokes' } }, required: ['userId'] },
+    handler: async ({ userId, granted = true }) => need().spotlight(userId, granted)
+  },
+  {
+    name: 'presenter_stations',
+    description: 'Plan 0514: list the STATION REGISTRY this deployment declares (uid, label, group, icon, colour, occupancy cap, whether it has a screen) AND which seat currently holds which station. This is the agent\'s read of the room: it is how you see that a player followed a mis-cased link and landed on the default station instead of the one they were sent. Stations are declared by a plugin, never by core — a deployment with no station plugin returns an empty list, which is not an error.',
+    input: { type: 'object', properties: {} },
+    handler: async () => need().stations()
+  },
+  {
+    name: 'presenter_station_set',
+    description: 'Plan 0514: seat a player at a station on their behalf — for the player who cannot find the dropdown, or who arrived on a link that resolved to the default. Addressed by stationUid (never by name: strings drift and fail silently, integers fail loudly or not at all). An unresolvable uid resolves to the deployment default rather than erroring, so this can never throw a seat out of the room. The seat is re-rendered immediately.',
+    input: { type: 'object', properties: {
+      userId: { type: 'string', description: 'Seat id, as reported by presenter_stations / presenter_attendance' },
+      stationUid: { type: 'number', description: 'Station uid from presenter_stations' },
+    }, required: ['userId', 'stationUid'] },
+    handler: async ({ userId, stationUid }) => need().stationSet(userId, stationUid)
+  },
+  {
+    name: 'presenter_plugin_tool',
+    description: 'Plan 0514 §9: list or invoke a tool contributed by a server-side PLUGIN. Core has no idea what these do — a plugin registers them at load and their vocabulary is the plugin\'s, not the presenter\'s, which is exactly why they are not hardcoded here. Call with no arguments to list what this deployment offers (name, description, input schema); call with a name to invoke it.',
+    input: { type: 'object', properties: {
+      name: { type: 'string', description: 'Tool name to invoke. Omit to LIST what is available.' },
+      args: { type: 'object', description: 'Arguments for that tool, per its own input schema.' },
+    } },
+    handler: async ({ name = null, args = {} } = {}) =>
+      (name ? need().callPluginTool(name, args || {}) : { tools: need().pluginTools() })
+  },
+  {
+    name: 'presenter_refresh_modules',
+    description: 'Plan 0508: tell every open Control page to RE-SCAN the modules directory, so a module Argus just wrote to disk appears in the GM\'s picker without a page reload or a server restart. Call it right after writing a new module file. Returns how many control pages were notified.',
+    input: { type: 'object', properties: { id: { type: 'string', description: 'Optional module id to highlight as newly available' } } },
+    handler: async ({ id = null } = {}) => ({ notified: need().modulesChanged(id), id })
   },
   {
     name: 'presenter_attendance',
