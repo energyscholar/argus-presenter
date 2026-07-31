@@ -629,16 +629,53 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     return 'beat at index '+(r.index!=null?r.index:'?');
   }
 
+  // ── Plan 0522 P9 (R10) — STICKY DEFAULT MODULE ───────────────────────────────────────────
+  // "Sticky" means the module stays the DEFAULT. It is PRESELECTED, never auto-loaded: the GM
+  // reopens the page and the picker is already pointing at last session's module, but the room
+  // sees nothing. That distinction is the whole phase — a page that auto-loaded on open would
+  // mean a SECOND control page opened mid-session pushes a module and blows away live state.
+  // Nothing here calls control(): no load_module, no show_beat (I3).
+  // Same localStorage mechanism as TOKEN_KEY / NP_KEY / ACC_KEY — no new persistence machinery.
+  var MOD_KEY=NS+':module';
+  var modPreselected=false;   // one-shot: the stored default is applied at most ONCE per page
+  function modPref(){ try{ return localStorage.getItem(MOD_KEY)||''; }catch(e){ return ''; } }
+  function setModPref(id){ try{ if(id) localStorage.setItem(MOD_KEY,id); else localStorage.removeItem(MOD_KEY); }catch(e){} }
+  function hasOpt(sel,v){ for(var i=0;i<sel.options.length;i++){ if(sel.options[i].value===v) return true; } return false; }
+
   function refreshModules(){
-    var sel=$('mod-select'); var keep=sel.value;   // preserve selection across the async rebuild
+    var sel=$('mod-select');
     fetch('/api/modules',{cache:'no-store'}).then(function(r){return r.json();}).then(function(list){
+      // ⚠ P9 — `keep` is read HERE, at apply time, not at call time. refreshModules() has four
+      // call sites and TWO of them fire at boot (the bottom-of-file kickoff and ws.onopen), so
+      // two rebuilds are in flight at once: a snapshot taken at call time is already stale when
+      // the later response lands, and it silently overwrote the selection the earlier one had
+      // just restored. Reading immediately before `innerHTML` is replaced cannot go stale.
+      var keep=sel.value;   // preserve selection across the async rebuild
       sel.innerHTML='<option value="">— select a module —</option>';
       list.forEach(function(m){ var o=document.createElement('option'); o.value=m.id;
         o.textContent=m.title+' — '+m.beats+' beats/'+m.sections+' sec'+(m.warn?(' ⚠'+m.warn):'')+(m.error?' (ERR)':''); sel.appendChild(o); });
-      if(keep){ try{ sel.value=keep; }catch(e){} }
+      // P9 — the stored default fills in ONLY for a page that has no selection of its own, and
+      // only on the first rebuild of that page's life. refreshModules() also runs on every
+      // (re)connect and on every module-changed; if the fallback ran there it would resurrect a
+      // selection the GM had just cleared, and re-fire the fetch below mid-session.
+      var want=keep, fresh=false;
+      if(!want && !modPreselected){ want=modPref(); fresh=!!want; }
+      modPreselected=true;
+      // I4 — a stored (or held) id that is no longer on disk degrades SILENTLY to the placeholder.
+      // Never an error dialog at 20:05. `sel.value=<absent>` would leave selectedIndex at -1, i.e.
+      // a blank picker that looks broken, so the placeholder is selected explicitly. The stored key
+      // is deliberately NOT cleared: if the file comes back, so does the default (permissive).
+      if(want && hasOpt(sel,want)) sel.value=want; else sel.value='';
+      // A preselection the GM cannot act on is a trap — ▶ Validate & Load stays disabled until the
+      // body has been fetched, and re-picking an already-selected <option> fires no change event.
+      // So the first application also runs the picker's own fetch+validate path, exactly as
+      // queueModule() does for a series: "ready to Load", NOT loaded. Guarded by `!module` so it
+      // can never discard a body this page is already holding.
+      if(fresh && sel.value && !module && sel.onchange) sel.onchange();
     }).catch(function(){ $('mod-info').textContent='(module list unavailable)'; });
   }
-  $('mod-select').onchange=function(){ var id=this.value; module=null; curBeat=-1; $('mod-valid').innerHTML=''; $('outline').innerHTML=''; renderNav();
+  $('mod-select').onchange=function(){ var id=this.value; setModPref(id);   // P9: the last module SELECTED is the default next time (cleared when the GM picks the placeholder)
+    module=null; curBeat=-1; $('mod-valid').innerHTML=''; $('outline').innerHTML=''; renderNav();
     if(!id){ $('mod-info').textContent=''; $('mod-load').disabled=true; return; }
     fetch('/api/modules/'+encodeURIComponent(id)).then(function(r){return r.json();}).then(function(d){
       if(!d||d.error||!d.module){ $('mod-info').textContent='Error: '+((d&&d.error)||'could not load module'); $('mod-load').disabled=true; return; }
