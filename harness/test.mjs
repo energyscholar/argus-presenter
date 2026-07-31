@@ -6,7 +6,7 @@
  *     test('name', async () => { ...; expect(cond, 'msg', detail); });
  *
  * Run modes:
- *   node harness/test.mjs                 discover + run every *.mjs under test/
+ *   node harness/test.mjs                 discover + run every *.test.mjs under test/
  *   node harness/test.mjs --only poll     only files/tests whose path or name matches
  *   node test/unit/foo.test.mjs           direct-run one file (auto-runs on exit)
  *
@@ -59,6 +59,19 @@ function tierOf(file) {
   return ['unit', 'component', 'live'].includes(t) ? t : 'other';
 }
 
+/*
+ * Discovery is restricted to `*.test.mjs`.
+ *
+ * WHY (Plan 0522 P1): discovery used to take EVERY `*.mjs` under test/, and the runner
+ * imports all discovered files BEFORE running anything. `test/plan-0508-station-spotlight.mjs`
+ * is a standalone acceptance SCRIPT: it executes at import time (top-level await) and ends in
+ * `process.exit()`. Sorted, it lands between `test/live/` and `test/unit/`, so importing it
+ * terminated the process — every registered test was discarded unrun and the harness exited 0
+ * with the script's own "ALL PASS". `test/unit/` had never executed.
+ *
+ * A file that is not named `*.test.mjs` is not a suite: it is a helper (`test/unit/_*.mjs`) or a
+ * standalone script. Both are reported by `skippedFiles()` rather than silently dropped.
+ */
 function discover(dir) {
   const out = [];
   if (!existsSync(dir)) return out;
@@ -66,7 +79,20 @@ function discover(dir) {
     const p = join(dir, name);
     const st = statSync(p);
     if (st.isDirectory()) out.push(...discover(p));
-    else if (name.endsWith('.mjs')) out.push(p);
+    else if (name.endsWith('.test.mjs')) out.push(p);
+  }
+  return out.sort();
+}
+
+/** `*.mjs` under test/ that discovery deliberately skips — reported, never silent. */
+function skippedFiles(dir) {
+  const out = [];
+  if (!existsSync(dir)) return out;
+  for (const name of readdirSync(dir)) {
+    const p = join(dir, name);
+    const st = statSync(p);
+    if (st.isDirectory()) out.push(...skippedFiles(p));
+    else if (name.endsWith('.mjs') && !name.endsWith('.test.mjs')) out.push(p);
   }
   return out.sort();
 }
@@ -116,6 +142,20 @@ async function main() {
   }
   _currentFile = null;
 
+  const skipped = skippedFiles(TEST_DIR);
+  if (skipped.length) {
+    console.log(`\nnot a suite, not discovered (run directly if needed):`);
+    for (const s of skipped) console.log(`  - ${relative(ROOT, s)}`);
+    console.log('');
+  }
+
+  // A harness that runs zero tests passes. That is the bug P1 exists to kill: never
+  // let an empty registry report success.
+  if (REG.length === 0) {
+    console.log(`FAIL  discovery found ${files.length} file(s) under test/ but registered 0 tests`);
+    process.exit(1);
+  }
+
   const { passed, failed, byTier } = await runRegistered({ only });
 
   // Cleanup any shared headless browser so node exits promptly.
@@ -125,6 +165,10 @@ async function main() {
     .map(([k, v]) => `${k}:${v.passed}/${v.passed + v.failed}`)
     .join('  ');
   console.log(`\n${passed} passed / ${failed} failed` + (tierStr ? `   [${tierStr}]` : ''));
+  if (passed + failed === 0) {
+    console.log(`FAIL  ${REG.length} test(s) registered but 0 executed` + (only ? ` — --only ${only} matched nothing` : ''));
+    process.exit(1);
+  }
   process.exit(failed ? 1 : 0);
 }
 
