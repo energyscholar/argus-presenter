@@ -78,7 +78,14 @@ test('KBD1 — keyboard transport: arrows/Space/digit jump/Escape + typing guard
     expect('digit 1 + GO lands on section 1 first beat', (await cur()) === 0);
 
     // Typing guard: keydown with target=input does nothing.
+    // ⚠ AMENDED BY PLAN 0522 P8.1 — #pc-component lives inside the Ad-hoc push <details>, which is
+    // now CLOSED by default; an unrendered input cannot take focus. Expanded first so the guard is
+    // still exercised against a REAL focused input. The assertion itself is unchanged.
+    await ctl.evaluate(() => { document.getElementById('adhoc-details').open = true; });
+    await ctl.waitForSelector('#pc-component', { visible: true, timeout: 3000 });
     await ctl.focus('#pc-component');
+    expect('the typing guard is armed against a genuinely focused input',
+      await ctl.evaluate(() => document.activeElement && document.activeElement.id === 'pc-component'));
     await ctl.keyboard.press('ArrowRight');
     await ctl.keyboard.press(' ');
     await wait(300);

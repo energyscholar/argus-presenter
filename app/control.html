@@ -6,16 +6,49 @@
 <title>Argus Presenter — Control</title>
 <style>
   :root{--bg:#0a0e1c;--panel:rgba(10,16,32,.6);--line:#21314f;--ink:#cfe9ff;--dim:#8ab;--ok:#22e5a0;--warn:#ffb454;--danger:#ff6b6b;}
+  /* ── Plan 0522 P8.2 (R16) — ONE preview size; EVERY other number is derived ────────────────
+     The Live Preview has been enlarged three times (150×98 → 300×196 → 360×235 → 432×282) and
+     each time FIVE hand-synchronised constants had to move together: the box, the iframe scale,
+     the top frame's vertical clearance, its horizontal clearance, and the right offset of the
+     fixed buttons parked left of the dock. Plan 0508 moved four of them and missed the fifth —
+     #btn-present kept a right offset derived from a 302px-wide dock that had become 360px — and
+     the button has overlapped the dock ever since (test TF1, a 52px overlap, red for months).
+     That is a BUG CLASS, not a bug: hand-synchronised constants drift silently.
+     ⇒ Everything below derives from --pv-scale. To resize the preview, change ONE number. */
+  :root{
+    /* The SOURCE frame never changes: the preview is a real display rendered at 600×392 and
+       scaled DOWN, so enlarging costs nothing to re-render — only the transform changes. */
+    --pv-src-w:600px; --pv-src-h:392px;
+    /* ⇦⇦ THE ONE NUMBER. Plan 0508 took a 20% step (.5→.6); Plan 0522 P8.2 takes the same again. */
+    --pv-scale:.72;
+    --pv-w:calc(var(--pv-src-w) * var(--pv-scale));    /* 432px */
+    --pv-h:calc(var(--pv-src-h) * var(--pv-scale));    /* 282.24px */
+    --pv-border:1px;                                   /* #preview's own border, counted twice below */
+    --pv-dock-right:96px;                              /* clears the green dot + the checkbox under it */
+    --pv-gap:8px;
+    /* The dock's LEFT edge, measured from the viewport's RIGHT edge. This is the value the
+       fixed buttons and the top frame both need, and the value Plan 0508 forgot to update. */
+    --pv-left:calc(var(--pv-dock-right) + var(--pv-w) + 2 * var(--pv-border));   /* 530px */
+    /* Horizontal clearance beyond the dock, reserved for the fixed button row that parks left
+       of it (⏹ Default image · ⧉ Presenter screen). MEASURED, not guessed — t50 asserts the
+       reservation still covers the row's real rendered width at 1366×768. */
+    --tf-btns-w:264px;
+    /* Vertical slack under the dock before in-flow content may start. */
+    --pv-slack:10px;
+  }
   html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font:13px/1.45 'Segoe UI',system-ui,sans-serif;}
   body{display:grid;grid-template-columns:1fr 320px;grid-template-rows:auto 1fr;gap:10px;padding:10px;box-sizing:border-box;height:100vh;}
   /* P2.7 (Plan 0456): TOP FRAME = the ALWAYS-VISIBLE presenter controls (Now Playing +
      transport, Module select/Validate&Load) plus the fixed right-side cluster (presenter-
      screen button · enlarged preview dock · green dot with the live-preview checkbox under
      it). CONTENT-SPECIFIC controls (outline/ToC, series nav) live in the lower-left column.
-     min-height clears the enlarged 360×235 preview (Plan 0508); padding-right keeps in-flow content out
-     from under the fixed cluster (transport buttons never occluded). Bruce approved the
-     vertical growth. */
-  #topframe{grid-column:1/3;min-height:245px;padding-right:610px;box-sizing:border-box;display:flex;flex-direction:column;gap:8px;}
+     min-height clears the preview dock; padding-right keeps in-flow content out from under the
+     fixed cluster (transport buttons never occluded). Bruce approved the vertical growth.
+     P8.2/R16: BOTH clearances are now derived from --pv-h / --pv-left — resizing the preview
+     can no longer leave either of them stale. */
+  #topframe{grid-column:1/3;min-height:calc(var(--pv-h) + var(--pv-slack));
+    padding-right:calc(var(--pv-left) + var(--pv-gap) + var(--tf-btns-w));
+    box-sizing:border-box;display:flex;flex-direction:column;gap:8px;}
   h1{margin:0;font-size:15px;letter-spacing:.04em;display:flex;align-items:flex-start;gap:10px;}
   #tf-sections{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start;}
   #tf-sections>section{flex:1 1 240px;min-width:200px;}
@@ -53,10 +86,11 @@
      and the dot (60); the top frame (#topframe min-height) keeps it off the columns.
      P2.7: preview ENLARGED 150×98 → 300×196 (same 600×392 iframe, scale .25 → .5); dock
      moved to right:96px so the live-preview checkbox fits UNDER the dot at the right edge. */
-  #pvdock{position:fixed;top:4px;right:96px;z-index:59;display:flex;flex-direction:column;gap:3px;}
-  /* Plan 0508: Bruce uses the Live Preview constantly — enlarged a further 20% (300x196 -> 360x235,
-     iframe scale .5 -> .6). Same 600x392 source frame, so nothing else in the layout moves. */
-  #preview{width:360px;height:235px;border:1px solid #2a3a5a;border-radius:6px;overflow:hidden;background:#050510;flex:0 0 auto;position:relative;}
+  #pvdock{position:fixed;top:4px;right:var(--pv-dock-right);z-index:59;display:flex;flex-direction:column;gap:3px;}
+  /* Plan 0508: Bruce uses the Live Preview constantly — enlarged 20% (300×196 → 360×235).
+     Plan 0522 P8.2: the same 20% step again (360×235 → 432×282), but the size now comes from
+     --pv-scale and NOTHING here is a literal. Same 600×392 source frame either way. */
+  #preview{width:var(--pv-w);height:var(--pv-h);border:var(--pv-border) solid #2a3a5a;border-radius:6px;overflow:hidden;background:#050510;flex:0 0 auto;position:relative;}
   /* ── Plan 0522 P7.1 — THE PREVIEW IS INTERACTIVE ──────────────────────────────────────────
      `pointer-events:none` used to sit on this rule and it was the ONLY thing making the preview
      inert. Removing it is the whole of P7.1 (R7): the operator must be able to work a shared form
@@ -65,7 +99,7 @@
      form.js) and answers travel the postMessage bridge, so `allow-scripts` alone is sufficient.
      Adding `allow-forms` would re-enable the native path and let a stray submit navigate the
      preview away. See also the message-boundary drop below: rehearsal results never ship. */
-  #preview iframe{border:0;width:600px;height:392px;transform:scale(.6);transform-origin:top left;}
+  #preview iframe{border:0;width:var(--pv-src-w);height:var(--pv-src-h);transform:scale(var(--pv-scale));transform-origin:top left;}
   /* The decorations over an interactive surface must not eat the operator's clicks. #pvstate,
      the label and the rehearsal note are read-only signage; only the full-screen toggle is a
      control, and it opts back in below. */
@@ -113,7 +147,10 @@
      settings overlay (61) and the green dot (60). The dock is raised with it. */
   #pvdock.fullscreen{z-index:210;}
   #preview.fullscreen{position:fixed;inset:0;width:auto;height:auto;z-index:200;border:0;border-radius:0;background:#050510;}
-  #preview.fullscreen iframe{transform:scale(1);position:absolute;left:50%;top:50%;margin-left:-300px;margin-top:-196px;}
+  /* P8.2/R16: scale(1) deliberately IGNORES --pv-scale (that is the point of full screen), but the
+     centring offsets are half the SOURCE frame and must track it, so they are derived too. */
+  #preview.fullscreen iframe{transform:scale(1);position:absolute;left:50%;top:50%;
+    margin-left:calc(var(--pv-src-w) / -2);margin-top:calc(var(--pv-src-h) / -2);}
   #preview.fullscreen #btn-pvfull{right:10px;bottom:10px;font-size:13px;padding:5px 10px;}
   /* R8 — the exit hint. Deliberately BARELY visible: it is a reminder for the operator who has
      forgotten, not a label competing with the content it sits on top of. */
@@ -133,16 +170,27 @@
   /* P2.7: live-preview checkbox moved out of the dock — fixed directly UNDER the green dot
      (#led-btn bottom ≈ 30px). Sits below the open config overlay (z 61) by design. */
   #livepreview-lbl{position:fixed;top:32px;right:6px;z-index:59;font-size:10px;color:var(--dim);display:inline-flex;align-items:center;gap:3px;cursor:pointer;}
-  /* P2.7: presenter-screen launcher — fixed immediately LEFT of the preview dock
-     (dock: right:96px + 302px wide + 8px gap). Width grows leftward; right edge is stable. */
-  #btn-present{position:fixed;top:4px;right:406px;z-index:59;font-size:12px;padding:5px 10px;}
+  /* ── Plan 0522 P8.2 (R16) — the fixed button row, ONE anchor ──────────────────────────────
+     These two buttons used to carry a hand-computed `right:` each (406px and 544px), the first
+     derived in a comment from a dock width that had been wrong since Plan 0508 — that stale
+     406 IS test TF1's 52px overlap. They are now ONE right-anchored row pinned a gap left of
+     the dock, laid out row-reverse so the DOM order (present, branding) still paints as
+     [⏹ Default image][⧉ Presenter screen] with the launcher nearest the dock. No button width
+     appears anywhere: widths are whatever the text needs, and the row grows leftward. */
+  #tf-btnrow{position:fixed;top:4px;right:calc(var(--pv-left) + var(--pv-gap));z-index:59;
+    display:flex;flex-direction:row-reverse;align-items:flex-start;gap:var(--pv-gap);}
+  #btn-present{font-size:12px;padding:5px 10px;}
   /* Bruce 2026-07-27: an OBVIOUS "return to default image / branding" for the human
      operator, mirroring the presenter_default_branding MCP tool for the AI. Deliberately
      high-contrast and always visible in the top frame — this is the "what is on screen?
      make it stop" control, and it must be findable cold, after a reboot, without hunting. */
-  #btn-branding{position:fixed;top:4px;right:544px;z-index:59;font-size:12px;padding:5px 10px;
+  #btn-branding{font-size:12px;padding:5px 10px;
     font-weight:600;border:1px solid #b45309;background:#78350f;color:#fde68a;border-radius:4px;cursor:pointer;}
   #btn-branding:hover{background:#92400e;color:#fff;}
+  /* Plan 0522 P8.1: a collapsed panel's <summary> must read exactly like the <h2> it replaced —
+     the operator is looking for a heading, not for a widget. Same rule as `section h2`. */
+  .acc-sum{cursor:pointer;list-style:none;margin:0;font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);user-select:none;}
+  .acc-sum::-webkit-details-marker{display:none;}
   #np-meta{font-size:12px;}#np-meta b{color:#fff;}
   #viewingas{font-size:11px;color:var(--warn);}
   .sec{border:1px solid #1c2a44;border-radius:6px;margin:5px 0;}
@@ -225,10 +273,13 @@
 </head>
 <body>
 <button id="led-btn" title="Settings" aria-haspopup="true" aria-label="Connection and settings"><span id="led2"></span></button>
-<!-- P2.7: presenter-screen launcher — fixed in the top frame, immediately LEFT of the preview dock -->
-<button id="btn-present" title="Open (or refocus) the presenter display window">⧉ Presenter screen</button>
-<!-- RETURN TO DEFAULT IMAGE — the human twin of the presenter_default_branding MCP tool. -->
-<button id="btn-branding" title="Clear every display back to the default Argus Presenter branding image. Safe: content can be re-shown afterwards.">⏹ Default image</button>
+<!-- P2.7 / 0522 P8.2: the fixed button row — pinned immediately LEFT of the preview dock. DOM
+     order is [present, branding]; #tf-btnrow is row-reverse, so it paints branding-then-present. -->
+<div id="tf-btnrow">
+  <button id="btn-present" title="Open (or refocus) the presenter display window">⧉ Presenter screen</button>
+  <!-- RETURN TO DEFAULT IMAGE — the human twin of the presenter_default_branding MCP tool. -->
+  <button id="btn-branding" title="Clear every display back to the default Argus Presenter branding image. Safe: content can be re-shown afterwards.">⏹ Default image</button>
+</div>
 <!-- P2.5/P2.7: Live Preview dock — fixed in the top frame, left of the green dot; the
      live-preview checkbox now sits UNDER the dot (see #livepreview-lbl CSS) -->
 <div id="pvdock">
@@ -328,11 +379,18 @@
     <div id="outline" style="margin-top:8px"></div>
   </section>
 
+  <!-- Plan 0522 P8.1: Ad-hoc push is a DEBUG/escape-hatch panel — it was open permanently and
+       cost the outline four rows of column height every session. It is a <details> now, CLOSED
+       by default (no `open` attribute), matching #mod-details and #dg-recent-wrap. The <h2> was
+       a plain heading, so the summary carries the same styling the h2 rule gave it. P8.3 makes
+       the choice stick, so an operator who wants it open once wants it open every session. -->
   <section>
-    <h2>Ad-hoc push</h2>
-    <div class="row"><input id="pc-component" value="card" style="width:110px"><input id="pc-target" value="all" style="width:80px" title="target"><button id="pc-push">Push</button></div>
-    <textarea id="pc-opts">{"title":"Hello"}</textarea>
-    <div class="row"><button id="op-open" class="mini">Open poll</button><input id="op-id" value="p1" style="width:50px"><input id="op-prompt" value="Ship it?" style="width:110px"><input id="op-options" value="yes,no" style="width:90px"><button id="op-close" class="mini">Close</button></div>
+    <details id="adhoc-details">
+      <summary class="acc-sum">Ad-hoc push</summary>
+      <div class="row" style="margin-top:8px"><input id="pc-component" value="card" style="width:110px"><input id="pc-target" value="all" style="width:80px" title="target"><button id="pc-push">Push</button></div>
+      <textarea id="pc-opts">{"title":"Hello"}</textarea>
+      <div class="row"><button id="op-open" class="mini">Open poll</button><input id="op-id" value="p1" style="width:50px"><input id="op-prompt" value="Ship it?" style="width:110px"><input id="op-options" value="yes,no" style="width:90px"><button id="op-close" class="mini">Close</button></div>
+    </details>
   </section>
 </div>
 
@@ -401,6 +459,28 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   // that a frame was posted into the void.
   var staged=null, stagePendingLabel='', lastSent=null;
   var $=function(id){return document.getElementById(id);};
+
+  // ── Plan 0522 P8.3 — ACCORDION STATE PERSISTS ────────────────────────────────────────────
+  // Every collapsible panel on this page, keyed per section, in ONE localStorage record — the
+  // same mechanism as TOKEN_KEY / NP_KEY, no new persistence machinery (R10's rule for P9).
+  // Two kinds of <details> live here and BOTH are covered:
+  //   · the STATIC panels — Module, Ad-hoc push, Recent — keyed by element id;
+  //   · the outline's per-section / per-sequence tiers, which are DESTROYED AND REBUILT by
+  //     renderOutline() on every beat change. Those were hard-coded `open=true`, so a GM who
+  //     collapsed a finished section watched it spring back open on the very next beat. They
+  //     are keyed by module + tier title so the collapse survives the re-render AND the reload,
+  //     and two different modules never inherit each other's shape.
+  // A key with no stored entry keeps whatever default the markup declared — persistence never
+  // invents a state it was not told (I4: nothing collapses out of sight on its own).
+  var ACC_KEY=NS+':accordion';
+  function accAll(){ try{ var o=JSON.parse(localStorage.getItem(ACC_KEY)||'{}'); return (o&&typeof o==='object')?o:{}; }catch(e){ return {}; } }
+  function accBind(el,key){
+    if(!el||!key) return;
+    var all=accAll(); if(Object.prototype.hasOwnProperty.call(all,key)) el.open=!!all[key];
+    el.addEventListener('toggle',function(){
+      try{ var m=accAll(); m[key]=!!el.open; localStorage.setItem(ACC_KEY,JSON.stringify(m)); }catch(e){}
+    });
+  }
 
   function control(action,args){ lastControl={action:action,args:args||{}}; if(ws&&ws.readyState===1) ws.send(JSON.stringify({t:'control',action:action,args:args||{}})); }
   function connect(){
@@ -691,8 +771,11 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
       var est=document.createElement('div'); est.className='outline-est'; est.style.cssText='font-size:11px;opacity:.7;margin-bottom:4px'; est.textContent='est. '+fmtDur(total);
       $('outline').appendChild(est);
     }
-    secs.forEach(function(s){
+    // P8.3: tier keys are scoped to the module so two modules never share a collapse shape.
+    var modKey=(module.id)||(module.manifest&&module.manifest.title)||module.title||'?';
+    secs.forEach(function(s,si){
       var det=document.createElement('details'); det.className='sec'; det.open=true;
+      var secKey='sec:'+modKey+':'+(s.title||('#'+si));
       // DEL-3: a section with a non-empty sequences[] renders a nested Sequence tier; otherwise its beatIds render directly.
       var hasSeq = s.sequences && s.sequences.length;
       var secCount = hasSeq ? s.sequences.reduce(function(n,q){return n+(q.beatIds||[]).length;},0) : (s.beatIds||[]).length;
@@ -701,8 +784,9 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
       var jb=jumpBtn(s); if(jb) sum.querySelector('.cnt').appendChild(jb);   // P2: section-level jump (absent when no resolvable beats)
       det.appendChild(sum);
       if(hasSeq){
-        s.sequences.forEach(function(q){
+        s.sequences.forEach(function(q,qi){
           var qdet=document.createElement('details'); qdet.className='seq'; qdet.open=true;
+          accBind(qdet,secKey+'/seq:'+(q.title||('#'+qi)));   // P8.3
           var qsum=document.createElement('summary'); qsum.innerHTML='<span>'+esc(q.title||'sequence')+'</span><span class="cnt">'+(q.beatIds||[]).length+' beats</span>';   // Plan 0471 C4
           var qjb=jumpBtn(q); if(qjb) qsum.querySelector('.cnt').appendChild(qjb);   // P2: sequence-level jump
           qdet.appendChild(qsum);
@@ -712,6 +796,7 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
       } else {
         (s.beatIds||[]).forEach(function(bid){ var el=beatRow(bid); if(el) det.appendChild(el); });
       }
+      accBind(det,secKey);   // P8.3 — bound AFTER its children so one toggle event is enough
       $('outline').appendChild(det);
     });
   }
@@ -1138,6 +1223,12 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   }
   $('cfg-shownp').addEventListener('change',function(){ try{ localStorage.setItem(NP_KEY,this.checked?'1':'0'); }catch(e){} applyNowPlaying(); });
   applyNowPlaying();
+
+  // P8.3 — the three STATIC accordions. (The outline's tiers are bound in renderOutline(),
+  // because they do not exist yet and are rebuilt on every beat change.)
+  accBind($('mod-details'),'mod');       // open in markup; also auto-collapsed on Validate&Load (S210)
+  accBind($('adhoc-details'),'adhoc');   // P8.1 — CLOSED in markup
+  accBind($('dg-recent-wrap'),'recent'); // closed in markup
 
   // ---- ATT (Plan 0466 §2.7): attendance overlay (control render — full roster + per-row controls) ----
   // Request/reply, NO standing feed: on open we ask, re-request every ~2s, and re-render ages on a

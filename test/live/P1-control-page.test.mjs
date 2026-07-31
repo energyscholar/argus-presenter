@@ -17,6 +17,13 @@ test('P1 — /control pushes a component + opens a poll (same store effect as MC
     await ctl.waitForFunction(() => typeof window.__control === 'function');
     await until(() => server.presence().some((u) => u.role === 'presenter'), { label: 'presenter connected' });
 
+    // ⚠ AMENDED BY PLAN 0522 P8.1 — the Ad-hoc push panel is a <details> now, CLOSED by default,
+    // so its controls are not rendered until it is expanded. A human presenter must open it; so
+    // must this test. NOTHING about what P1 asserts changed: the same two buttons are clicked and
+    // every assertion below is preserved verbatim.
+    await ctl.evaluate(() => { document.getElementById('adhoc-details').open = true; });
+    await ctl.waitForSelector('#pc-push', { visible: true, timeout: 3000 });
+
     // Push a component from the control page.
     await ctl.click('#pc-push');
     const pf = await waitContentFrame(part);
