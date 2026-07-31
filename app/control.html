@@ -57,8 +57,19 @@
   /* Plan 0508: Bruce uses the Live Preview constantly — enlarged a further 20% (300x196 -> 360x235,
      iframe scale .5 -> .6). Same 600x392 source frame, so nothing else in the layout moves. */
   #preview{width:360px;height:235px;border:1px solid #2a3a5a;border-radius:6px;overflow:hidden;background:#050510;flex:0 0 auto;position:relative;}
-  #preview iframe{border:0;width:600px;height:392px;transform:scale(.6);transform-origin:top left;pointer-events:none;}
-  #preview .pvlabel{position:absolute;left:0;right:0;bottom:0;font-size:9px;text-align:center;background:rgba(0,0,0,.6);color:var(--dim);padding:1px;}
+  /* ── Plan 0522 P7.1 — THE PREVIEW IS INTERACTIVE ──────────────────────────────────────────
+     `pointer-events:none` used to sit on this rule and it was the ONLY thing making the preview
+     inert. Removing it is the whole of P7.1 (R7): the operator must be able to work a shared form
+     here before the room ever sees it. The sandbox is NOT the lever and is deliberately NOT
+     widened — components already avoid native <form> submission on purpose (see components/form/
+     form.js) and answers travel the postMessage bridge, so `allow-scripts` alone is sufficient.
+     Adding `allow-forms` would re-enable the native path and let a stray submit navigate the
+     preview away. See also the message-boundary drop below: rehearsal results never ship. */
+  #preview iframe{border:0;width:600px;height:392px;transform:scale(.6);transform-origin:top left;}
+  /* The decorations over an interactive surface must not eat the operator's clicks. #pvstate,
+     the label and the rehearsal note are read-only signage; only the full-screen toggle is a
+     control, and it opts back in below. */
+  #preview .pvlabel{position:absolute;left:0;right:0;bottom:0;font-size:9px;text-align:center;background:rgba(0,0,0,.6);color:var(--dim);padding:1px;pointer-events:none;}
   /* ── Plan 0522 P6 — STAGED vs LIVE, UNMISSABLY ────────────────────────────────────────────
      Two-stage delivery turns a LOUD failure (the wrong beat ships, and everyone sees it) into a
      SILENT one (the operator stages, believes it shipped, and five people stare at an unchanged
@@ -67,7 +78,7 @@
      two states are told apart across the room, not by reading.
      z-index:2 keeps it above #pvwarn on purpose: a paused thumbnail does not un-stage a beat,
      and the state must not disappear at the moment the surface is least trustworthy. */
-  #pvstate{position:absolute;left:0;right:0;top:0;z-index:2;text-align:center;font-weight:700;
+  #pvstate{position:absolute;left:0;right:0;top:0;z-index:2;text-align:center;font-weight:700;pointer-events:none;
     letter-spacing:.10em;padding:2px 0;font-size:10px;background:#0b3b2a;color:#5fe0a8;border-bottom:1px solid #1c6b4c;}
   #pvstate.staged{font-size:16px;padding:6px 0;background:#b45309;color:#fff6e0;
     border-bottom:3px solid #fbbf24;text-shadow:0 1px 0 rgba(0,0,0,.5);}
@@ -87,6 +98,38 @@
   #pvwarn{display:none;position:absolute;inset:0;flex-direction:column;align-items:center;justify-content:center;gap:2px;background:#160c05;text-align:center;}
   #pvwarn .pvwarn-main{font-size:11px;color:var(--warn);}
   #pvwarn .pvwarn-sub{font-size:9px;color:var(--dim);}
+  /* ── Plan 0522 P7.2 — FULL SCREEN ─────────────────────────────────────────────────────────
+     scale(1) is the point. The source frame is already 600x392, so this is the ONLY mode that
+     paints it at native fidelity — everything else is a thumbnail, and a thumbnail is where a
+     typo hides. Centred rather than pinned top-left so the operator's eye lands on the content.
+     ⚠ R9: full screen has NO send. It is strictly a looking-and-interacting mode; the transport
+     keys and the GO button are both out of reach while it is open (see the keydown handler), so
+     there is nothing here that can ship by accident. */
+  #btn-pvfull{position:absolute;right:2px;bottom:2px;z-index:4;font-size:10px;line-height:1;padding:2px 5px;
+    background:rgba(6,12,28,.72);border:1px solid #2a3a5a;color:var(--dim);border-radius:4px;cursor:pointer;}
+  #btn-pvfull:hover{color:#fff;border-color:var(--ok);}
+  /* ⚠ #pvdock is position:fixed WITH a z-index, so it is its own stacking context and a z-index
+     on #preview alone can never climb past it — the full-screen surface would sit under the
+     settings overlay (61) and the green dot (60). The dock is raised with it. */
+  #pvdock.fullscreen{z-index:210;}
+  #preview.fullscreen{position:fixed;inset:0;width:auto;height:auto;z-index:200;border:0;border-radius:0;background:#050510;}
+  #preview.fullscreen iframe{transform:scale(1);position:absolute;left:50%;top:50%;margin-left:-300px;margin-top:-196px;}
+  #preview.fullscreen #btn-pvfull{right:10px;bottom:10px;font-size:13px;padding:5px 10px;}
+  /* R8 — the exit hint. Deliberately BARELY visible: it is a reminder for the operator who has
+     forgotten, not a label competing with the content it sits on top of. */
+  #pvfshint{display:none;position:absolute;left:8px;top:6px;z-index:3;font-size:10px;letter-spacing:.08em;
+    color:#93a4c0;opacity:.32;pointer-events:none;}
+  #preview.fullscreen #pvfshint{display:block;}
+  /* P7.2 red team — the degrade notice. applyPreviewState() normally CLEARS srcdoc when the tab
+     is starved, which would destroy whatever the operator is part-way through typing. In full
+     screen the clear is suspended and this says so, LOUDLY, instead of the input vanishing. */
+  #pvfsnote{display:none;position:absolute;left:0;right:0;bottom:20px;z-index:3;text-align:center;pointer-events:none;
+    font-size:13px;font-weight:600;color:#fff6e0;background:#b45309;border-top:1px solid #fbbf24;border-bottom:1px solid #fbbf24;padding:4px 6px;}
+  /* P7.1 red team (R5) — the rehearsal receipt. A poke at the preview produces NOTHING on the
+     real channel, by design; without this the operator would be left guessing whether it did. */
+  #pvrehearse{display:none;position:absolute;left:0;right:0;bottom:12px;z-index:3;text-align:center;pointer-events:none;
+    font-size:9px;color:#ffd9a0;background:rgba(0,0,0,.72);padding:1px 4px;}
+  #preview.fullscreen #pvrehearse{font-size:14px;bottom:60px;padding:5px;}
   /* P2.7: live-preview checkbox moved out of the dock — fixed directly UNDER the green dot
      (#led-btn bottom ≈ 30px). Sits below the open config overlay (z 61) by design. */
   #livepreview-lbl{position:fixed;top:32px;right:6px;z-index:59;font-size:10px;color:var(--dim);display:inline-flex;align-items:center;gap:3px;cursor:pointer;}
@@ -189,7 +232,9 @@
 <!-- P2.5/P2.7: Live Preview dock — fixed in the top frame, left of the green dot; the
      live-preview checkbox now sits UNDER the dot (see #livepreview-lbl CSS) -->
 <div id="pvdock">
-  <div id="preview"><iframe id="pvframe" sandbox="allow-scripts"></iframe><div id="pvstate">● LIVE</div><div class="pvlabel" id="pvlabel">idle</div><div id="pvwarn"><div class="pvwarn-main">⚠ preview paused</div><div class="pvwarn-sub">system busy</div></div></div>
+  <!-- P7 (R7): sandbox stays allow-scripts and ONLY allow-scripts. allow-forms is NOT the lever
+       that makes forms work here and would re-enable a native submit that navigates this frame. -->
+  <div id="preview"><iframe id="pvframe" sandbox="allow-scripts"></iframe><div id="pvstate">● LIVE</div><div id="pvfshint">Press ESC to exit</div><div id="pvfsnote"></div><div id="pvrehearse">rehearsal only — nothing was sent</div><div class="pvlabel" id="pvlabel">idle</div><div id="pvwarn"><div class="pvwarn-main">⚠ preview paused</div><div class="pvwarn-sub">system busy</div></div><button id="btn-pvfull" title="Full screen — the preview at native size, interactive. ESC exits. Nothing can be sent from full screen.">⤢</button></div>
 </div>
 <label id="livepreview-lbl" title="live 'view-as' thumbnail — first thing dropped when the tab is busy"><input type="checkbox" id="livepreview" checked> live preview</label>
 <div id="ap-config" role="dialog" aria-label="Settings">
@@ -342,6 +387,14 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   var seriesModules=[], seriesPos=-1;   // SCH-2: active series (ordered module ids) + walk position
   // MON-2: live "view-as" thumbnail — luxury feature, first thing sacrificed under load.
   var livePreview=true, degraded=false, lastDisplay={}, monLastTick=0, monLate=0, monOnTime=0;
+  // Plan 0522 P7.2 — is the preview currently full screen? ONE flag, read by the keyboard
+  // transport (nothing may ship while it is true — R9) and by applyPreviewState (the auto-clear
+  // is suspended while it is true, because clearing srcdoc under a half-typed form destroys it).
+  var fsOpen=false;
+  // Plan 0522 P7.1 (R5) — every result the preview frame has posted at this page and had DROPPED.
+  // Kept as a record, not a counter: "it was dropped" is a claim a test must be able to check
+  // positively, and the operator is told each time rather than left wondering.
+  var pvDrops=[];
   // Plan 0522 P6 — the STAGED candidate this page is holding, or null. It is the ONE thing that
   // decides what #pvstate says, whether GO is armed, and what GO will ship. It is set from the
   // SERVER'S ack, never optimistically: "armed" must mean the server is holding the beat, not
@@ -874,7 +927,24 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   // Swap the live iframe for a same-size warning box when paused/starved (nothing else changes).
   function applyPreviewState(){
     var off = degraded || !livePreview;
-    var warn=$('pvwarn'), f=$('pvframe'), lbl=$('pvlabel');
+    var warn=$('pvwarn'), f=$('pvframe'), lbl=$('pvlabel'), note=$('pvfsnote');
+    // ── Plan 0522 P7.2 RED TEAM — FULL SCREEN SUSPENDS THE AUTO-CLEAR ────────────────────────
+    // The clear below exists to stop a requestAnimationFrame loop burning CPU on a starved tab.
+    // That is the right trade for a 360x235 decoration. It is the WRONG trade when the preview is
+    // full screen, because P7.1 made it interactive: the operator may be half-way through a form,
+    // and wiping srcdoc destroys every character of it — silently, and at the exact moment the
+    // machine is least responsive, so it reads as the tab hanging rather than as data loss.
+    // While full screen: keep the content, keep it interactive, and SAY that the pause was
+    // deferred. Exiting full screen re-enters this function and the clear happens then, so the
+    // CPU mitigation is scoped, not deleted.
+    if(off && fsOpen){
+      note.textContent = degraded ? '⚠ system busy — preview HELD LIVE so your input is not lost (exit to pause)'
+                                  : '⚠ live preview switched off — HELD LIVE until you exit full screen';
+      note.style.display='block';
+      warn.style.display='none'; f.style.visibility=''; lbl.style.visibility='';
+      return;
+    }
+    note.style.display='none';
     if(off){
       // CLEAR the iframe content so any animation (requestAnimationFrame) actually STOPS and CPU is
       // reclaimed — visibility:hidden alone keeps the iframe's rAF loop running (paints nothing, still burns CPU).
@@ -886,19 +956,99 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
       requestMirror();   // returning to live → re-pull the current view-as
     }
   }
+
+  // ── Plan 0522 P7.2 — FULL SCREEN ───────────────────────────────────────────────────────────
+  // One flag, one function. Entering and leaving both route through here so the ESC key, the
+  // toggle button and any future caller cannot disagree about what "full screen" means.
+  function setFullscreen(on){
+    on=!!on;
+    if(on===fsOpen) return;
+    fsOpen=on;
+    $('preview').classList.toggle('fullscreen',on);
+    $('pvdock').classList.toggle('fullscreen',on);   // the dock owns the stacking context — see the CSS note
+    var b=$('btn-pvfull');
+    if(b){ b.textContent = on?'⤡':'⤢';
+      b.title = on ? 'Exit full screen (ESC) — nothing can be sent from here; exit first, then press GO'
+                   : 'Full screen — the preview at native size, interactive. ESC exits. Nothing can be sent from full screen.'; }
+    // Leaving re-applies the paused/degraded policy that full screen was suspending; entering
+    // clears a stale note. Either way the state is recomputed, never assumed.
+    applyPreviewState();
+  }
+  $('btn-pvfull').onclick=function(e){ e.stopPropagation(); setFullscreen(!fsOpen); };
+
+  // ── Plan 0522 P7.1 RED TEAM (R5) — REHEARSAL RESULTS ARE DROPPED, DELIBERATELY ─────────────
+  // lib/bridge.js posts every component result to `parent`. From the preview iframe that parent
+  // is THIS page. Before P7 the preview was inert so this could not arise; today the operator can
+  // work a form here, and the answer they produce is a REHEARSAL — it must never be recorded as a
+  // player's.
+  //
+  // Until now nothing caught those messages, so they fell on the floor. That was the right
+  // outcome by ACCIDENT: the day somebody adds a message listener to this page for any other
+  // reason, the operator's practice answers start counting for real, and nothing in the code
+  // would have warned them. This listener exists to make the drop DELIBERATE and legible — the
+  // boundary is written down, it is tested, and anything that ever wants to relay from the
+  // preview has to come here and opt in on purpose.
+  //
+  // Note the shape of the guard: it drops results FROM THE PREVIEW FRAME, and it drops them
+  // whenever the frame cannot be identified. A message that cannot be attributed is not trusted.
+  window.addEventListener('message', function(e){
+    var d = e && e.data;
+    if(!d || typeof d!=='object' || d.source!==NS) return;   // not a bridge message
+    var pv=$('pvframe'), fromPreview=false;
+    try{ fromPreview = !!(pv && e.source && e.source===pv.contentWindow); }
+    catch(err){ fromPreview = true; }                        // unattributable ⇒ treat as the preview
+    if(!fromPreview) return;
+    var rec={ type:d.type||'?', promptId:d.promptId||null, reason:'preview is a rehearsal surface (R5)', ts:Date.now() };
+    pvDrops.push(rec); if(pvDrops.length>50) pvDrops.shift();
+    // Tell the operator, in the preview itself. This is NOT gostat: gostat is the delivery
+    // receipt, and overwriting a discard notice with a rehearsal note would re-open exactly the
+    // silence P6 closed.
+    var el=$('pvrehearse');
+    if(el){ el.textContent='rehearsal only — "'+String(rec.type).slice(0,20)+'" was NOT sent; press GO to send the beat';
+      el.style.display='block'; clearTimeout(el._t); el._t=setTimeout(function(){ el.style.display='none'; }, 4000); }
+  });
   // P5: the dropdown is the primary affordance for the one target.
   $('target-select').onchange=function(){ setTarget(this.value); };
   $('livepreview').onchange=function(){ livePreview=this.checked; applyPreviewState(); };
   // P2.5 (Plan 0456): pushed content can STEAL FOCUS into the preview iframe (autofocus /
   // .focus() runs under sandbox allow-scripts on every srcdoc reload); the browser then
   // scrolls ancestors to reveal the focused frame — that was the outline column jumping to
-  // top on every interactive push. The thumbnail is pure decoration (pointer-events:none)
-  // and must NEVER hold focus (it would also swallow the KBD-1 keyboard transport): kick
-  // focus back out on every load and on any later steal. Sandbox stays allow-scripts only.
-  (function(){ var pv=$('pvframe');
+  // top on every interactive push. Kick focus back out on every load. Sandbox stays
+  // allow-scripts only.
+  //
+  // ⚠ Plan 0522 P7.1 — RECONCILED, NOT DELETED. The old rule was "the preview must NEVER hold
+  // focus", and it was affordable because the thumbnail was pointer-events:none decoration. P7
+  // makes it a working surface (R7), and a blanket kick would blur the operator mid-keystroke —
+  // the feature would be unusable. The two claims are separated by ORIGIN:
+  //
+  //   content-initiated steal — fires within milliseconds of the srcdoc load, before a human
+  //                             could have reached the frame  ⇒ still kicked, unchanged
+  //   operator-initiated focus — arrives later, because a person had to look and click
+  //                             ⇒ allowed to keep focus, which is the whole of R7
+  //
+  // The HARM the original guard existed to prevent was never the focus itself: it was the
+  // browser scrolling ancestors to reveal the frame and throwing the outline column to the top.
+  // That harm is now blocked directly and unconditionally — the scroll positions are pinned
+  // across every focus, stolen or deliberate — so PV1's contract holds even in the case the
+  // kick now deliberately declines to handle.
+  var PV_STEAL_MS = 700;   // a load-adjacent focus is the content's, not a human's
+  (function(){ var pv=$('pvframe'), lastLoad=0;
     function kick(){ if(document.activeElement===pv) pv.blur(); }
-    pv.addEventListener('load', kick);
-    pv.addEventListener('focus', function(){ setTimeout(kick,0); });
+    /** Freeze the scroll containers across a focus: revealing a fixed, already-visible dock is a
+        no-op, and any scroll that happens anyway is the reveal behaviour PV1 was written for. */
+    function pin(){
+      var col=document.querySelector('.col');
+      var y=window.scrollY, c=col?col.scrollTop:0;
+      setTimeout(function(){
+        if(window.scrollY!==y) window.scrollTo(0,y);
+        if(col && col.scrollTop!==c) col.scrollTop=c;
+      },0);
+    }
+    pv.addEventListener('load', function(){ lastLoad=Date.now(); pin(); kick(); });
+    pv.addEventListener('focus', function(){
+      var t=Date.now(); pin();
+      setTimeout(function(){ if(t-lastLoad < PV_STEAL_MS) kick(); },0);
+    });
   })();
   // Cheap 1 Hz SELF-monitor: measures its own lateness (tab starvation), NOT a render loop.
   setInterval(function(){
@@ -937,6 +1087,8 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   $('ap-config').addEventListener('click',function(e){ e.stopPropagation(); });
   document.addEventListener('click',function(){ toggleConfig(false); });
   // KBD-1 (Plan 0456 P1): ONE document-level keyboard transport handler.
+  // P7.2: FULL SCREEN outranks all of it — while it is open ESC exits and every other key is
+  // swallowed (R9, see the block below).
   // Space/ArrowRight → Next · ArrowLeft → Prev · Escape → close config if open (takes
   // precedence, preserves the old Escape-closes-config behavior) else STOP · digits 1–9 →
   // first beat of section N. Keys route through the EXISTING buttons / beat-jump path
@@ -947,6 +1099,19 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     if(e.ctrlKey||e.altKey||e.metaKey) return;
     var t=e.target, tag=t&&t.tagName;
     if(tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT'||(t&&t.isContentEditable)) return;
+    // ── Plan 0522 P7.2 (R8/R9) — FULL SCREEN OWNS THE KEYBOARD ────────────────────────────────
+    // ESC exits, ahead of the attendance panel and the config overlay: full screen is the layer
+    // physically covering them, so it is the layer ESC must peel off first.
+    // Everything else is SWALLOWED. R9 makes full screen a strictly non-shipping mode, and
+    // Space / ArrowRight are wired to ▶ Next, which publishes to the room. A GM leaning on the
+    // spacebar while reading a full-screen beat would ship the next one to five people without
+    // ever seeing the button they pressed. Exit first, then send — that is the whole ruling.
+    // (A key pressed while focus is INSIDE the preview frame never reaches this page at all;
+    // the ⤡ button in the corner is the exit for that case, which is why it stays clickable.)
+    if(fsOpen){
+      if(e.key==='Escape'){ setFullscreen(false); e.preventDefault(); }
+      return;
+    }
     if(e.key===' '||e.key==='ArrowRight'){ var nb=$('btn-next'); if(!nb.disabled){ if(e.key===' ') e.preventDefault(); nb.click(); } return; }
     if(e.key==='ArrowLeft'){ var pb=$('btn-prev'); if(!pb.disabled) pb.click(); return; }
     if(e.key==='Escape'){ if($('ap-attendance').classList.contains('open')){ closeAttendance(); return; } if($('ap-config').classList.contains('open')) toggleConfig(false); else $('btn-end').click(); return; }
@@ -1162,6 +1327,8 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     setModule:function(m){ module=m; curBeat=-1; recBeat=-1; renderOutline(); renderNav(); },   // DEL-2 test/automation hook: load a module into the panel directly
     series:function(){return {mods:seriesModules.slice(),pos:seriesPos};},   // SCH-2 test hook
     staged:function(){return staged;}, lastSent:function(){return lastSent;},   // P6 t14/t15/t16 hooks: the armed candidate + the last delivery receipt
+    fullscreen:function(){return fsOpen;}, setFullscreen:setFullscreen,   // P7.2 t17/t18/t19 hooks
+    previewDrops:function(){return pvDrops.slice();},   // P7.1 t21 hook: results the preview posted and this page DROPPED
     degrade:function(b){ degraded=!!b; applyPreviewState(); } };   // MON-2 test hook: force the degraded state without real CPU load
 })();
 </script>
