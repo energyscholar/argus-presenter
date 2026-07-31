@@ -650,7 +650,45 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // Plan 0514 §8: presence carries stationUid — the roster column that makes a byte-exact
   // mis-seat visible within seconds, and the share-target dropdown's source. Core stores NO
   // occupancy: it ASKS the plugin at the moment it builds the feed and then forgets (t0514-39).
-  function presence() { return [...conns.values()].filter((c) => c.userId).map((c) => ({ userId: c.userId, userName: c.userName, role: c.role, eyesOn: c.eyesOn || null, stationUid: seatStationUid(c.userId) })); }
+  //
+  // Plan 0522 P3 — ONE PERSON, ONE ROSTER ROW. Presence is a projection of PEOPLE, and it was
+  // projecting SOCKETS: a seat-linked player has a stable derived id (userId =
+  // <stationCode>-<slug(userName)>, resolveIdentity above), so a reload before the old socket is
+  // reaped put the SAME person on the roster twice.
+  //
+  // ⚠ The naive dedupe is a WORSE bug than the one it fixes. Identity is derived from the link and
+  // the typed name, so TWO DIFFERENT PEOPLE on one seat link typing one name get the SAME userId.
+  // Silently collapsing them erases a real human from the GM's roster (I4). So we collapse by
+  // userId AND SAY SO: a row backed by more than one live socket carries `conns` (how many) and
+  // `contested` (more than one). Never report conns:1 while two sockets are live. The per-socket
+  // view is not lost — `debugDump().connections` still lists every socket, one row each.
+  //
+  // Role on a collapsed row is the STRONGEST role held on that identity (a person holding a
+  // presenter socket and a participant socket is a presenter who is also watching), not
+  // whichever socket happened to connect first.
+  const ROLE_RANK = { participant: 0, ai: 1, presenter: 2, gm: 3 };
+  /** Fold per-socket entries into one row per userId. `mk(c)` builds the row; `fold(row, c)` merges. */
+  function byPerson(mk) {
+    const rows = [];
+    const idx = new Map();
+    for (const c of conns.values()) {
+      if (!c.userId) { rows.push(mk(c)); continue; }   // unidentified socket: its own row, never merged
+      const row = idx.get(c.userId);
+      if (!row) { const r = mk(c); r.conns = 1; r.contested = false; idx.set(c.userId, r); rows.push(r); continue; }
+      row.conns += 1;
+      row.contested = true;
+      if ((ROLE_RANK[c.role] ?? 0) > (ROLE_RANK[row.role] ?? 0)) row.role = c.role;
+      if ((c.eyesOn || 0) > (row.eyesOn || 0)) row.eyesOn = c.eyesOn;
+      if ((c.lastSeen || 0) > (row.lastSeen || 0)) row.lastSeen = c.lastSeen;
+      if (row.socketIds) row.socketIds.push(c.id);
+      if (row.ips) row.ips.push(c.ip || null);
+    }
+    return rows;
+  }
+  function presence() {
+    return byPerson((c) => ({ userId: c.userId, userName: c.userName, role: c.role, eyesOn: c.eyesOn || null, stationUid: seatStationUid(c.userId) }))
+      .filter((r) => r.userId);
+  }
   // Full presence (incl. IP + socketId + current display id) pushed to CONTROL roles only, for the GM user list.
   function pushPresence() {
     // No-op unless a control client (presenter/ai) is actually listening — avoids building/sending
@@ -661,11 +699,15 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     // mis-seat (a mis-cased `?station=` lands on the default, silently) VISIBLE within seconds
     // moment the player says "I can't see my screen". The LABEL is for a human to read; the uid
     // is the identifier. A stationCode still never reaches the wire (canon §3).
-    const users = [...conns.values()].map((c) => {
+    // Plan 0522 P3 — one PERSON per row (see byPerson above). The GM roster is the surface the
+    // duplicate rows were actually landing on, so it collapses on the same rule and shows the same
+    // `conns` / `contested` pair. socketIds/ips accumulate so a contested seat can still be told
+    // apart by the only fields that differ between two people sharing one derived id.
+    const users = byPerson((c) => {
       const uid = seatStationUid(c.userId);
       const st = uid == null ? null : stationRegistry.get(uid);
       return { userId: c.userId, userName: c.userName, role: c.role, ip: c.ip, socketId: c.id, lastSeen: c.lastSeen, display: displayIdFor(c), eyesOn: c.eyesOn || null,
-        stationUid: uid, stationLabel: st ? st.stationLabel : null };
+        stationUid: uid, stationLabel: st ? st.stationLabel : null, socketIds: [c.id], ips: [c.ip || null] };
     });
     for (const [ws, c] of conns.entries()) if (c.role === 'presenter' || c.role === 'ai') send(ws, { t: 'presence', users });
   }

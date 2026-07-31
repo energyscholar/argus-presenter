@@ -101,6 +101,10 @@
   .user.sel{border-color:var(--warn);background:rgba(255,180,84,.08);}
   .user .u-role{font-size:9px;padding:0 5px;border-radius:8px;border:1px solid #2a3a5a;color:var(--dim);}
   .user .u-meta{font-size:10px;color:var(--dim);margin-left:auto;text-align:right;}
+  /* Plan 0522 P3 — CONTESTED SEAT. One row, but two live sockets behind it: this marker is the
+     only thing between the collapse and a person silently missing from the roster (I4). Loud
+     colour, not a dim meta field. */
+  .user .u-dup{font-size:10px;margin-left:5px;padding:0 4px;border-radius:8px;color:#12161f;background:var(--warn);font-weight:700;white-space:nowrap;}
   .cp{cursor:copy;border-bottom:1px dotted #456;}.cp:hover{color:#fff;}
   .cp.copied,.u-copy.copied{color:var(--ok);border-color:var(--ok);}
   .u-copy{cursor:copy;opacity:.5;margin-left:4px;}.u-copy:hover{opacity:1;color:var(--ok);}
@@ -531,10 +535,18 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
       var eyesAge = u.eyesOn ? (((Date.now()-u.eyesOn)/1000)|0) : null;   // eyes-on ack age (s)
       var eyes = (eyesAge!=null) ? ('<span style="color:'+(eyesAge<45?'#8ef0a0':'#c9a24b')+'" title="viewer confirmed watching '+eyesAge+'s ago">👁 eyes-on '+eyesAge+'s</span>') : '';
       var rowText=[u.userId,u.userName,u.ip,u.role,u.socketId].join('\t');
+      // Plan 0522 P3 — one person, one row. The server now collapses sockets by userId, so a
+      // CONTESTED seat (more than one live socket on one derived identity — a reload not yet
+      // reaped, or genuinely two people on one seat link with the same name) must SAY SO rather
+      // than quietly become one row. Count + ⚠, and every socketId/IP behind it, so the GM can
+      // tell the two cases apart. Never show a seat as single when two clients hold it.
+      var dup = (u.conns>1) ? ('<span class="u-dup" title="'+u.conns+' live connections hold this one identity — a reload not yet reaped, or two people on the same seat link with the same name">×'+u.conns+' ⚠</span>') : '';
+      var dupMeta = (u.conns>1) ? ('<br>contested: '+esc((u.socketIds||[]).join(' '))+' · '+esc((u.ips||[]).map(function(x){return x||'—';}).join(' '))) : '';
       el.innerHTML='<span class="u-role">'+u.role+'</span>'
-        +'<b class="cp" data-copy="'+esc(u.userId)+'" title="copy userId">'+esc(u.userName||u.userId)+'</b>'
+        +'<b class="cp" data-copy="'+esc(u.userId)+'" title="copy userId">'+esc(u.userName||u.userId)+'</b>'+dup
         +'<span class="u-meta"><span class="cp" data-copy="'+esc(u.ip||'')+'" title="copy IP">'+esc(u.ip||'—')+'</span>'
         +' <span class="cp" data-copy="'+esc(u.socketId)+'" title="copy socketId">'+esc(u.socketId)+'</span>'
+        +dupMeta
         // Plan 0514 §7 / 0508 §4.1 item 7 — the STATION column. Byte-exact seat links mean a
         // mis-cased ?station= lands silently on the default; this column is how you see that.
         +'<br>station: '+esc(u.stationLabel||'—')
