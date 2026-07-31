@@ -273,7 +273,15 @@
   </section>
   <section>
     <h2>Users <span class="badge" id="user-count">0</span></h2>
-    <div class="row" style="margin-bottom:6px"><button class="mini sel" id="view-all">View: ALL (default)</button></div>
+    <!-- Plan 0522 P5 — THE UNIFIED TARGET. ONE control, not two: the preview shows what THIS
+         target will see, and a beat shipped from this page goes to THIS target. Two selectors
+         (one "previewing as", one "sending to") is the footgun — preview as one seat, send to ALL,
+         and the GM has verified something nobody received. Defaults to ALL on every page load
+         and is never persisted (t13). -->
+    <div class="row" style="margin-bottom:6px">
+      <label for="target-select" style="font-size:11px;color:var(--dim)">Target</label>
+      <select id="target-select" style="flex:1;min-width:0" title="Preview as, and send to, this target"></select>
+    </div>
     <div id="users"></div>
   </section>
 </div>
@@ -292,12 +300,18 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   // Default UNGATED on fetch failure. effRole = the server's EFFECTIVE granted role (from welcome).
   var authGated=false, authSeed=NS, effRole=null, attempting=false;
   var ws=null, module=null, curBeat=-1, recBeat=-1, users=[], viewingAs=null, results={};
+  // Plan 0522 P5 — THE ONE TARGET. `target` is the WIRE value verbatim: 'all', a userId, or
+  // 'station:<uid>'. `viewingAs` survives as the userId form the MON-2 mirror machinery and the
+  // roster highlight already speak, DERIVED from `target` and never set independently — two
+  // variables that can disagree about who is receiving is exactly the footgun P5 exists to close.
+  // It starts at 'all' on every load and is NEVER persisted (t13).
+  var target='all', stations=[], lastControl=null;
   var seriesModules=[], seriesPos=-1;   // SCH-2: active series (ordered module ids) + walk position
   // MON-2: live "view-as" thumbnail — luxury feature, first thing sacrificed under load.
   var livePreview=true, degraded=false, lastDisplay={}, monLastTick=0, monLate=0, monOnTime=0;
   var $=function(id){return document.getElementById(id);};
 
-  function control(action,args){ if(ws&&ws.readyState===1) ws.send(JSON.stringify({t:'control',action:action,args:args||{}})); }
+  function control(action,args){ lastControl={action:action,args:args||{}}; if(ws&&ws.readyState===1) ws.send(JSON.stringify({t:'control',action:action,args:args||{}})); }
   function connect(){
     ws=new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host);
     ws.onopen=function(){ $('led2').classList.add('on'); $('statustext').textContent='connected · '+identity.userName; ws.send(JSON.stringify(Object.assign({t:'hello'},identity))); refreshModules(); };   // AUT-2b: re-scan modules on every (re)connect so the <select> never goes stale after a server restart / instance-swap / unlock reconnect
@@ -367,7 +381,9 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     if(html==null){ f.srcdoc='<body style="margin:0;background:#050510"></body>'; }
     else if(html!==undefined){ f.srcdoc=html; }
     if(label!==undefined) $('pvlabel').textContent=label||'—';
-    var who = viewingAs ? ('as '+viewingAs) : 'default (ALL)';
+    // P5: the "as X" line reads THE TARGET, not `viewingAs` — a station target has no userId, and
+    // labelling it "default (ALL)" would be the exact lie this phase removes.
+    var who = (target==='all') ? 'default (ALL)' : ('as '+targetLabel(target));
     $('np-what').textContent = ($('pvlabel').textContent||'idle') + ' · ' + who;
   }
 
@@ -441,12 +457,23 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     var id=b&&b.id;
     return (typeof id==='string'&&id!=='') ? {id:id} : {index:i};
   }
-  function showBeatAt(i){ recBeat=-1; control('show_beat', beatRef(i)); }
+  // ── Plan 0522 P5 — ONE TARGET, ONE GESTURE ───────────────────────────────────────────────
+  // Every beat this page ships carries the SELECTED target, as an ARRAY, from the first commit
+  // (Bruce: "data structure should support it later"). The UI is single-select; the wire, the
+  // server handler and the log never learn of that restriction.
+  //
+  // `send_beat` with an explicit id is a PUBLISH, exactly like `show_beat` (P4) — so this is not
+  // the stage/publish switch, and no silent-non-delivery window is opened here. At the default
+  // target the server maps a lone 'all' to "do not narrow", making this byte-identical to the
+  // click path that ran S17, layers and per-beat `target:` included. Picking a target narrows it.
+  //
+  // ⚠ AUTO-FOLLOW IS DELIBERATELY NOT ROUTED THROUGH HERE (R4). It is not a target the GM chose.
+  function sendBeatAt(i){ recBeat=-1; control('send_beat', Object.assign({targets:targetArray()}, beatRef(i))); }
   // DEL-3: build one .beat row (same cur/rec/label/onclick logic) — shared by section- and sequence-level rendering.
   function beatRow(bid){ var b=beatById(bid); if(!b) return null; var i=beatIndex(bid);
     var el=document.createElement('div'); el.className='beat'+(i===curBeat?' cur':'')+(i===recBeat&&i!==curBeat?' rec':''); el.dataset.i=i;
     el.innerHTML=esc((((b.opts&&(b.opts.title||b.opts.prompt||b.opts.text))||b.id)+'').slice(0,42))+' <span class="comp">'+esc(b.component)+(b.target?(' →'+esc(b.target)):'')+'</span>'+((i===recBeat&&i!==curBeat)?' <span class="recnote">→ recommended</span>':'');   // Plan 0471 C4: escape module-authored strings
-    el.onclick=function(){ showBeatAt(i); };   // R14: by id — manual override always works + clears the recommendation
+    el.onclick=function(){ sendBeatAt(i); };   // R14: by id — manual override always works + clears the recommendation
     return el; }
   // Plan 0456 P2: first RESOLVABLE beat index of a tier (section or sequence) — shared by the
   // KBD-1 digit jump and the TOC ⏵ jump buttons. Returns -1 when the tier has none.
@@ -461,7 +488,7 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   function jumpBtn(tier){
     var i=firstResolvableBeat(tier); if(i<0) return null;
     var b=document.createElement('button'); b.type='button'; b.className='tocjump'; b.title='Jump to first beat'; b.textContent='⏵';
-    b.onclick=function(e){ e.stopPropagation(); e.preventDefault(); showBeatAt(i); };   // R14: by id
+    b.onclick=function(e){ e.stopPropagation(); e.preventDefault(); sendBeatAt(i); };   // R14: by id
     return b;
   }
   // SCH-1: format a duration estimate. <60s → "~Ns"; else round to nearest minute → "~N min".
@@ -516,7 +543,7 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     if($('autofollow').checked){ recBeat=-1; control('show_beat',{id:nextId}); }   // auto-advance (server diff clears rec + re-renders)
     else { recBeat=i; renderOutline(); }                             // else just highlight the recommended next
   }
-  $('btn-start').onclick=function(){ showBeatAt(0); };   // R14: the FIRST beat the panel is showing, addressed by id
+  $('btn-start').onclick=function(){ sendBeatAt(0); };   // R14: the FIRST beat the panel is showing, addressed by id
   $('btn-prev').onclick=function(){ recBeat=-1; control('prev_beat',{}); };
   $('btn-next').onclick=function(){ recBeat=-1; control('next_beat',{}); };
   $('btn-home').onclick=function(){ recBeat=-1; control('show_default',{}); };   // DEF-1: back to the module title page
@@ -576,29 +603,122 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     [].forEach.call(box.querySelectorAll('[data-copy]'),function(c){ c.onclick=function(e){ e.stopPropagation(); copyText(c.getAttribute('data-copy'), c); }; });
     [].forEach.call(box.querySelectorAll('[data-reset]'),function(c){ c.onclick=function(e){ e.stopPropagation(); control('reset_user',{userId:c.getAttribute('data-reset')}); }; });
   }
-  function selectView(uid){ viewingAs=uid; $('view-all').classList.remove('sel'); renderUsers();
-    var u=users.find(function(x){return x.userId===uid;});
-    renderPreview(undefined,(u&&u.display)||'—');
-    $('viewingas').textContent='▶ viewing as '+uid+' — they see: '+((u&&u.display)||'—')+'  (click ALL to return)';
-    lastDisplay[uid]=(u&&u.display)||null;
-    requestMirror();   // MON-2: pull THEIR actual display into the thumbnail
+  // ── Plan 0522 P5 — THE UNIFIED TARGET SELECTOR ───────────────────────────────────────────
+  // `setTarget` is the ONLY mutator. Clicking a roster row and choosing from the dropdown are two
+  // affordances for one target, not two targets — they cannot drift apart because there is only
+  // one variable and one write.
+  var stationTargetRe=/^station:(\d+)$/;
+  function stationByUid(uid){ return stations.find(function(s){return s.stationUid===uid;})||null; }
+  function targetStationUid(t){ var m=stationTargetRe.exec(t||''); return m?(+m[1]):null; }
+  /** The WIRE form, always an array — multiselect-ready even though the UI is single-select. */
+  function targetArray(){ return [target]; }
+  /** A human label for a target. Falls back to the raw wire value, never to silence (I4). */
+  function targetLabel(t){
+    if(t==='all') return 'ALL';
+    var su=targetStationUid(t);
+    if(su!=null){ var st=stationByUid(su); return st?((st.icon?st.icon+' ':'')+st.stationLabel):t; }
+    var u=users.find(function(x){return x.userId===t;});
+    return (u&&(u.userName||u.userId))||t;
   }
-  $('view-all').onclick=function(){ viewingAs=null; this.classList.add('sel'); renderUsers(); $('viewingas').textContent=''; };
+  /** How many CONNECTED people this target currently reaches — the count GO will report (I5). */
+  function targetOccupancy(t){
+    if(t==='all') return users.length;
+    var su=targetStationUid(t);
+    if(su!=null) return users.filter(function(u){return u.stationUid===su;}).length;
+    return users.some(function(u){return u.userId===t;})?1:0;
+  }
+  /** A change-detection key for the preview refresh: what everyone behind this target is seeing. */
+  function targetDisplayKey(t){
+    var su=targetStationUid(t);
+    var rows = (su!=null) ? users.filter(function(u){return u.stationUid===su;})
+                          : users.filter(function(u){return u.userId===t;});
+    return rows.map(function(u){return u.userId+'='+(u.display||'—');}).join('|')||null;
+  }
+  // Rebuild the option list. ALL is always first and always present. Every CONNECTED person is
+  // listed — a CONTESTED seat (P3: one person, several live sockets) is ONE option marked ×N ⚠,
+  // the same collapse the roster does, because two sockets are not two targets and a person must
+  // never be missing from this list because their row was ambiguous (I4). Every DECLARED station
+  // is listed whether or not anyone is sitting at it: an empty station is a legitimate target that
+  // honestly reports 0 recipients, not an absent one.
+  //
+  // ⚠ pushPresence fires on EVERY display change, not just on join/leave, so this runs many times
+  // a minute in a live session — and rebuilding a <select> closes it under the GM's cursor. Rebuild
+  // only when the option set would actually differ.
+  var targetsSig=null;
+  function renderTargets(){
+    var sel=$('target-select'); if(!sel) return;
+    var sig=JSON.stringify([users.map(function(u){return [u.userId,u.userName,u.conns||1,u.stationUid];}),
+                            stations.map(function(s){return [s.stationUid,s.stationLabel,s.group,s.sortOrder,s.icon];})]);
+    if(sig===targetsSig){ if(sel.value!==target) sel.value=target; return; }
+    targetsSig=sig;
+    sel.innerHTML='';
+    var o0=document.createElement('option'); o0.value='all';
+    o0.textContent='ALL (default)'+(users.length?(' · '+users.length):''); sel.appendChild(o0);
+    if(users.length){
+      var gu=document.createElement('optgroup'); gu.label='Connected';
+      users.forEach(function(u){
+        var o=document.createElement('option'); o.value=u.userId;
+        o.textContent=(u.userName||u.userId)+(u.stationLabel?(' · '+u.stationLabel):'')+((u.conns>1)?(' ×'+u.conns+' ⚠'):'');
+        gu.appendChild(o);
+      });
+      sel.appendChild(gu);
+    }
+    // Stations in sortOrder, grouped by `group`. The registry already arrives sorted; sorting
+    // again here means the order does not depend on a server-side promise (t12).
+    var order=[], byGroup={};
+    stations.slice().sort(function(a,b){ return (a.sortOrder-b.sortOrder)||(a.stationUid-b.stationUid); })
+      .forEach(function(st){ var g=st.group||'Stations'; if(!byGroup[g]){ byGroup[g]=[]; order.push(g); } byGroup[g].push(st); });
+    order.forEach(function(gname){
+      var g=document.createElement('optgroup'); g.label=gname;
+      byGroup[gname].forEach(function(st){
+        var o=document.createElement('option'); o.value='station:'+st.stationUid;
+        var n=users.filter(function(u){return u.stationUid===st.stationUid;}).length;
+        o.textContent=(st.icon?st.icon+' ':'')+st.stationLabel+(n?(' ('+n+')'):' (empty)');
+        g.appendChild(o);
+      });
+      sel.appendChild(g);
+    });
+    // The current target survives a rebuild ONLY while it still exists. A person who disconnects
+    // must not leave a selected option addressing nobody — that is I5's silent non-delivery with
+    // extra steps — so it falls back to ALL and SAYS SO.
+    var gone = !([].some.call(sel.options,function(o){return o.value===target;}));
+    if(gone){ var lost=target; setTarget('all'); $('viewingas').textContent='▶ target "'+lost+'" is gone — back to ALL'; return; }   // textContent: no escaping needed, and esc() here would double-encode
+    sel.value=target;
+  }
+  // THE single target mutator. `viewingAs` is derived here and nowhere else.
+  function setTarget(t){
+    target = t || 'all';
+    viewingAs = (target==='all' || targetStationUid(target)!=null) ? null : target;
+    var sel=$('target-select'); if(sel && sel.value!==target) sel.value=target;
+    renderUsers();
+    if(target==='all'){ $('viewingas').textContent=''; renderPreview(undefined, undefined); return; }
+    var n=targetOccupancy(target);
+    $('viewingas').textContent='▶ target: '+targetLabel(target)+' — '+(n?(n+' connected'):'NOBODY IS CONNECTED HERE')+'  (choose ALL to return)';
+    lastDisplay[target]=targetDisplayKey(target);
+    renderPreview(undefined, undefined);
+    requestMirror();   // MON-2: pull what THEY actually see into the thumbnail
+  }
+  /** Kept for the roster row click — it is the same target, reached by another affordance. */
+  function selectView(uid){ setTarget(uid); }
 
   // ---- MON-2: live "view-as" thumbnail (lightweight, event-driven, gracefully degrading) ----
-  function requestMirror(){ if(viewingAs && livePreview && !degraded) control('mirror',{userId:viewingAs}); }
+  // P5: mirror is asked for the TARGET, which may be a station; `userId` rides along only when the
+  // target IS a userId, so the existing server echo and PRIM-mirror's contract are untouched.
+  function requestMirror(){ if(target!=='all' && livePreview && !degraded) control('mirror', viewingAs?{target:target,userId:viewingAs}:{target:target}); }
   function onMirror(m){
-    if(m.userId!==viewingAs || !livePreview || degraded) return;   // stale / paused → drop
-    if(m.html==null){ renderPreview(null, m.userId+"'s view · idle"); }
-    else { renderPreview(m.html, m.userId+"'s view"); }
-    // keep the reverse-link note (set by selectView / presence)
+    var key = (m.target!=null) ? m.target : m.userId;
+    if(key!==target || !livePreview || degraded) return;   // stale / paused → drop
+    var lbl = targetLabel(target);
+    if(m.html==null){ renderPreview(null, lbl+"'s view · "+(targetOccupancy(target)?'idle':'nobody here')); }
+    else { renderPreview(m.html, lbl+"'s view"); }
+    // keep the reverse-link note (set by setTarget / presence)
   }
-  // Refresh trigger #2: the watched user's display CHANGED (event-driven, never a timer).
+  // Refresh trigger #2: what the target sees CHANGED (event-driven, never a timer).
   function onPresenceRefresh(){
-    if(!viewingAs) return;
-    var u=users.find(function(x){return x.userId===viewingAs;});
-    var d=(u&&u.display)||null;
-    if(d!==lastDisplay[viewingAs]){ lastDisplay[viewingAs]=d; requestMirror(); }
+    renderTargets();                       // occupancy counts + joiners/leavers
+    if(target==='all') return;
+    var d=targetDisplayKey(target);
+    if(d!==lastDisplay[target]){ lastDisplay[target]=d; requestMirror(); }
   }
   // Swap the live iframe for a same-size warning box when paused/starved (nothing else changes).
   function applyPreviewState(){
@@ -615,6 +735,8 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
       requestMirror();   // returning to live → re-pull the current view-as
     }
   }
+  // P5: the dropdown is the primary affordance for the one target.
+  $('target-select').onchange=function(){ setTarget(this.value); };
   $('livepreview').onchange=function(){ livePreview=this.checked; applyPreviewState(); };
   // P2.5 (Plan 0456): pushed content can STEAL FOCUS into the preview iframe (autofocus /
   // .focus() runs under sandbox allow-scripts on every srcdoc reload); the browser then
@@ -681,7 +803,7 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
       if(!module) return;
       var secs = module.sections && module.sections.length ? module.sections : [{title:'(all beats)',beatIds:(module.beats||[]).map(function(b){return b.id;})}];   // same derivation as renderOutline()
       var s=secs[(+e.key)-1]; if(!s) return;
-      var i=firstResolvableBeat(s); if(i>=0){ showBeatAt(i); }   // shared with the TOC ⏵ jump (P2); R14: by id
+      var i=firstResolvableBeat(s); if(i>=0){ sendBeatAt(i); }   // shared with the TOC ⏵ jump (P2); R14: by id
     }
   });
   $('cfg-close').addEventListener('click',function(){ toggleConfig(false); });
@@ -759,6 +881,11 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   // as the unlock prompt (or, mid-unlock, as success/"wrong password").
   function onWelcome(m){
     effRole = (typeof m.role==='string') ? m.role : effRole;
+    // Plan 0522 P5 — the DECLARED station registry rides the welcome (0514 §8), which is also why
+    // the selector survives a reconnect without a second fetch. Absent ⇒ stations are inert for
+    // this deployment and the dropdown is simply ALL + people.
+    if(Array.isArray(m.stationRegistry)) stations=m.stationRegistry;
+    renderTargets();
     if(attempting){
       attempting=false;
       if(effRole==='presenter'){ var mg=$('cfg-msg'); mg.textContent='✓ unlocked'; mg.style.color='var(--ok)'; if($('cfg-pw')) $('cfg-pw').value=''; }
@@ -867,10 +994,16 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   document.addEventListener('visibilitychange', function(){ if(document.hidden){ if(dgTimer){ clearInterval(dgTimer); dgTimer=null; } } else startDigest(); });
   window.__digest = { last:function(){return dgLast;}, refresh:fetchSituation, resolve:function(id){return workOp(id,'resolve');}, claim:function(id){return workOp(id,'claim',{owner:identity.userName||'presenter'});} };   // test/automation hook (P8)
 
+  // P5/t13 — the target is ALL on every page load, before anything else runs. It is deliberately
+  // NOT sticky and NOT persisted: a target the GM cannot see is a target they cannot verify, and
+  // a remembered one would silently narrow the first send of the next session.
+  renderTargets();
   connect(); refreshModules(); refreshSeries(); startDigest();
   window.__ctlAuth = { role:function(){return effRole;}, gated:function(){return authGated;}, open:function(){return $('ap-config').classList.contains('open');} };   // test hook
   window.__control = control;   // test/automation hook (P1) — drive control ops programmatically
   window.__gm={ users:function(){return users;}, module:function(){return module;}, cur:function(){return curBeat;}, rec:function(){return recBeat;},
+    target:function(){return target;}, targetArray:targetArray, setTarget:setTarget, stations:function(){return stations;},   // P5 test hooks
+    lastControl:function(){return lastControl;},   // P5 t10: the last control frame this page emitted, verbatim
     setModule:function(m){ module=m; curBeat=-1; recBeat=-1; renderOutline(); renderNav(); },   // DEL-2 test/automation hook: load a module into the panel directly
     series:function(){return {mods:seriesModules.slice(),pos:seriesPos};},   // SCH-2 test hook
     degrade:function(b){ degraded=!!b; applyPreviewState(); } };   // MON-2 test hook: force the degraded state without real CPU load

@@ -733,10 +733,46 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     if (d.kind === 'component') return (d.opts && d.opts.promptId) || d.component || 'component';
     return d.kind || 'display';
   }
+  // ── Plan 0522 P5 — STATION TARGETS ────────────────────────────────────────────────────────
+  // The unified target selector offers ALL · every connected person · every DECLARED station, so
+  // `station:<uid>` has to be addressable wherever a target is. It is resolved HERE, at the one
+  // place every push already funnels through (`targets()`, 12 call sites), and not in the beat
+  // path: otherwise the same string would mean PEOPLE in send_beat and a phantom userId in
+  // pushComponent / clear / chime / reload, and the two control surfaces would diverge (I1).
+  //
+  // Core still holds NO occupancy (0514 §13.2) — it asks the plugin per connection, exactly as
+  // pushPresence does. An unoccupied station resolves to ZERO sockets, honestly zero, which is
+  // what makes the I5 recipient count truthful instead of reassuring.
+  //
+  // ⚠ A target reads as a station ONLY when the suffix is an integer the REGISTRY knows. Anything
+  // else falls through to the userId path, so nobody can be shadowed out of existence by a naming
+  // coincidence (I4).
+  const STATION_TARGET_RE = /^station:(\d+)$/;
+  function stationTargetUid(target) {
+    if (typeof target !== 'string') return null;
+    const m = STATION_TARGET_RE.exec(target);
+    if (!m) return null;
+    const uid = Number(m[1]);
+    return stationRegistry.get(uid) ? uid : null;
+  }
+  /** Every socket currently seated at `uid`. Plugin-authoritative, never cached here. */
+  function socketsAtStation(uid) {
+    const out = [];
+    for (const [ws, c] of conns.entries()) if (c.userId && seatStationUid(c.userId) === uid) out.push(ws);
+    return out;
+  }
+  /** The distinct userIds seated at `uid` — the durable form a station push resolves to. */
+  function usersAtStation(uid) {
+    const seen = new Set();
+    for (const c of conns.values()) if (c.userId && !seen.has(c.userId) && seatStationUid(c.userId) === uid) seen.add(c.userId);
+    return [...seen];
+  }
   function targets(target) {
     if (target === 'all' || target == null) return [...conns.keys()];
     if (['participant', 'presenter', 'ai'].includes(target))
       return [...conns.entries()].filter(([, c]) => c.role === target).map(([ws]) => ws);
+    const stUid = stationTargetUid(target);                 // Plan 0522 P5: station:<uid> → its occupants
+    if (stUid != null) return socketsAtStation(stUid);
     return socketsFor(target);   // by userId — ALL of that person's live sockets (A4 fan-out)
   }
 
@@ -1141,13 +1177,17 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       // PRIM-mirror (MON-2): render the TARGET user's current display in the target's
       // OWN context, then PUSH it back to THIS requesting control client (fire-and-forget,
       // not a reply). Lets the GM thumbnail "what that user sees". OPSEC: role-gated above.
+      // Plan 0522 P5 — mirror answers for ANY target the unified selector can hold, not only a
+      // userId: `{target:'station:3'}` renders what somebody sitting at that station is really
+      // being shown. `{userId:…}` still works and is still echoed back verbatim — MON-2's client
+      // and PRIM-mirror both address it that way, and an unknown/absent target still answers
+      // html:null rather than inventing a plausible screen.
       case 'mirror': {
-        const uid = a.userId;
-        const tws = latestFor(uid);   // A4: one representative socket — mirror returns ONE html
-        const tc = tws ? conns.get(tws) : null;
-        const desc = displayByUser.get(uid) || (tc && displayByRole[tc.role]) || null;
+        const tgt = a.target != null ? String(a.target) : (a.userId != null ? String(a.userId) : null);
+        const tc = liveConnForTarget(tgt);   // A4: one representative socket — mirror returns ONE html
+        const desc = (tc && (displayByUser.get(tc.userId) || displayByRole[tc.role])) || null;
         const html = (desc && tc) ? descToHtml(tc, desc) : null;
-        send(ws, { t: 'mirror', userId: uid, html });
+        send(ws, { t: 'mirror', target: tgt, userId: a.userId != null ? a.userId : (tc ? tc.userId : null), html });
         break;
       }
       // Bell as a control: playable from the control page (🔔) and the verify-watching
@@ -1186,7 +1226,9 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       // "sent to 0 recipients" cannot be silent (I5). Both ack; the UI lands in P5/P6.
       case 'stage_beat': {
         const ref = a.id != null ? a.id : (a.index != null ? (a.index | 0) : null);
-        send(ws, Object.assign({ t: 'staged' }, api.stageBeat(ref, { key: callerKey(c), ws, conn: c })));
+        // P5: the SAME `targets` array the send will carry. One control, one target — a candidate
+        // is previewed as the audience it is about to reach, never as the presenter (t11).
+        send(ws, Object.assign({ t: 'staged' }, api.stageBeat(ref, { key: callerKey(c), ws, conn: c, targets: a.targets })));
         break;
       }
       case 'send_beat':
@@ -1233,8 +1275,16 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // ---- Current-display tracking + per-connection render (C6) ----
   const ROLES = ['participant', 'presenter', 'ai'];
   function setDisplay(target, desc) {
+    // Plan 0522 P5 — a STATION target resolves to THE PEOPLE SEATED THERE, not to a key named
+    // after the station. Writing `displayByUser.set('station:3', …)` would have created a durable
+    // row that no connection ever reads, would have shown up in the roster's "sees" column and in
+    // the I3 snapshot, and would have survived everyone leaving. Resolving to occupants makes a
+    // station push exactly a per-user push to each of them (so a reconnect still works), leaves no
+    // residue when the station is empty, and never touches SEAT state — 0514 §13.1 / I3.
+    const stUid = stationTargetUid(target);
     if (target === 'all' || target == null) { for (const r of ROLES) displayByRole[r] = desc; displayByUser.clear(); }
     else if (ROLES.includes(target)) displayByRole[target] = desc;
+    else if (stUid != null) { for (const uid of usersAtStation(stUid)) displayByUser.set(uid, desc); }
     else displayByUser.set(target, desc);   // by userId
     pushPresence();   // keep the GM user-list "currently sees" column live as displays change
   }
@@ -1288,13 +1338,25 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     }
     return '';
   }
-  function renderDisplay(ws, c, desc) {
+  /**
+   * Send `desc` down socket `ws`. `c` is the connection it is DELIVERED to; `viewer` is the
+   * identity it is RENDERED AS, defaulting to that same connection — so every existing 3-argument
+   * call behaves exactly as before.
+   *
+   * Plan 0522 P5 — separating the two IS the fidelity fix. Both identity-bearing branches stamped
+   * the DELIVERY connection (`stampFor` for a component; `c.userId`/`c.userName`/`channel` for a
+   * poll-choice), so a candidate beat rendered down the CONTROLLER's socket came out as the
+   * presenter's copy of a per-user beat. The GM would have verified the one version no player was
+   * ever going to receive. Now the bytes are the target's and only the delivery is the controller's.
+   */
+  function renderDisplay(ws, c, desc, viewer) {
     if (!desc) return;
+    const v = viewer || c;
     if (desc.kind === 'content') send(ws, { t: 'content', contentId: desc.contentId || null, html: desc.html });
-    else if (desc.kind === 'component') sendComponentTo(ws, c, desc);
+    else if (desc.kind === 'component') sendComponentTo(ws, v, desc);
     else if (desc.kind === 'poll-choice') {
       const poll = polls.get(desc.promptId); if (!poll) return;
-      send(ws, { t: 'content', contentId: desc.promptId, html: assemble({ component: 'choice', opts: { ...poll.spec, promptId: desc.promptId, userId: c.userId, userName: c.userName, channel: c.userId } }) });
+      send(ws, { t: 'content', contentId: desc.promptId, html: assemble({ component: 'choice', opts: { ...poll.spec, promptId: desc.promptId, userId: v.userId, userName: v.userName, channel: v.userId } }) });
     } else if (desc.kind === 'poll-results') {
       const poll = polls.get(desc.promptId); if (!poll) return; const t = tally(desc.promptId);
       send(ws, { t: 'content', contentId: desc.promptId + ':results', html: assemble({ component: 'poll-results', opts: { ...poll.spec, promptId: desc.promptId, tally: t.tally, count: t.count } }) });
@@ -1353,14 +1415,22 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     // reaches opts so interactive beats can actually collect/gate answers.
     const opts = (b.promptId != null) ? Object.assign({}, b.opts || {}, { promptId: b.promptId }) : (b.opts || {});
     for (const t of bases) { api.pushComponent(t, b.component, opts, b.theme || 'argus', b.requires || []); note(t); }
+    const addressed = new Set(reached);   // the BASE audience, frozen before layers widen `reached`
     // DEL-1: per-user layers. A layer with a `target` OVERRIDES the base opts for that
     // user/role (layer opts win). `when`-only layers are runner-evaluated — out of scope here.
     // Base goes to all; layered targets additionally receive the merged override (last-wins).
     // With an EXPLICIT target list, a layer for someone who is not being addressed is skipped —
     // sending to one station must not push to a third party.
+    //
+    // ⚠ Plan 0522 P5 — INTERSECT AUDIENCES, DO NOT COMPARE TARGET STRINGS. P4 skipped a layer
+    // unless `explicit` literally contained `L.target`, which was right for the one case it had.
+    // P5 makes explicit targets the ordinary path, and string equality then DROPS a layer whose
+    // target names the same people by another name — a userId layer on a send to that person's
+    // STATION, or on a send addressed to a role. A dropped layer is a beat that silently arrives
+    // without its personalisation (I4). Sets of sockets say who is really being addressed.
     if (Array.isArray(b.layers)) for (const L of b.layers) {
       if (!L || !L.target) continue;
-      if (explicit && !explicit.includes(L.target)) continue;
+      if (explicit && !targets(L.target).some((lws) => addressed.has(lws))) continue;
       const lopts = Object.assign({}, b.opts || {}, L.opts || {}, (b.promptId != null) ? { promptId: b.promptId } : {});
       api.pushComponent(L.target, b.component, lopts, b.theme || 'argus', b.requires || []);
       note(L.target);
@@ -1378,11 +1448,52 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
    */
   function callerKey(c) { return 'ws:' + (c && c.id); }
 
-  /** Normalise a `targets` argument to an array, or null for "use the beat's own routing". */
+  /**
+   * Normalise a `targets` argument to an array, or null for "do not narrow the audience".
+   *
+   * Plan 0522 P5 — the wire format is an ARRAY from the first commit (Bruce: *"data structure
+   * should support it later"*), and `['all']` is its DEFAULT value, not a special send. `all` has
+   * always meant "no restriction", so a list that is nothing but `all` normalises to null and the
+   * beat's OWN declared routing applies — picking ALL in the selector is therefore byte-identical
+   * to what clicking a beat has always done, including its per-user layers and its `target:` field.
+   * Anything else is an explicit override that NARROWS the audience.
+   */
   function normalizeTargets(t) {
     if (t == null) return null;
-    const list = (Array.isArray(t) ? t : [t]).filter((x) => x != null && x !== '');
-    return list.length ? list.map(String) : null;
+    const list = (Array.isArray(t) ? t : [t]).filter((x) => x != null && x !== '').map(String);
+    if (!list.length) return null;
+    if (list.every((x) => x === 'all')) return null;
+    return list;
+  }
+
+  /**
+   * Plan 0522 P5 — the LIVE connection a target names, or null. Used for previewing: the preview
+   * must show what a real client is really being sent, so an unoccupied station and an absent
+   * person both answer null rather than a plausible-looking fabrication (I5 — the GM sees that
+   * nobody is there BEFORE pressing GO, instead of after).
+   */
+  function liveConnForTarget(target) {
+    if (target == null || target === 'all') return null;
+    const stUid = stationTargetUid(target);
+    if (stUid != null) { const ws = socketsAtStation(stUid)[0]; return ws ? conns.get(ws) || null : null; }
+    if (ROLES.includes(target)) { const ws = targets(target)[0]; return ws ? conns.get(ws) || null : null; }
+    const ws = latestFor(target);
+    return ws ? conns.get(ws) || null : null;
+  }
+
+  /**
+   * The viewer identity a target implies, for STAMPING only — never for delivery. Falls back to a
+   * SYNTHETIC viewer when nobody holds the target, carrying role `participant`: the conservative
+   * role, so the OPSEC visibility strip can only ever remove more from a preview, never less.
+   */
+  function viewerForTarget(target) {
+    if (target == null || target === 'all') return null;   // ⇒ render as the caller: the unchanged default
+    const live = liveConnForTarget(target);
+    if (live) return live;
+    const stUid = stationTargetUid(target);
+    if (stUid != null) { const st = stationRegistry.get(stUid); return { userId: null, userName: (st && st.stationLabel) || target, role: 'participant' }; }
+    if (ROLES.includes(target)) return { userId: null, userName: target, role: target };
+    return { userId: target, userName: target, role: 'participant' };
   }
 
   // ── Plan 0514 — STATIONS ─────────────────────────────────────────────────────────────────
@@ -2843,8 +2954,13 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
      * Plan 0522 P4 (R4) — STAGE a candidate beat. Renders it to the CALLER'S OWN surface only and
      * remembers it for a later sendBeat. Writes NOTHING durable: no displayByRole, no
      * displayByUser, no seat state (I3 — t07 asserts byte-identity across a stage).
-     * `ctx` = { key, ws, conn }. Without a socket there is nothing to render to, so the slot is
-     * recorded and `rendered:false` is reported rather than pretending.
+     * `ctx` = { key, ws, conn, targets }. Without a socket there is nothing to render to, so the
+     * slot is recorded and `rendered:false` is reported rather than pretending.
+     *
+     * Plan 0522 P5 — `ctx.targets` is the SAME array the send will carry, and it does two things:
+     * the candidate is rendered AS that target (so a per-user beat previews as the person who will
+     * actually get it, not as the presenter), and the slot remembers it, so a later GO with no
+     * targets of its own ships where the preview said it would. One control, not two.
      */
     stageBeat(ref, ctx = {}) {
       const key = ctx.key || 'api';
@@ -2852,11 +2968,14 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       const r = resolveBeatRef(ref);
       if (!r) return { ok: false, reason: 'no-such-beat', staged: false, ref: String(ref) };
       const desc = beatDescriptor(r.beat);
-      stagedByCaller.set(key, { desc, beatId: r.beat.id != null ? r.beat.id : null, index: r.i, at: Date.now() });
+      const list = normalizeTargets(ctx.targets);          // ['all'] ⇒ null ⇒ the beat's own routing
+      const as = (list && list.length === 1) ? list[0] : null;   // the UI is single-select; the protocol is not
+      stagedByCaller.set(key, { desc, beatId: r.beat.id != null ? r.beat.id : null, index: r.i, at: Date.now(), targets: list });
       let rendered = false;
-      if (ctx.ws && ctx.conn) { renderDisplay(ctx.ws, ctx.conn, desc); rendered = true; }
-      log.info('beat', 'stage', { key, index: r.i, beatId: r.beat.id != null ? r.beat.id : null, rendered });
-      return { ok: true, staged: true, index: r.i, beatId: r.beat.id != null ? r.beat.id : null, component: r.beat.component, rendered };
+      if (ctx.ws && ctx.conn) { renderDisplay(ctx.ws, ctx.conn, desc, viewerForTarget(as)); rendered = true; }
+      log.info('beat', 'stage', { key, index: r.i, beatId: r.beat.id != null ? r.beat.id : null, rendered, targets: list || ['all'] });
+      return { ok: true, staged: true, index: r.i, beatId: r.beat.id != null ? r.beat.id : null, component: r.beat.component, rendered,
+        targets: list || ['all'], as: as || 'all' };
     },
     /**
      * Plan 0522 P4 (R4) — SEND (publish) the caller's staged beat. `targets` is an ARRAY from the
@@ -2874,7 +2993,10 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       if (ref == null) return { ok: false, reason: 'nothing-staged', sent: false, recipients: 0, sockets: 0 };
       const r = resolveBeatRef(ref);
       if (!r) return { ok: false, reason: 'no-such-beat', sent: false, recipients: 0, sockets: 0, ref: String(ref) };
-      const list = normalizeTargets(tgt);
+      // P5: targets SUPPLIED with the send win; otherwise inherit the ones the preview was rendered
+      // for. `tgt != null` — not `normalizeTargets(tgt)` — because ['all'] normalises to null and
+      // means "do not narrow", which must OVERRIDE a staged station, not silently fall back to it.
+      const list = (tgt != null) ? normalizeTargets(tgt) : (staged ? staged.targets || null : null);
       const res = publishBeat(r.i, list);
       stagedByCaller.delete(key);   // it shipped; the slot is no longer armed
       log.info('beat', 'send', { key, index: r.i, targets: res.targets, recipients: res.recipients, sockets: res.sockets });
@@ -2884,7 +3006,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     /** The caller's currently staged beat, or null. Observability for the P6 indicator + tests. */
     stagedBeat(ctx = {}) {
       const s = stagedByCaller.get(ctx.key || 'api');
-      return s ? { beatId: s.beatId, index: s.index, at: s.at } : null;
+      return s ? { beatId: s.beatId, index: s.index, at: s.at, targets: s.targets || ['all'] } : null;
     },
     nextBeat() { return api.showBeat(currentBeat + 1); },
     prevBeat() { return api.showBeat(Math.max(0, currentBeat - 1)); },
