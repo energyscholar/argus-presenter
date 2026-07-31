@@ -76,6 +76,16 @@ export const API_COVERAGE = {
   appendBeat:          { tool: 'append_beat' },
   showDefault:         { tool: 'presenter_home' },        // Plan 0508 — the owed gap, now closed
   prevBeat:            { tool: 'prev_beat' },              // Plan 0508 — next_beat is no longer asymmetric
+  // Plan 0522 P4 (R4) — two-stage delivery. NOT YET AGENT-FACING, and the reason is structural
+  // rather than an oversight: stageBeat renders a candidate to THE CALLER'S OWN SURFACE, and the
+  // MCP caller is in-process with no surface to render to — `rendered:false` on every call. The
+  // agent-facing form needs a decision about what an AI "staging area" IS (an ai-role socket? a
+  // returned HTML string it can inspect?), which the plan puts in P5/P6 with the target selector
+  // and the STAGED-vs-LIVE indicator. Recorded as OWED, not dropped: I1 is not satisfied yet.
+  // show_beat — the publish path — remains reachable from both surfaces and is unchanged (R4).
+  stageBeat:           { declined: 'NOT YET EXPOSED — owed (Plan 0522 P4). Staging renders to the CALLER\'S OWN control surface; the in-process MCP caller has none. Needs the P5/P6 decision on what an agent-side staging surface is before it earns a tool.' },
+  sendBeat:            { declined: 'NOT YET EXPOSED — owed (Plan 0522 P4). Publishing a STAGED beat is meaningless for a caller that cannot stage; until stageBeat has an agent surface, the agent publishes with show_beat, whose semantics R4 keeps identical on both surfaces.' },
+  stagedBeat:          { declined: 'read-only observability for the P6 STAGED/LIVE indicator and its tests — per-caller staging state, nothing an agent can act on until stageBeat is exposed' },
   // Plan 0508 (spotlight + live module rescan). Both shipped with the station work; the guard
   // caught them missing here, which is exactly its job.
   spotlight:           { tool: 'presenter_spotlight' },
@@ -107,6 +117,7 @@ export const API_COVERAGE = {
   commsMode:           { tool: 'presenter_mode' },
   getPvsSubscriberCount: { declined: 'test-only observability — live ws subscriber count (leak/teardown assertions)' },
   _emitInboxForTest:   { declined: 'test-only ingress seam — injects an inbox item through the real emit path without a socket' },
+  _displayStateForTest: { declined: 'test-only observability seam — serialises displayByRole/displayByUser so Plan 0522 t07 can prove a stage wrote nothing durable (I3); read-only, no capability' },
 
   // --- sensing
   situation:           { tool: 'presenter_situation' },

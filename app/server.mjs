@@ -257,6 +257,13 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   const EVER_SEEN_MAX = 5000;
   let contentModule = null;    // Group I: the current content module { title?, beats:[{component,opts,requires?}] }
   let currentBeat = -1;        // index of the displayed beat
+  // Plan 0522 P4 (R4) — TWO-STAGE DELIVERY. A staging slot is PER CALLER and PER SESSION-MEMORY
+  // only: `stage_beat` renders a candidate to the caller's OWN surface and remembers which beat
+  // that was, so a later `send_beat` knows what to publish. It is deliberately NOT a display map —
+  // nothing here is consulted by renderDisplay/redisplayFor, so a staged beat cannot leak into a
+  // reconnect, a role default, or another controller (I3, t07/t09). Key: 'ws:<socketId>' for a
+  // control socket, 'api' for the in-process caller.
+  const stagedByCaller = new Map();   // callerKey -> { desc, beatId, index, at }
   // X3 telemetry sink (controller-read-only). Feedback from stress points.
   const telem = {
     ops: { applied: 0, denied: 0, malformed: 0, throttled: 0, duplicate: 0 },
@@ -1035,6 +1042,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       if (pvsSubscribers.has(ws)) { pvsSubscribers.delete(ws); log.info('pvs', 'unsubscribe-close', {}); }   // Plan 0493 D: socket close ends the watch (S12)
       const c = conns.get(ws);
       if (c && c.voice && c.voice.active) { if (c.voice.timer) clearTimeout(c.voice.timer); c.voice.active = false; voiceSessions = Math.max(0, voiceSessions - 1); }   // RT-14: drop an orphaned open segment
+      if (c) stagedByCaller.delete(callerKey(c));   // Plan 0522 P4: the controller is gone; its staging slot goes with it
       if (c && c.userId) unbindUser(c.userId, ws); conns.delete(ws); updateChatListeners();
       // Plan 0514 §4.2a — tell the plugin the seat is gone, but only when this PERSON has no
       // live socket left (A4: one person may hold several). Without release() a disconnected
@@ -1171,7 +1179,19 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       case 'set_roster_visible': rosterVisibleToAttendees = !!a.value; log.info('att', 'roster-visible', { value: rosterVisibleToAttendees }); break;
       case 'voice_enable': api.voiceEnable(a.target || 'all'); break;   // Plan 0470: request inbound voice on a target
       case 'set_module': api.setModule(a.module || { beats: a.beats || [] }); break;   // Group I
-      case 'show_beat': api.showBeat(a.id != null ? a.id : (a.index | 0)); break;   // by id (branch nav) or index
+      case 'show_beat': api.showBeat(a.id != null ? a.id : (a.index | 0)); break;   // by id (branch nav) or index — R4: PUBLISHES, unchanged
+      // Plan 0522 P4 (R4) — two-stage delivery. STAGE renders a candidate to THIS controller's
+      // own surface (per-caller: keyed by socket, so a second controller is untouched — t09) and
+      // writes nothing durable (t07). SEND publishes it and ACKS with the recipient count, so
+      // "sent to 0 recipients" cannot be silent (I5). Both ack; the UI lands in P5/P6.
+      case 'stage_beat': {
+        const ref = a.id != null ? a.id : (a.index != null ? (a.index | 0) : null);
+        send(ws, Object.assign({ t: 'staged' }, api.stageBeat(ref, { key: callerKey(c), ws, conn: c })));
+        break;
+      }
+      case 'send_beat':
+        send(ws, Object.assign({ t: 'sent' }, api.sendBeat({ targets: a.targets, id: a.id, index: a.index }, { key: callerKey(c) })));
+        break;
       case 'show_default': api.showDefault(); break;   // DEF-1: Home → module title page (or branding fallback)
       case 'next_beat': api.nextBeat(); break;
       case 'prev_beat': api.prevBeat(); break;
@@ -1284,6 +1304,85 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   function redisplayFor(ws, c) {
     const desc = displayByUser.get(c.userId) || displayByRole[c.role];
     if (desc) renderDisplay(ws, c, desc);
+  }
+
+  // ── Plan 0522 P4 — BEAT RESOLUTION, DESCRIPTION, PUBLICATION ────────────────────────────────
+  // Three small functions extracted from the old showBeat body so that STAGING and PUBLISHING
+  // share one implementation. There is no second rendering engine and no second push path:
+  // `stage_beat` uses resolve+describe and hands the descriptor to the EXISTING renderDisplay;
+  // `show_beat` and `send_beat` both go through publishBeat. R4: show_beat's behaviour is
+  // unchanged — same routing, same layers, same module/current write, same return shape.
+
+  /** A beat ref is an INDEX (number) or a beat ID (anything else). → {i, beat} | null. */
+  function resolveBeatRef(ref) {
+    if (!contentModule) return null;
+    const beats = contentModule.beats || [];
+    const i = typeof ref === 'number' ? ref : beats.findIndex((b) => b.id === ref);
+    if (!(i >= 0) || i >= beats.length) return null;
+    return { i, beat: beats[i] };
+  }
+
+  /**
+   * The descriptor a beat WOULD publish — PURE. Reads the beat, writes nothing, touches no
+   * display map. This is what makes staging safe (I3): the candidate can be rendered to one
+   * socket with exactly the bytes a publish would have produced.
+   * Layers are deliberately NOT folded in: a layer is a per-target override, and a preview is
+   * rendered for one viewer at a time (the target-aware preview is P5's job).
+   */
+  function beatDescriptor(b) {
+    const opts = (b.promptId != null) ? Object.assign({}, b.opts || {}, { promptId: b.promptId }) : (b.opts || {});
+    return { kind: 'component', component: b.component, opts, theme: b.theme || 'argus', requires: b.requires || [] };
+  }
+
+  /**
+   * PUBLISH beat `i`. `targetList` null/empty ⇒ the beat's OWN declared routing (`b.target`,
+   * default 'all') — that is exactly what show_beat has always done. A non-empty targetList
+   * (send_beat, P5) overrides the routing and addresses those targets instead.
+   *
+   * Returns the delivery accounting I5 demands: how many PEOPLE and how many SOCKETS it actually
+   * reached. Counted as a SET of the sockets addressed, so a base push plus a layer push to the
+   * same person is one recipient, and a target with no occupant is honestly 0.
+   */
+  function publishBeat(i, targetList) {
+    const b = contentModule.beats[i];
+    const explicit = Array.isArray(targetList) && targetList.length ? targetList : null;
+    const bases = explicit || [b.target || 'all'];
+    const reached = new Set();
+    const note = (t) => { for (const ws of targets(t)) reached.add(ws); };
+    // Route by the beat's target (per-user hooks broadcast to 'all' by default) and ensure promptId
+    // reaches opts so interactive beats can actually collect/gate answers.
+    const opts = (b.promptId != null) ? Object.assign({}, b.opts || {}, { promptId: b.promptId }) : (b.opts || {});
+    for (const t of bases) { api.pushComponent(t, b.component, opts, b.theme || 'argus', b.requires || []); note(t); }
+    // DEL-1: per-user layers. A layer with a `target` OVERRIDES the base opts for that
+    // user/role (layer opts win). `when`-only layers are runner-evaluated — out of scope here.
+    // Base goes to all; layered targets additionally receive the merged override (last-wins).
+    // With an EXPLICIT target list, a layer for someone who is not being addressed is skipped —
+    // sending to one station must not push to a third party.
+    if (Array.isArray(b.layers)) for (const L of b.layers) {
+      if (!L || !L.target) continue;
+      if (explicit && !explicit.includes(L.target)) continue;
+      const lopts = Object.assign({}, b.opts || {}, L.opts || {}, (b.promptId != null) ? { promptId: b.promptId } : {});
+      api.pushComponent(L.target, b.component, lopts, b.theme || 'argus', b.requires || []);
+      note(L.target);
+    }
+    currentBeat = i;
+    serverApply({ path: 'module/current', verb: 'set', value: i });
+    const people = new Set();
+    for (const ws of reached) { const c = conns.get(ws); if (c && c.userId) people.add(c.userId); }
+    return { sockets: reached.size, recipients: people.size, targets: bases.slice() };
+  }
+
+  /**
+   * The staging key for a control connection. Per SOCKET, not per userId: two control pages open
+   * on one login are two controllers, and staging on one must not arm GO on the other (t09).
+   */
+  function callerKey(c) { return 'ws:' + (c && c.id); }
+
+  /** Normalise a `targets` argument to an array, or null for "use the beat's own routing". */
+  function normalizeTargets(t) {
+    if (t == null) return null;
+    const list = (Array.isArray(t) ? t : [t]).filter((x) => x != null && x !== '');
+    return list.length ? list.map(String) : null;
   }
 
   // ── Plan 0514 — STATIONS ─────────────────────────────────────────────────────────────────
@@ -2514,6 +2613,14 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     // trust derivation, waiter wake). Mirrors the WS voice/text ingress without a socket. `_`-prefixed,
     // like the other test hooks; not part of the driving surface.
     _emitInboxForTest: (spec = {}) => { const e = emitInbox(spec); return annotateTrust(e, e.trust); },
+    // Plan 0522 P4 (I3) — the DURABLE DISPLAY STATE, serialised. The only seam through which a
+    // test can assert that staging wrote nothing: t07 compares this string (plus every seat's
+    // stationUid, read from presence()) before and after a stage. Field-by-field spot checks were
+    // rejected — a new descriptor field would slip through them unnoticed.
+    _displayStateForTest: () => JSON.stringify({
+      byRole: Object.fromEntries(ROLES.map((r) => [r, displayByRole[r] || null])),
+      byUser: Object.fromEntries([...displayByUser.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1))),
+    }),
     // Plan 0473 P4 — WORK-QUEUE operator surface (server-tracked status/owner; the agent holds nothing).
     // workItems(): the current ACTIONABLE queue (pending + claimed), prioritized + bounded (aged pruned).
     workItems: () => queueView(),
@@ -2723,26 +2830,61 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       if (did != null && contentModule.beats.findIndex((b) => b.id === did) >= 0) api.showBeat(did);
       return { title: contentModule.title, beats: contentModule.beats.length };
     },
+    // R4 — UNCHANGED SEMANTICS. show_beat PUBLISHES IMMEDIATELY, on both surfaces. Every existing
+    // cue script, the MCP tool, auto-follow and ▶ Start depend on that and must keep depending on
+    // it; two-stage delivery is ADDED alongside as stageBeat/sendBeat, never by redefining this.
     showBeat(ref) {
-      if (!contentModule) return null;
-      const i = typeof ref === 'number' ? ref : contentModule.beats.findIndex((b) => b.id === ref);   // by index OR beat id (branch nav)
-      if (i < 0 || i >= contentModule.beats.length) return null;
-      const b = contentModule.beats[i];
-      // Route by the beat's target (per-user hooks broadcast to 'all' by default) and ensure promptId
-      // reaches opts so interactive beats can actually collect/gate answers.
-      const opts = (b.promptId != null) ? Object.assign({}, b.opts || {}, { promptId: b.promptId }) : (b.opts || {});
-      api.pushComponent(b.target || 'all', b.component, opts, b.theme || 'argus', b.requires || []);
-      // DEL-1: per-user layers. A layer with a `target` OVERRIDES the base opts for that
-      // user/role (layer opts win). `when`-only layers are runner-evaluated — out of scope here.
-      // Base goes to all; layered targets additionally receive the merged override (last-wins).
-      if (Array.isArray(b.layers)) for (const L of b.layers) {
-        if (!L || !L.target) continue;
-        const lopts = Object.assign({}, b.opts || {}, L.opts || {}, (b.promptId != null) ? { promptId: b.promptId } : {});
-        api.pushComponent(L.target, b.component, lopts, b.theme || 'argus', b.requires || []);
-      }
-      currentBeat = i;
-      serverApply({ path: 'module/current', verb: 'set', value: i });
-      return { index: i, component: b.component, target: b.target || 'all' };
+      const r = resolveBeatRef(ref);   // by index OR beat id (branch nav)
+      if (!r) return null;
+      publishBeat(r.i, null);          // null ⇒ the beat's own declared routing, as always
+      return { index: r.i, component: r.beat.component, target: r.beat.target || 'all' };
+    },
+    /**
+     * Plan 0522 P4 (R4) — STAGE a candidate beat. Renders it to the CALLER'S OWN surface only and
+     * remembers it for a later sendBeat. Writes NOTHING durable: no displayByRole, no
+     * displayByUser, no seat state (I3 — t07 asserts byte-identity across a stage).
+     * `ctx` = { key, ws, conn }. Without a socket there is nothing to render to, so the slot is
+     * recorded and `rendered:false` is reported rather than pretending.
+     */
+    stageBeat(ref, ctx = {}) {
+      const key = ctx.key || 'api';
+      if (ref == null) return { ok: false, reason: 'no-beat-ref', staged: false };
+      const r = resolveBeatRef(ref);
+      if (!r) return { ok: false, reason: 'no-such-beat', staged: false, ref: String(ref) };
+      const desc = beatDescriptor(r.beat);
+      stagedByCaller.set(key, { desc, beatId: r.beat.id != null ? r.beat.id : null, index: r.i, at: Date.now() });
+      let rendered = false;
+      if (ctx.ws && ctx.conn) { renderDisplay(ctx.ws, ctx.conn, desc); rendered = true; }
+      log.info('beat', 'stage', { key, index: r.i, beatId: r.beat.id != null ? r.beat.id : null, rendered });
+      return { ok: true, staged: true, index: r.i, beatId: r.beat.id != null ? r.beat.id : null, component: r.beat.component, rendered };
+    },
+    /**
+     * Plan 0522 P4 (R4) — SEND (publish) the caller's staged beat. `targets` is an ARRAY from the
+     * first commit (P5's wire format); a bare string is accepted and wrapped. Omitted ⇒ the beat's
+     * own declared routing, i.e. identical to show_beat.
+     * I5: the result carries how many recipients it ACTUALLY reached, so "sent to 0" can never be
+     * silent. An explicit `id`/`index` overrides the staged slot (a caller may publish directly).
+     */
+    sendBeat({ targets: tgt = null, id = null, index = null } = {}, ctx = {}) {
+      const key = ctx.key || 'api';
+      const staged = stagedByCaller.get(key) || null;
+      const ref = (id != null) ? id
+        : (index != null) ? index
+          : staged ? (staged.beatId != null ? staged.beatId : staged.index) : null;
+      if (ref == null) return { ok: false, reason: 'nothing-staged', sent: false, recipients: 0, sockets: 0 };
+      const r = resolveBeatRef(ref);
+      if (!r) return { ok: false, reason: 'no-such-beat', sent: false, recipients: 0, sockets: 0, ref: String(ref) };
+      const list = normalizeTargets(tgt);
+      const res = publishBeat(r.i, list);
+      stagedByCaller.delete(key);   // it shipped; the slot is no longer armed
+      log.info('beat', 'send', { key, index: r.i, targets: res.targets, recipients: res.recipients, sockets: res.sockets });
+      return { ok: true, sent: true, index: r.i, beatId: r.beat.id != null ? r.beat.id : null, component: r.beat.component,
+        targets: res.targets, recipients: res.recipients, sockets: res.sockets };
+    },
+    /** The caller's currently staged beat, or null. Observability for the P6 indicator + tests. */
+    stagedBeat(ctx = {}) {
+      const s = stagedByCaller.get(ctx.key || 'api');
+      return s ? { beatId: s.beatId, index: s.index, at: s.at } : null;
     },
     nextBeat() { return api.showBeat(currentBeat + 1); },
     prevBeat() { return api.showBeat(Math.max(0, currentBeat - 1)); },

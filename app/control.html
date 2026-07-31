@@ -425,11 +425,28 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
 
   function beatById(id){ return (module.beats||[]).find(function(b){return b.id===id;}); }
   function beatIndex(id){ return (module.beats||[]).findIndex(function(b){return b.id===id;}); }
+  // ── Plan 0522 R14 — ADDRESS BEATS BY ID, NOT BY INDEX ────────────────────────────────────
+  // P2 made the PANEL re-resolve the displayed beat by id when a module changes on disk, because
+  // an insertion moves every index at or below it. The click path did not follow: beatRow /
+  // jumpBtn / ▶ Start / the digit jump all sent {index:i}, and the SERVER still holds whatever
+  // module copy it was last given. So between a disk change and the next Validate & Load, a
+  // click could ship a DIFFERENT beat than the one on screen — silently, with players watching.
+  // The server has always accepted {id:…} (handleControl 'show_beat'; maybeBranch already uses
+  // it), so this is a client-side correction with no protocol change.
+  //
+  // ⚠ Fall back to {index:i} when the beat has no usable STRING id: the server's showBeat treats
+  // a NUMBER as an index, so a numeric id must not be sent as `id`.
+  function beatRef(i){
+    var b=((module&&module.beats)||[])[i];
+    var id=b&&b.id;
+    return (typeof id==='string'&&id!=='') ? {id:id} : {index:i};
+  }
+  function showBeatAt(i){ recBeat=-1; control('show_beat', beatRef(i)); }
   // DEL-3: build one .beat row (same cur/rec/label/onclick logic) — shared by section- and sequence-level rendering.
   function beatRow(bid){ var b=beatById(bid); if(!b) return null; var i=beatIndex(bid);
     var el=document.createElement('div'); el.className='beat'+(i===curBeat?' cur':'')+(i===recBeat&&i!==curBeat?' rec':''); el.dataset.i=i;
     el.innerHTML=esc((((b.opts&&(b.opts.title||b.opts.prompt||b.opts.text))||b.id)+'').slice(0,42))+' <span class="comp">'+esc(b.component)+(b.target?(' →'+esc(b.target)):'')+'</span>'+((i===recBeat&&i!==curBeat)?' <span class="recnote">→ recommended</span>':'');   // Plan 0471 C4: escape module-authored strings
-    el.onclick=function(){ recBeat=-1; control('show_beat',{index:i}); };   // manual override always works + clears the recommendation
+    el.onclick=function(){ showBeatAt(i); };   // R14: by id — manual override always works + clears the recommendation
     return el; }
   // Plan 0456 P2: first RESOLVABLE beat index of a tier (section or sequence) — shared by the
   // KBD-1 digit jump and the TOC ⏵ jump buttons. Returns -1 when the tier has none.
@@ -444,7 +461,7 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   function jumpBtn(tier){
     var i=firstResolvableBeat(tier); if(i<0) return null;
     var b=document.createElement('button'); b.type='button'; b.className='tocjump'; b.title='Jump to first beat'; b.textContent='⏵';
-    b.onclick=function(e){ e.stopPropagation(); e.preventDefault(); recBeat=-1; control('show_beat',{index:i}); };
+    b.onclick=function(e){ e.stopPropagation(); e.preventDefault(); showBeatAt(i); };   // R14: by id
     return b;
   }
   // SCH-1: format a duration estimate. <60s → "~Ns"; else round to nearest minute → "~N min".
@@ -499,7 +516,7 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     if($('autofollow').checked){ recBeat=-1; control('show_beat',{id:nextId}); }   // auto-advance (server diff clears rec + re-renders)
     else { recBeat=i; renderOutline(); }                             // else just highlight the recommended next
   }
-  $('btn-start').onclick=function(){ recBeat=-1; control('show_beat',{index:0}); };
+  $('btn-start').onclick=function(){ showBeatAt(0); };   // R14: the FIRST beat the panel is showing, addressed by id
   $('btn-prev').onclick=function(){ recBeat=-1; control('prev_beat',{}); };
   $('btn-next').onclick=function(){ recBeat=-1; control('next_beat',{}); };
   $('btn-home').onclick=function(){ recBeat=-1; control('show_default',{}); };   // DEF-1: back to the module title page
@@ -664,7 +681,7 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
       if(!module) return;
       var secs = module.sections && module.sections.length ? module.sections : [{title:'(all beats)',beatIds:(module.beats||[]).map(function(b){return b.id;})}];   // same derivation as renderOutline()
       var s=secs[(+e.key)-1]; if(!s) return;
-      var i=firstResolvableBeat(s); if(i>=0){ recBeat=-1; control('show_beat',{index:i}); }   // shared with the TOC ⏵ jump (P2)
+      var i=firstResolvableBeat(s); if(i>=0){ showBeatAt(i); }   // shared with the TOC ⏵ jump (P2); R14: by id
     }
   });
   $('cfg-close').addEventListener('click',function(){ toggleConfig(false); });
