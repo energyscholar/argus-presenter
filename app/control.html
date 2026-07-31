@@ -313,13 +313,49 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     if(m.t==='module-changed'){ onModuleChanged(m.id); return; }   // AUT-2: hot-reload notice
   }
 
-  // AUT-2: a module file changed on disk. Always refresh the <select> list (reflect new/
-  // renamed/changed modules); if the CURRENTLY-selected module changed, show a subtle
-  // note rather than clobbering the loaded module (GM re-selects to reload).
+  // AUT-2 + Plan 0522 P2.1 (B2): a module file changed on disk. Always refresh the <select>
+  // list (reflect new/renamed/changed modules); if the CURRENTLY-selected module changed,
+  // DROP THE CACHED BODY and re-fetch it from disk.
+  //
+  // WHY: the old behaviour printed "re-select to reload" and kept the stale copy. A control
+  // page that keeps a stale body renders false content and re-pushes it on the next Load —
+  // observed live 2026-07-28: disk held 9 beats, the server reported 9, the panel rendered 5.
+  //
+  // ⚠ Invalidation must not blow away the live beat. The displayed beat is re-resolved BY ID,
+  // never by index: a module gains beats precisely when this event fires, and every index at
+  // or below an insertion point moves. A beat whose id is gone from disk is reported, not
+  // silently swallowed (I4).
+  //
+  // ⚠ NOTHING is pushed to the server here — no load_module, no show_beat. Invalidation
+  // refreshes what the GM SEES; what the PLAYERS see is untouched (I3). The server keeps the
+  // copy it was last given, so until the GM clicks Validate & Load the two differ — which is
+  // why the note says so rather than leaving the GM to infer it.
   function onModuleChanged(id){
     var wasSelected = ($('mod-select').value===id);
     refreshModules();   // rebuilds the option list; preserves the current selection
-    if(wasSelected){ $('mod-info').textContent='↻ this module changed on disk — re-select to reload'; }
+    if(!wasSelected) return;
+    // Capture the live + recommended beats as IDS before the body is replaced.
+    var beats = (module&&module.beats)||[];
+    var liveId = (curBeat>=0 && beats[curBeat]) ? beats[curBeat].id : null;
+    var recId  = (recBeat>=0 && beats[recBeat]) ? beats[recBeat].id : null;
+    var stale = function(){ $('mod-info').textContent='↻ this module changed on disk — reload FAILED, still showing the previous copy'; };
+    fetch('/api/modules/'+encodeURIComponent(id)+'?fresh='+Date.now(),{cache:'no-store'})
+      .then(function(r){return r.json();})
+      .then(function(d){
+        if(!d||d.error||!d.module){ stale(); return; }
+        module=d.module;
+        var v=d.validation||{warn:0,info:0};
+        $('mod-valid').innerHTML = v.warn? '<span class="badge warn">⚠ '+v.warn+' warnings</span>' : '<span class="badge ok">✓ valid</span>';
+        $('mod-load').disabled=false;
+        var lostLive=false;
+        if(liveId!=null){ var li=beatIndex(liveId); if(li>=0) curBeat=li; else { curBeat=-1; lostLive=true; } }
+        if(recId!=null){ var ri=beatIndex(recId); recBeat = ri>=0 ? ri : -1; }
+        renderOutline(); renderNav();
+        $('mod-info').textContent='↻ reloaded from disk — '+((module.beats||[]).length)+' beats'
+          +(lostLive?' · ⚠ the live beat is no longer in this module':'')
+          +' · players unchanged, Validate & Load to push';
+      })
+      .catch(stale);
   }
 
   function renderPreview(html, label){
