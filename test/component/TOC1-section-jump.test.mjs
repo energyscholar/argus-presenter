@@ -1,10 +1,16 @@
 /*
  * TOC-jump (Plan 0456 P2) — section/sequence jump buttons in the control-page outline.
- * Each section <summary> and sequence <summary> carries a small ⏵ button that fires
- * control('show_beat',{index: first resolvable beat of that tier}) via the same path as
- * beat rows. The button must NOT disturb the <details> open/close state (stopPropagation
- * + preventDefault); plain summary clicks still toggle. A tier with zero resolvable
- * beats renders NO jump button.
+ * Each section <summary> and sequence <summary> carries a small ⏵ button that addresses the
+ * first resolvable beat of that tier via the same path as beat rows. The button must NOT
+ * disturb the <details> open/close state (stopPropagation + preventDefault); plain summary
+ * clicks still toggle. A tier with zero resolvable beats renders NO jump button.
+ *
+ * ⚠ AMENDED BY PLAN 0522 P6 (R4) — this test asserted the OLD gesture semantics. The ⏵ jump used
+ * to PUBLISH (`show_beat`); it now STAGES, and GO ships. The tier arithmetic this test exists to
+ * guard — which beat each ⏵ resolves to — is UNCHANGED and every assertion about it is preserved
+ * verbatim; the jump is simply followed by a GO press, and each jump additionally asserts that it
+ * did NOT ship on its own. Nothing was weakened to accommodate the change: the test now covers
+ * one more thing than it did before.
  */
 import { test, check as expect } from '../../harness/test.mjs';
 import { createServer } from '../../app/server.mjs';
@@ -45,6 +51,10 @@ test('TOC1 — outline section/sequence jump buttons: show_beat + details state 
 
     const cur = () => ctl.evaluate(() => window.__gm.cur());
     const atBeat = (i, label) => until(async () => (await cur()) === i && server.store.get('module/current') === i, { label });
+    // P6: the two halves of the gesture. `armed(i)` waits for the ⏵ to have STAGED beat i;
+    // `go()` is the only thing that ships it.
+    const armed = (i, label) => until(async () => { const s = await ctl.evaluate(() => window.__gm.staged()); return !!s && s.index === i; }, { label });
+    const go = () => ctl.evaluate(() => document.getElementById('btn-go').click());
 
     server.showBeat(1);
     await atBeat(1, 'panel+server at beat 1');
@@ -59,11 +69,17 @@ test('TOC1 — outline section/sequence jump buttons: show_beat + details state 
     });
     expect('Sec 1 details open before jump click', secClick.before === true);
     expect('Sec 1 details open-state unchanged by jump click', secClick.after === true);
-    await atBeat(0, 'Sec 1 jump fired show_beat with its first beat (index 0)');
+    await armed(0, 'Sec 1 jump STAGED its first beat (index 0)');
+    expect('P6/R4 — the jump alone shipped NOTHING; the room is still on beat 1',
+      server.store.get('module/current') === 1, String(server.store.get('module/current')));
+    await go();
+    await atBeat(0, 'GO shipped the staged first beat of Sec 1 (index 0)');
 
     // Section with sequences: the section-level ⏵ targets the first resolvable beat overall (b3 → 2).
     await ctl.evaluate(() => document.querySelectorAll('#outline .sec')[1].querySelector(':scope > summary .tocjump').click());
-    await atBeat(2, 'Sec 2 jump fired show_beat with first beat of its first sequence (index 2)');
+    await armed(2, 'Sec 2 jump STAGED the first beat of its first sequence (index 2)');
+    await go();
+    await atBeat(2, 'GO shipped the first beat of Sec 2\'s first sequence (index 2)');
 
     // Sequence-level jump: Seq B's ⏵ → b4 (index 3); its own <details> state also untouched.
     const seqClick = await ctl.evaluate(() => {
@@ -73,7 +89,9 @@ test('TOC1 — outline section/sequence jump buttons: show_beat + details state 
       return { before, after: qdet.open };
     });
     expect('Seq B details open-state unchanged by jump click', seqClick.before === true && seqClick.after === true);
-    await atBeat(3, 'Seq B jump fired show_beat with its first beat (index 3)');
+    await armed(3, 'Seq B jump STAGED its first beat (index 3)');
+    await go();
+    await atBeat(3, 'GO shipped Seq B\'s first beat (index 3)');
 
     // Collapse behavior unbroken: a plain summary click (not on the button) still toggles.
     const toggle = await ctl.evaluate(() => {

@@ -14,6 +14,12 @@
  * The server has accepted `{id:…}` all along (handleControl 'show_beat'; maybeBranch already used
  * it), so the fix is client-side and the protocol is untouched.
  *
+ * ⚠ AMENDED BY PLAN 0522 P6 (R4) — the beat row and the ⏵ jump now STAGE; GO ships. R14's claim is
+ * about ADDRESSING (which beat a gesture resolves to), not about when it ships, so every assertion
+ * on what the player received is preserved verbatim — the gesture is simply followed by a GO. The
+ * ▶ Start assertion is untouched, because R4 keeps Start on the publish path. Wrong addressing
+ * would still be caught: staging the wrong beat sends the wrong beat when GO is pressed.
+ *
  * Shape of the test: load a 5-beat module into BOTH the panel and the server, then REORDER the
  * beats on disk. Every id still exists server-side, so both addressings resolve — they just
  * resolve to different beats. That is the whole point: an index-addressed click passes silently
@@ -117,10 +123,15 @@ test('0522 R14 — after a disk change, a click ships the beat that is ON SCREEN
     });
     expect('the row the test clicked is the one labelled b1, at panel index 2',
       clicked && clicked.rowIndex === 2, JSON.stringify(clicked));
-    await until(() => lastShown(player) === 'pr-b1' || lastShown(player) === 'pr-b3', { label: 'the click produced a push' })
+    // P6/R4: the click STAGED it. Nothing has reached the player yet — assert that, then GO.
+    await until(async () => !!(await ctl.evaluate(() => window.__gm.staged())), { label: 'the row click staged a candidate' });
+    expect('P6/R4 — the click alone shipped nothing; the player is still on what ▶ Start sent',
+      lastShown(player) === 'pr-b3', 'player last saw ' + lastShown(player));
+    await ctl.evaluate(() => document.getElementById('btn-go').click());
+    await until(() => lastShown(player) === 'pr-b1' || lastShown(player) === 'pr-b3', { label: 'GO produced a push' })
       .catch(() => {});
     await wait(250);
-    expect('clicking the row labelled "Beat b1" shipped b1 — NOT the beat at server index 2 (b3)',
+    expect('GO on the row labelled "Beat b1" shipped b1 — NOT the beat at server index 2 (b3)',
       lastShown(player) === 'pr-b1', 'player last saw ' + lastShown(player));
     expect('and the server\'s live beat is b1\'s index in the SERVER copy (0)',
       server.store.get('module/current') === 0, String(server.store.get('module/current')));
@@ -132,8 +143,11 @@ test('0522 R14 — after a disk change, a click ships the beat that is ON SCREEN
       btn.click(); return true;
     });
     expect('the section ⏵ jump button exists', secJump === true);
+    await until(async () => { const s = await ctl.evaluate(() => window.__gm.staged()); return !!s && s.beatId === 'b3'; },
+      { label: 'the ⏵ jump staged the first beat of the tier as the PANEL shows it (b3)' });
+    await ctl.evaluate(() => document.getElementById('btn-go').click());
     await wait(300);
-    expect('the ⏵ jump ships the first beat of the tier AS THE PANEL SHOWS IT (b3)',
+    expect('the ⏵ jump + GO ships the first beat of the tier AS THE PANEL SHOWS IT (b3)',
       lastShown(player) === 'pr-b3', 'player last saw ' + lastShown(player));
   } finally {
     if (player) player.ws.close();

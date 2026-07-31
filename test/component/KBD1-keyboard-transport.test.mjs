@@ -4,6 +4,13 @@
  * Escape → close the settings overlay if open (takes precedence) else STOP,
  * digits 1–9 → first beat of section N. Keys route through the EXISTING buttons /
  * beat-jump path, and are ignored while typing (input/textarea/select/contenteditable).
+ *
+ * ⚠ AMENDED BY PLAN 0522 P6 (R4) — the digit jump shares one code path with the outline's ⏵
+ * button, and that path now STAGES rather than publishes. Keeping the key shipping while the
+ * mouse staged would have built the exact muscle-memory trap P6 exists to close, so the digit
+ * assertion here is now "digit N stages the first beat of section N; GO ships it", plus a new
+ * assertion that the key alone changed nothing on the players' screens. Arrows/Space/Escape are
+ * transport, not selection, and are UNCHANGED — as is every other assertion in this file.
  */
 import { test, check as expect } from '../../harness/test.mjs';
 import { createServer } from '../../app/server.mjs';
@@ -58,12 +65,17 @@ test('KBD1 — keyboard transport: arrows/Space/digit jump/Escape + typing guard
     await atBeat(1, 'ArrowLeft went back to beat 1');
     expect('ArrowLeft goes back', (await cur()) === 1);
 
-    // Digit 1 → first beat of section 1 (jump from inside section 2).
+    // Digit 1 → first beat of section 1 (jump from inside section 2). P6/R4: it STAGES.
     server.showBeat(3);
     await atBeat(3, 'panel+server at beat 3 (section 2)');
     await ctl.keyboard.press('1');
-    await atBeat(0, 'digit 1 jumped to section 1 first beat');
-    expect('digit 1 jumps to section 1 first beat', (await cur()) === 0);
+    await until(async () => { const s = await ctl.evaluate(() => window.__gm.staged()); return !!s && s.index === 0; },
+      { label: 'digit 1 STAGED section 1\'s first beat' });
+    expect('P6/R4 — the digit key alone shipped NOTHING; the room is still on beat 3',
+      server.store.get('module/current') === 3, String(server.store.get('module/current')));
+    await ctl.evaluate(() => document.getElementById('btn-go').click());
+    await atBeat(0, 'GO shipped section 1\'s first beat');
+    expect('digit 1 + GO lands on section 1 first beat', (await cur()) === 0);
 
     // Typing guard: keydown with target=input does nothing.
     await ctl.focus('#pc-component');

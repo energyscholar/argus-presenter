@@ -1197,7 +1197,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       case 'open_poll': api.openPoll(a); break;
       case 'close_poll': api.closePoll(a.promptId); break;
       case 'reload_clients': api.reloadClients(a.target || 'all', a.delay || 0); break;
-      case 'clear': api.clear(a.target || 'all'); break;   // route through api.clear so display descriptor is also reset (reconnect → branding)
+      case 'clear': dropStaging(c); api.clear(a.target || 'all'); break;   // route through api.clear so display descriptor is also reset (reconnect → branding)
       // MON-1: drop a user's per-user override so they follow their ROLE/default display
       // again (or branding if the role has none). DISTINCT from clear(): clear BLANKS to
       // branding; reset_user RETARGETS to the role display. Role-gated above.
@@ -1219,7 +1219,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       case 'set_roster_visible': rosterVisibleToAttendees = !!a.value; log.info('att', 'roster-visible', { value: rosterVisibleToAttendees }); break;
       case 'voice_enable': api.voiceEnable(a.target || 'all'); break;   // Plan 0470: request inbound voice on a target
       case 'set_module': api.setModule(a.module || { beats: a.beats || [] }); break;   // Group I
-      case 'show_beat': api.showBeat(a.id != null ? a.id : (a.index | 0)); break;   // by id (branch nav) or index — R4: PUBLISHES, unchanged
+      case 'show_beat': dropStaging(c); api.showBeat(a.id != null ? a.id : (a.index | 0)); break;   // by id (branch nav) or index — R4: PUBLISHES, unchanged
       // Plan 0522 P4 (R4) — two-stage delivery. STAGE renders a candidate to THIS controller's
       // own surface (per-caller: keyed by socket, so a second controller is untouched — t09) and
       // writes nothing durable (t07). SEND publishes it and ACKS with the recipient count, so
@@ -1234,9 +1234,13 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       case 'send_beat':
         send(ws, Object.assign({ t: 'sent' }, api.sendBeat({ targets: a.targets, id: a.id, index: a.index }, { key: callerKey(c) })));
         break;
-      case 'show_default': api.showDefault(); break;   // DEF-1: Home → module title page (or branding fallback)
-      case 'next_beat': api.nextBeat(); break;
-      case 'prev_beat': api.prevBeat(); break;
+      // Plan 0522 P6 — a controller that PUBLISHES something else disarms its own staged
+      // candidate. Without this the server slot stays armed while the page has moved on, and
+      // `stagedBeat()` reports a candidate the operator no longer believes in — the same
+      // instrument-lying-about-state failure the indicator exists to remove.
+      case 'show_default': dropStaging(c); api.showDefault(); break;   // DEF-1: Home → module title page (or branding fallback)
+      case 'next_beat': dropStaging(c); api.nextBeat(); break;
+      case 'prev_beat': dropStaging(c); api.prevBeat(); break;
       case 'append_beat': api.appendBeat(a.beat || { component: a.component, opts: a.opts, requires: a.requires }); break;   // compose (I2) + AI co-author (I3)
       case 'load_module': api.loadModule(a.module); break;   // I4
       default: log.warn('control', 'unknown-action', { action: m.action });
@@ -1447,6 +1451,12 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
    * on one login are two controllers, and staging on one must not arm GO on the other (t09).
    */
   function callerKey(c) { return 'ws:' + (c && c.id); }
+
+  /**
+   * Plan 0522 P6 — disarm THIS caller's staged candidate because it just published something
+   * else. Only its own slot: a second controller's candidate is none of its business (t09).
+   */
+  function dropStaging(c) { stagedByCaller.delete(callerKey(c)); }
 
   /**
    * Normalise a `targets` argument to an array, or null for "do not narrow the audience".
@@ -2970,12 +2980,20 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       const desc = beatDescriptor(r.beat);
       const list = normalizeTargets(ctx.targets);          // ['all'] ⇒ null ⇒ the beat's own routing
       const as = (list && list.length === 1) ? list[0] : null;   // the UI is single-select; the protocol is not
+      // Plan 0522 P6 (t16) — a slot holds ONE candidate, so staging a second beat destroys the
+      // first. That destruction is invisible from the outside unless the ack says so, and an
+      // unsent beat the operator thinks is still armed is I5's silent non-delivery with an extra
+      // step. The PREVIOUS occupant is reported whenever it was a DIFFERENT beat; re-staging the
+      // same beat loses nothing and reports nothing.
+      const prev = stagedByCaller.get(key) || null;
+      const replaced = (prev && !(prev.index === r.i && prev.beatId === (r.beat.id != null ? r.beat.id : null)))
+        ? { beatId: prev.beatId, index: prev.index, targets: prev.targets || ['all'] } : null;
       stagedByCaller.set(key, { desc, beatId: r.beat.id != null ? r.beat.id : null, index: r.i, at: Date.now(), targets: list });
       let rendered = false;
       if (ctx.ws && ctx.conn) { renderDisplay(ctx.ws, ctx.conn, desc, viewerForTarget(as)); rendered = true; }
-      log.info('beat', 'stage', { key, index: r.i, beatId: r.beat.id != null ? r.beat.id : null, rendered, targets: list || ['all'] });
+      log.info('beat', 'stage', { key, index: r.i, beatId: r.beat.id != null ? r.beat.id : null, rendered, targets: list || ['all'], replaced });
       return { ok: true, staged: true, index: r.i, beatId: r.beat.id != null ? r.beat.id : null, component: r.beat.component, rendered,
-        targets: list || ['all'], as: as || 'all' };
+        targets: list || ['all'], as: as || 'all', replaced };
     },
     /**
      * Plan 0522 P4 (R4) — SEND (publish) the caller's staged beat. `targets` is an ARRAY from the

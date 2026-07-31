@@ -76,16 +76,27 @@ export const API_COVERAGE = {
   appendBeat:          { tool: 'append_beat' },
   showDefault:         { tool: 'presenter_home' },        // Plan 0508 — the owed gap, now closed
   prevBeat:            { tool: 'prev_beat' },              // Plan 0508 — next_beat is no longer asymmetric
-  // Plan 0522 P4 (R4) — two-stage delivery. NOT YET AGENT-FACING, and the reason is structural
-  // rather than an oversight: stageBeat renders a candidate to THE CALLER'S OWN SURFACE, and the
-  // MCP caller is in-process with no surface to render to — `rendered:false` on every call. The
-  // agent-facing form needs a decision about what an AI "staging area" IS (an ai-role socket? a
-  // returned HTML string it can inspect?), which the plan puts in P5/P6 with the target selector
-  // and the STAGED-vs-LIVE indicator. Recorded as OWED, not dropped: I1 is not satisfied yet.
-  // show_beat — the publish path — remains reachable from both surfaces and is unchanged (R4).
-  stageBeat:           { declined: 'NOT YET EXPOSED — owed (Plan 0522 P4). Staging renders to the CALLER\'S OWN control surface; the in-process MCP caller has none. Needs the P5/P6 decision on what an agent-side staging surface is before it earns a tool.' },
-  sendBeat:            { declined: 'NOT YET EXPOSED — owed (Plan 0522 P4). Publishing a STAGED beat is meaningless for a caller that cannot stage; until stageBeat has an agent surface, the agent publishes with show_beat, whose semantics R4 keeps identical on both surfaces.' },
-  stagedBeat:          { declined: 'read-only observability for the P6 STAGED/LIVE indicator and its tests — per-caller staging state, nothing an agent can act on until stageBeat is exposed' },
+  // ⛓ Plan 0522 P6 (R18) — TWO-STAGE DELIVERY IS A **DECLARED DIFFERENCE** BETWEEN THE SURFACES,
+  // NOT AN OVERSIGHT AND NOT A SILENT GAP. I1 permits exactly this in its own words: *where they
+  // must differ, the difference is declared and tested, never discovered live.*
+  //
+  // The reason is structural. stageBeat renders a candidate to THE CALLER'S OWN CONTROL SURFACE;
+  // the in-process MCP caller has none, so the tool would report `rendered:false` on every call —
+  // and a tool that renders nowhere is worse than no tool, because the agent would believe it had
+  // previewed something. The correct agent-side semantic (staging RETURNS the rendered HTML,
+  // because a tool's return value IS an AI's control surface) is a design decision that earns its
+  // own plan — 0523 — rather than a bolt-on here.
+  //
+  // ⚠ DO NOT DELETE THESE ENTRIES TO "TIDY UP". test/unit/0522-p6-declared-surface.test.mjs (t16a)
+  // fails if a declaration disappears AND fails if `stage_beat`/`send_beat` appear as tools while
+  // still declared declined. That is what keeps this a recorded decision instead of a hole
+  // somebody rediscovers mid-session.
+  //
+  // show_beat — the publish path — keeps FULL PARITY on both surfaces and is unchanged (R4), so
+  // nothing an agent can do today regresses: the agent publishes exactly as it always has.
+  stageBeat:           { declined: 'DECLARED DIFFERENCE, not a gap (Plan 0522 R18; closure owed to plan 0523). Staging renders to the CALLER\'S OWN control surface and the in-process MCP caller has none, so an exposed tool could only ever report rendered:false. 0523 decides what an agent-side staging surface is — most likely returning the rendered HTML to the caller. Asserted deliberate by t16a.' },
+  sendBeat:            { declined: 'DECLARED DIFFERENCE, not a gap (Plan 0522 R18; closure owed to plan 0523). Publishing a STAGED beat is meaningless for a caller that cannot stage; until stageBeat has an agent surface the agent publishes with show_beat, whose semantics R4 keeps identical on both surfaces. Asserted deliberate by t16a.' },
+  stagedBeat:          { declined: 'read-only observability for the P6 STAGED/LIVE indicator and its tests — per-caller staging state, nothing an agent can act on until stageBeat is exposed (Plan 0522 R18, closure owed to 0523)' },
   // Plan 0508 (spotlight + live module rescan). Both shipped with the station work; the guard
   // caught them missing here, which is exactly its job.
   spotlight:           { tool: 'presenter_spotlight' },

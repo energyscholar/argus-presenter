@@ -209,16 +209,29 @@ test('0522 t10 — the control page ships every beat with `targets` as an ARRAY,
     await wait(150);
 
     const clickFirstBeat = () => ctl.evaluate(() => { const r = document.querySelector('#outline .beat'); if (!r) return false; r.click(); return true; });
+    const go = () => ctl.evaluate(() => document.getElementById('btn-go').click());
 
     // Default target: still an ARRAY. `['all']` is the array's DEFAULT VALUE, not a special case —
     // a scalar here is what would force every later call site to be touched again.
+    //
+    // ⚠ AMENDED BY PLAN 0522 P6 (R4). When P5 shipped, a beat click was still a PUBLISH, so this
+    // asserted `send_beat`. P6 flips the gesture: the click is now `stage_beat` and GO is the
+    // publish. The CLAIM UNDER TEST — one target, carried as an array, verbatim, for every kind of
+    // target — is unchanged, and is now asserted on BOTH frames of the two-stage gesture rather
+    // than one. The delivery assertion is preserved, behind a GO.
     expect('the beat row exists to be clicked', await clickFirstBeat() === true);
     await wait(250);
     const atAll = await ctl.evaluate(() => window.__gm.lastControl());
-    expect('a click at the default target emits send_beat with targets as an ARRAY',
-      atAll && atAll.action === 'send_beat' && Array.isArray(atAll.args.targets) && atAll.args.targets.length === 1 && atAll.args.targets[0] === 'all',
+    expect('a click at the default target emits stage_beat with targets as an ARRAY (P6/R4)',
+      atAll && atAll.action === 'stage_beat' && Array.isArray(atAll.args.targets) && atAll.args.targets.length === 1 && atAll.args.targets[0] === 'all',
       JSON.stringify(atAll));
     expect('and addresses the beat by ID, not by index (R14 is not undone)', atAll.args.id === 'w1', JSON.stringify(atAll.args));
+    await go();
+    await wait(250);
+    const goFrame = await ctl.evaluate(() => window.__gm.lastControl());
+    expect('GO emits send_beat carrying the SAME array the stage carried — one target, not two',
+      goFrame && goFrame.action === 'send_beat' && JSON.stringify(goFrame.args.targets) === JSON.stringify(['all']) && goFrame.args.id === 'w1',
+      JSON.stringify(goFrame));
     await until(() => (alice.frames.filter((f) => f.t === 'content').pop() || {}).contentId === 'pr-w1',
       { label: 'the default send still reaches the room exactly as it always did' });
 
@@ -229,8 +242,15 @@ test('0522 t10 — the control page ships every beat with `targets` as an ARRAY,
     await wait(250);
     const atAlice = await ctl.evaluate(() => window.__gm.lastControl());
     expect('a click with a person targeted emits that ONE target inside an array',
-      atAlice && atAlice.action === 'send_beat' && Array.isArray(atAlice.args.targets) && JSON.stringify(atAlice.args.targets) === JSON.stringify([aliceId]),
+      atAlice && atAlice.action === 'stage_beat' && Array.isArray(atAlice.args.targets) && JSON.stringify(atAlice.args.targets) === JSON.stringify([aliceId]),
       JSON.stringify(atAlice));
+    // P6: GO ships the targets captured AT STAGE TIME, so preview and delivery cannot diverge.
+    await go();
+    await wait(200);
+    const goAlice = await ctl.evaluate(() => window.__gm.lastControl());
+    expect('and GO sends to exactly those targets, not to whatever the selector says now',
+      goAlice && goAlice.action === 'send_beat' && JSON.stringify(goAlice.args.targets) === JSON.stringify([aliceId]),
+      JSON.stringify(goAlice));
 
     // A STATION target — same shape again. One control, one wire format, three kinds of target.
     await ctl.evaluate(() => window.__gm.setTarget('station:2'));
@@ -240,12 +260,28 @@ test('0522 t10 — the control page ships every beat with `targets` as an ARRAY,
     const atStation = await ctl.evaluate(() => window.__gm.lastControl());
     expect('and a station target travels the same way',
       atStation && JSON.stringify(atStation.args.targets) === JSON.stringify(['station:2']), JSON.stringify(atStation));
+    await go();
+    await wait(200);
+    const goStation = await ctl.evaluate(() => window.__gm.lastControl());
+    expect('a station target survives the stage→GO handoff unchanged',
+      goStation && goStation.action === 'send_beat' && JSON.stringify(goStation.args.targets) === JSON.stringify(['station:2']),
+      JSON.stringify(goStation));
 
     // ⚠ Auto-follow is deliberately NOT routed through the target (R4): it is not a choice the GM
     // made for this beat. It must still be a plain show_beat.
+    //
+    // ⚠ AMENDED BY PLAN 0522 P6. The claim is unchanged — auto-follow PUBLISHES with `show_beat`
+    // and is not routed through the gesture — but P5's regex pinned the exact byte sequence
+    // `recBeat=-1; control('show_beat'`, and P6 legitimately inserts a disarm between them
+    // (publishing something else must drop this page's staged candidate). Pinning bytes made a
+    // true assertion fail for a false reason, so it now reads the auto-follow BRANCH and asserts
+    // what it calls — which is strictly what R4 says, and survives the next edit to that line.
     const src = await (await fetch(server.url() + '/control')).text();
-    expect('auto-follow still calls show_beat, not the targeted send (R4)',
-      /autofollow'\).checked\)\{ recBeat=-1; control\('show_beat'/.test(src), 'auto-follow was rewired — R4 says it must not be');
+    const branch = (src.split("autofollow').checked)")[1] || '').slice(0, 200);
+    expect('the auto-follow branch is locatable in the served source', branch.length > 0, 'autofollow branch not found');
+    expect('auto-follow still calls show_beat (R4)', /control\('show_beat'/.test(branch), branch.slice(0, 120));
+    expect('auto-follow is NOT routed through the staged gesture, and not through the targeted send (R4)',
+      !/stage_beat|send_beat/.test(branch), branch.slice(0, 160));
     await ctl.close();
   } finally {
     if (alice) alice.ws.close();

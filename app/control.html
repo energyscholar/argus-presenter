@@ -59,6 +59,31 @@
   #preview{width:360px;height:235px;border:1px solid #2a3a5a;border-radius:6px;overflow:hidden;background:#050510;flex:0 0 auto;position:relative;}
   #preview iframe{border:0;width:600px;height:392px;transform:scale(.6);transform-origin:top left;pointer-events:none;}
   #preview .pvlabel{position:absolute;left:0;right:0;bottom:0;font-size:9px;text-align:center;background:rgba(0,0,0,.6);color:var(--dim);padding:1px;}
+  /* ── Plan 0522 P6 — STAGED vs LIVE, UNMISSABLY ────────────────────────────────────────────
+     Two-stage delivery turns a LOUD failure (the wrong beat ships, and everyone sees it) into a
+     SILENT one (the operator stages, believes it shipped, and five people stare at an unchanged
+     screen). The one-line #pvlabel is not enough to carry that: it is 9px, grey, and it already
+     says something else. This banner differs in COLOUR, in SIZE, in weight and in border — the
+     two states are told apart across the room, not by reading.
+     z-index:2 keeps it above #pvwarn on purpose: a paused thumbnail does not un-stage a beat,
+     and the state must not disappear at the moment the surface is least trustworthy. */
+  #pvstate{position:absolute;left:0;right:0;top:0;z-index:2;text-align:center;font-weight:700;
+    letter-spacing:.10em;padding:2px 0;font-size:10px;background:#0b3b2a;color:#5fe0a8;border-bottom:1px solid #1c6b4c;}
+  #pvstate.staged{font-size:16px;padding:6px 0;background:#b45309;color:#fff6e0;
+    border-bottom:3px solid #fbbf24;text-shadow:0 1px 0 rgba(0,0,0,.5);}
+  #preview.staged{border-color:#fbbf24;}
+  /* GO — the only control that ships. IDLE and ARMED must not be a subtle difference: colour,
+     size, weight and glow all move, and the armed label NAMES the beat it will send, so a
+     preview stolen by someone else's push still cannot make GO lie about its payload. */
+  #btn-go{font-size:12px;padding:4px 10px;background:#0d1633;border:1px solid #2a3a5a;color:var(--dim);}
+  #btn-go.armed{font-size:15px;font-weight:700;padding:7px 16px;background:#166534;border:2px solid var(--ok);
+    color:#eafff5;box-shadow:0 0 12px rgba(34,229,160,.5);opacity:1;}
+  /* The delivery receipt (I5). A send that reached NOBODY is not a quieter success — it is
+     rendered LARGER and on a red field, because "sent to 0 recipients" is the failure this
+     whole phase exists to make impossible to miss. */
+  #gostat{font-size:12px;color:var(--ok);}
+  #gostat.alert{font-size:13px;font-weight:700;color:#fff;background:#7f1d1d;border:1px solid var(--danger);
+    border-radius:4px;padding:2px 8px;}
   #pvwarn{display:none;position:absolute;inset:0;flex-direction:column;align-items:center;justify-content:center;gap:2px;background:#160c05;text-align:center;}
   #pvwarn .pvwarn-main{font-size:11px;color:var(--warn);}
   #pvwarn .pvwarn-sub{font-size:9px;color:var(--dim);}
@@ -164,7 +189,7 @@
 <!-- P2.5/P2.7: Live Preview dock — fixed in the top frame, left of the green dot; the
      live-preview checkbox now sits UNDER the dot (see #livepreview-lbl CSS) -->
 <div id="pvdock">
-  <div id="preview"><iframe id="pvframe" sandbox="allow-scripts"></iframe><div class="pvlabel" id="pvlabel">idle</div><div id="pvwarn"><div class="pvwarn-main">⚠ preview paused</div><div class="pvwarn-sub">system busy</div></div></div>
+  <div id="preview"><iframe id="pvframe" sandbox="allow-scripts"></iframe><div id="pvstate">● LIVE</div><div class="pvlabel" id="pvlabel">idle</div><div id="pvwarn"><div class="pvwarn-main">⚠ preview paused</div><div class="pvwarn-sub">system busy</div></div></div>
 </div>
 <label id="livepreview-lbl" title="live 'view-as' thumbnail — first thing dropped when the tab is busy"><input type="checkbox" id="livepreview" checked> live preview</label>
 <div id="ap-config" role="dialog" aria-label="Settings">
@@ -203,6 +228,14 @@
         <div>
           <div id="np-meta">Showing: <b id="np-what">idle (branding)</b></div>
           <div id="viewingas"></div>
+          <!-- Plan 0522 P6 — GO. Clicking a beat now STAGES it (R4); this is the only control on
+               the page that ships one. It sits on its own row, above the transport, because it is
+               not a transport button: the others move the live display, this one turns a rehearsal
+               into a delivery. #gostat is the receipt — including the receipt for reaching nobody. -->
+          <div class="row" style="margin-top:6px">
+            <button id="btn-go" disabled title="Click a beat to stage it, then press GO to send it">GO — nothing staged</button>
+            <span id="gostat"></span>
+          </div>
           <div class="row" style="margin-top:6px">
             <button class="mini" id="btn-start" disabled>▶ Start</button>
             <button class="mini" id="btn-prev" disabled>◀ Prev</button>
@@ -309,6 +342,11 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   var seriesModules=[], seriesPos=-1;   // SCH-2: active series (ordered module ids) + walk position
   // MON-2: live "view-as" thumbnail — luxury feature, first thing sacrificed under load.
   var livePreview=true, degraded=false, lastDisplay={}, monLastTick=0, monLate=0, monOnTime=0;
+  // Plan 0522 P6 — the STAGED candidate this page is holding, or null. It is the ONE thing that
+  // decides what #pvstate says, whether GO is armed, and what GO will ship. It is set from the
+  // SERVER'S ack, never optimistically: "armed" must mean the server is holding the beat, not
+  // that a frame was posted into the void.
+  var staged=null, stagePendingLabel='', lastSent=null;
   var $=function(id){return document.getElementById(id);};
 
   function control(action,args){ lastControl={action:action,args:args||{}}; if(ws&&ws.readyState===1) ws.send(JSON.stringify({t:'control',action:action,args:args||{}})); }
@@ -326,6 +364,8 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     if(m.t==='attendance'){ onAttendance(m); return; }   // ATT (Plan 0466): roster reply
     if(m.t==='content'){ renderPreview(m.html, m.contentId); return; }
     if(m.t==='clear'){ renderPreview(null,'idle'); return; }
+    if(m.t==='staged'){ onStaged(m); return; }   // Plan 0522 P6: a candidate is armed — GO, not the room
+    if(m.t==='sent'){ onSent(m); return; }       // Plan 0522 P6: the delivery receipt, INCLUDING "0" (I5)
     if(m.t==='result'){ results[m.promptId]=results[m.promptId]||{}; results[m.promptId][m.userId]={type:m.type,value:m.value}; maybeBranch(m); return; }
     if(m.t==='host'&&m.msg&&m.msg.type==='diff'&&m.msg.diff&&('module/current' in m.msg.diff)){ curBeat=m.msg.diff['module/current']; recBeat=-1; renderOutline(); renderNav(); }
     if(m.t==='module-changed'){ onModuleChanged(m.id); return; }   // AUT-2: hot-reload notice
@@ -385,6 +425,75 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     // labelling it "default (ALL)" would be the exact lie this phase removes.
     var who = (target==='all') ? 'default (ALL)' : ('as '+targetLabel(target));
     $('np-what').textContent = ($('pvlabel').textContent||'idle') + ' · ' + who;
+  }
+
+  // ── Plan 0522 P6 — STAGED vs LIVE ────────────────────────────────────────────────────────
+  // The whole phase in three functions. `staged` is the single source of truth; #pvstate, the
+  // preview border and the GO button are all DERIVED from it in one place, so they cannot drift
+  // into disagreeing about whether the room has seen this beat.
+
+  /** The one-line receipt under GO. `alert` is the LOUD form — 0 recipients, a discard, a refusal. */
+  function gostat(text, alert){
+    var el=$('gostat'); if(!el) return;
+    el.textContent=text||'';
+    el.classList.toggle('alert', !!alert && !!text);
+  }
+  /** Everything the two states drive, in ONE place. */
+  function renderStageState(){
+    var on=!!staged, pv=$('preview'), st=$('pvstate'), go=$('btn-go');
+    if(pv) pv.classList.toggle('staged',on);
+    if(st){ st.classList.toggle('staged',on); st.textContent = on ? '⚠ STAGED — NOT SENT' : '● LIVE'; }
+    if(!go) return;
+    go.classList.toggle('armed',on);
+    go.disabled=!on;
+    // The armed label NAMES the beat and the audience. A preview repainted by somebody else's
+    // push can mislead the eye; a button that says what it will send cannot.
+    go.textContent = on ? ('▶ GO — send "'+String(staged.label).slice(0,28)+'" to '+targetLabel(staged.targets[0]||'all'))
+                        : 'GO — nothing staged';
+    go.title = on ? 'Publish the staged beat to the target it was previewed for — this is what the room will see'
+                  : 'Click a beat to stage it (it renders here only), then press GO to send it';
+  }
+  /**
+   * Drop the armed candidate. `why` is spoken aloud when a discard could otherwise go unnoticed.
+   * It is ALSO remembered, because ▶ Start discards a candidate and then produces its own delivery
+   * receipt a few milliseconds later — and a receipt that overwrote the discard notice would make
+   * the loss silent again, which is the failure, not the fix.
+   */
+  var discardPending='';
+  function clearStaged(why){
+    if(!staged) return;
+    staged=null;
+    renderStageState();
+    if(why){ discardPending=why; gostat(why, true); }
+  }
+  function onStaged(m){
+    if(!m||!m.ok){ staged=null; renderStageState(); gostat('⚠ NOT staged — '+((m&&m.reason)||'refused')+'; nothing is armed', true); return; }
+    staged={ ref:(typeof m.beatId==='string'&&m.beatId!=='')?{id:m.beatId}:{index:m.index},
+             targets:(m.targets||['all']).slice(), label:stagePendingLabel||m.component||('beat '+m.index),
+             index:m.index, beatId:m.beatId };
+    renderStageState();
+    // t16 — the slot holds ONE beat, so this stage destroyed the last one. An unsent beat that
+    // vanishes without a word is the same silent non-delivery in a different coat (I4/I5).
+    discardPending='';
+    if(m.replaced) gostat('⚠ replaced a STAGED beat that was NEVER SENT ('+describeRef(m.replaced)+')', true);
+    else gostat('', false);
+  }
+  function onSent(m){
+    lastSent=m||null;
+    staged=null;
+    renderStageState();
+    var pre=discardPending?(discardPending+' · '):''; discardPending='';
+    if(!m||!m.ok){ gostat(pre+'⚠ NOT SENT — '+((m&&m.reason)||'refused'), true); return; }
+    var n=m.recipients|0;
+    // I5 — a send that reached nobody is reported as loudly as one that worked, never more quietly.
+    if(n===0) gostat(pre+'⚠ SENT TO 0 RECIPIENTS — nobody received this', true);
+    else gostat(pre+'✔ sent to '+n+' recipient'+(n===1?'':'s'), !!pre);
+  }
+  /** Name a beat reference for a human. Falls back to the index — never to silence (I4). */
+  function describeRef(r){
+    if(!r) return 'unknown beat';
+    if(typeof r.beatId==='string'&&r.beatId!=='') return r.beatId;
+    return 'beat at index '+(r.index!=null?r.index:'?');
   }
 
   function refreshModules(){
@@ -468,12 +577,35 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   // click path that ran S17, layers and per-beat `target:` included. Picking a target narrows it.
   //
   // ⚠ AUTO-FOLLOW IS DELIBERATELY NOT ROUTED THROUGH HERE (R4). It is not a target the GM chose.
-  function sendBeatAt(i){ recBeat=-1; control('send_beat', Object.assign({targets:targetArray()}, beatRef(i))); }
+  function sendBeatAt(i){ recBeat=-1; clearStaged(DISCARD_NOTE); control('send_beat', Object.assign({targets:targetArray()}, beatRef(i))); }
+  // ── Plan 0522 P6 (R4) — THE CLICK STAGES; ONLY GO SHIPS ──────────────────────────────────
+  // This is the flip P5 deliberately did not make. `stage_beat` renders the candidate to THIS
+  // page's preview and to nobody else's screen (I3: nothing durable is written), so the beat is
+  // rehearsed before it is delivered.
+  //
+  // ⚠ THE FLIP AND THE INDICATOR ARE ONE CHANGE, NEVER TWO. Before it, a mis-click ships the
+  // wrong beat and the room sees it instantly. After it, a mis-remembered gesture ships NOTHING
+  // and nothing on any screen contradicts the operator. That is a worse failure, and the only
+  // thing standing between it and a table of people waiting is #pvstate + an armed GO — so they
+  // land in the same commit as this line, or not at all.
+  //
+  // ▶ Start and auto-follow keep PUBLISH semantics (R4): Start is "begin", not "consider", and
+  // auto-follow is the system moving, not the operator choosing.
+  function stageBeatAt(i){
+    recBeat=-1;
+    stagePendingLabel=beatLabelAt(i);
+    control('stage_beat', Object.assign({targets:targetArray()}, beatRef(i)));
+  }
+  /** The row label for beat `i` — what GO must name so it can never lie about its payload. */
+  function beatLabelAt(i){
+    var b=((module&&module.beats)||[])[i]; if(!b) return 'beat '+i;
+    return ((b.opts&&(b.opts.title||b.opts.prompt||b.opts.text))||b.id||('beat '+i))+'';
+  }
   // DEL-3: build one .beat row (same cur/rec/label/onclick logic) — shared by section- and sequence-level rendering.
   function beatRow(bid){ var b=beatById(bid); if(!b) return null; var i=beatIndex(bid);
     var el=document.createElement('div'); el.className='beat'+(i===curBeat?' cur':'')+(i===recBeat&&i!==curBeat?' rec':''); el.dataset.i=i;
     el.innerHTML=esc((((b.opts&&(b.opts.title||b.opts.prompt||b.opts.text))||b.id)+'').slice(0,42))+' <span class="comp">'+esc(b.component)+(b.target?(' →'+esc(b.target)):'')+'</span>'+((i===recBeat&&i!==curBeat)?' <span class="recnote">→ recommended</span>':'');   // Plan 0471 C4: escape module-authored strings
-    el.onclick=function(){ sendBeatAt(i); };   // R14: by id — manual override always works + clears the recommendation
+    el.onclick=function(){ stageBeatAt(i); };   // P6/R4: STAGES — GO ships it. R14: by id.
     return el; }
   // Plan 0456 P2: first RESOLVABLE beat index of a tier (section or sequence) — shared by the
   // KBD-1 digit jump and the TOC ⏵ jump buttons. Returns -1 when the tier has none.
@@ -488,7 +620,7 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   function jumpBtn(tier){
     var i=firstResolvableBeat(tier); if(i<0) return null;
     var b=document.createElement('button'); b.type='button'; b.className='tocjump'; b.title='Jump to first beat'; b.textContent='⏵';
-    b.onclick=function(e){ e.stopPropagation(); e.preventDefault(); sendBeatAt(i); };   // R14: by id
+    b.onclick=function(e){ e.stopPropagation(); e.preventDefault(); stageBeatAt(i); };   // P6/R4: stages, same as a beat row. R14: by id
     return b;
   }
   // SCH-1: format a duration estimate. <60s → "~Ns"; else round to nearest minute → "~N min".
@@ -540,14 +672,28 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     var nextId=resolveNext(cur,{value:m.value},{});                  // flags {} — ifFlag routing deferred
     if(!nextId) return;                                              // linear/no-branch beat → no recommendation
     var i=beatIndex(nextId); if(i<0) return;
-    if($('autofollow').checked){ recBeat=-1; control('show_beat',{id:nextId}); }   // auto-advance (server diff clears rec + re-renders)
+    // P6/R4: auto-follow still PUBLISHES with show_beat — it is the system advancing, not the
+    // operator choosing, and there is nobody at the keyboard to press GO. It disarms a candidate
+    // first, because the display has moved on and a slot that outlives the preview is a lie.
+    if($('autofollow').checked){ recBeat=-1; clearStaged(DISCARD_NOTE); control('show_beat',{id:nextId}); }   // auto-advance (server diff clears rec + re-renders)
     else { recBeat=i; renderOutline(); }                             // else just highlight the recommended next
   }
-  $('btn-start').onclick=function(){ sendBeatAt(0); };   // R14: the FIRST beat the panel is showing, addressed by id
-  $('btn-prev').onclick=function(){ recBeat=-1; control('prev_beat',{}); };
-  $('btn-next').onclick=function(){ recBeat=-1; control('next_beat',{}); };
-  $('btn-home').onclick=function(){ recBeat=-1; control('show_default',{}); };   // DEF-1: back to the module title page
-  $('btn-end').onclick=function(){ control('clear',{target:'all'}); };           // STOP → branding (reuses clear)
+  // Plan 0522 P6 — GO. The ONLY control on this page that ships a beat the operator picked.
+  // It sends the ref and the targets captured AT STAGE TIME, so what was previewed and what is
+  // delivered are the same beat for the same people (P5's rule), even if the selector has since
+  // been nudged. The server acks with the recipient count and onSent renders it — including 0.
+  $('btn-go').onclick=function(){
+    if(!staged) return;
+    control('send_beat', Object.assign({targets:staged.targets.slice()}, staged.ref));
+  };
+  // Publishing something ELSE disarms the candidate — the same rule the server applies to its own
+  // slot, so the two surfaces never disagree about what is armed. Never silently (I4).
+  var DISCARD_NOTE='⚠ the staged beat was discarded — a different beat was published';
+  $('btn-start').onclick=function(){ sendBeatAt(0); };   // R4: ▶ Start still PUBLISHES. R14: the FIRST beat the panel shows, by id
+  $('btn-prev').onclick=function(){ recBeat=-1; clearStaged(DISCARD_NOTE); control('prev_beat',{}); };
+  $('btn-next').onclick=function(){ recBeat=-1; clearStaged(DISCARD_NOTE); control('next_beat',{}); };
+  $('btn-home').onclick=function(){ recBeat=-1; clearStaged(DISCARD_NOTE); control('show_default',{}); };   // DEF-1: back to the module title page
+  $('btn-end').onclick=function(){ clearStaged(DISCARD_NOTE); control('clear',{target:'all'}); };           // STOP → branding (reuses clear)
   $('btn-bell').onclick=function(){ control('bell',{}); };                       // 🔔 ring bell (notifier) — same api.chime path as presenter_bell
   $('btn-verify').onclick=function(){ control('bell',{requireAck:true}); };      // 👁 verify watching — bell + requireAck (presenter_verify_watching)
   // P2.7 (Plan 0456): PRESENTER SCREEN — open (or refocus, via the NAMED window target)
@@ -558,7 +704,7 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   // (identity.userName defaults to 'Control', which names THIS page, not the display).
   // RETURN TO DEFAULT IMAGE (branding). Routes through the same api.clear() the MCP tool
   // presenter_default_branding uses, so human and AI operators hit one code path.
-  $('btn-branding').onclick=function(){ control('clear',{target:'all'}); };
+  $('btn-branding').onclick=function(){ clearStaged(DISCARD_NOTE); control('clear',{target:'all'}); };
   $('btn-present').onclick=function(){
     var u='/?role=presenter&name='+encodeURIComponent(q.get('name')||'Presenter');
     if(identity.token) u+='&token='+encodeURIComponent(identity.token);
@@ -704,9 +850,14 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   // ---- MON-2: live "view-as" thumbnail (lightweight, event-driven, gracefully degrading) ----
   // P5: mirror is asked for the TARGET, which may be a station; `userId` rides along only when the
   // target IS a userId, so the existing server echo and PRIM-mirror's contract are untouched.
-  function requestMirror(){ if(target!=='all' && livePreview && !degraded) control('mirror', viewingAs?{target:target,userId:viewingAs}:{target:target}); }
+  // ⚠ Plan 0522 P6 — WHILE A BEAT IS STAGED THE MIRROR IS SUPPRESSED. pushPresence fires on every
+  // display change, so a live mirror would repaint the thumbnail several times a minute — wiping
+  // the candidate the operator is inspecting and leaving #pvstate announcing STAGED over somebody
+  // else's picture. Rehearsal owns the preview until GO or a discard hands it back.
+  function requestMirror(){ if(!staged && target!=='all' && livePreview && !degraded) control('mirror', viewingAs?{target:target,userId:viewingAs}:{target:target}); }
   function onMirror(m){
     var key = (m.target!=null) ? m.target : m.userId;
+    if(staged) return;                                     // a staged candidate outranks a mirror refresh
     if(key!==target || !livePreview || degraded) return;   // stale / paused → drop
     var lbl = targetLabel(target);
     if(m.html==null){ renderPreview(null, lbl+"'s view · "+(targetOccupancy(target)?'idle':'nobody here')); }
@@ -803,7 +954,10 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
       if(!module) return;
       var secs = module.sections && module.sections.length ? module.sections : [{title:'(all beats)',beatIds:(module.beats||[]).map(function(b){return b.id;})}];   // same derivation as renderOutline()
       var s=secs[(+e.key)-1]; if(!s) return;
-      var i=firstResolvableBeat(s); if(i>=0){ sendBeatAt(i); }   // shared with the TOC ⏵ jump (P2); R14: by id
+      // P6/R4: the digit jump is the TOC ⏵ jump reached by keyboard — the SAME gesture, so it
+      // must have the SAME semantics. A mouse that stages and a key that ships is precisely the
+      // muscle-memory trap this phase exists to close.
+      var i=firstResolvableBeat(s); if(i>=0){ stageBeatAt(i); }   // shared with the TOC ⏵ jump (P2); R14: by id
     }
   });
   $('cfg-close').addEventListener('click',function(){ toggleConfig(false); });
@@ -998,6 +1152,7 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   // NOT sticky and NOT persisted: a target the GM cannot see is a target they cannot verify, and
   // a remembered one would silently narrow the first send of the next session.
   renderTargets();
+  renderStageState();   // P6: the indicator states LIVE from the first paint — never blank, never ambiguous
   connect(); refreshModules(); refreshSeries(); startDigest();
   window.__ctlAuth = { role:function(){return effRole;}, gated:function(){return authGated;}, open:function(){return $('ap-config').classList.contains('open');} };   // test hook
   window.__control = control;   // test/automation hook (P1) — drive control ops programmatically
@@ -1006,6 +1161,7 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     lastControl:function(){return lastControl;},   // P5 t10: the last control frame this page emitted, verbatim
     setModule:function(m){ module=m; curBeat=-1; recBeat=-1; renderOutline(); renderNav(); },   // DEL-2 test/automation hook: load a module into the panel directly
     series:function(){return {mods:seriesModules.slice(),pos:seriesPos};},   // SCH-2 test hook
+    staged:function(){return staged;}, lastSent:function(){return lastSent;},   // P6 t14/t15/t16 hooks: the armed candidate + the last delivery receipt
     degrade:function(b){ degraded=!!b; applyPreviewState(); } };   // MON-2 test hook: force the degraded state without real CPU load
 })();
 </script>
