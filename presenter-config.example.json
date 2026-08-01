@@ -1,0 +1,7 @@
+{
+  "//": "Argus Presenter — LOCAL DEPLOYMENT CONFIG (Plan 0522 P16.1, R1). Copy to presenter-config.json (gitignored) or to ~/.config/argus-presenter/presenter-config.json, then edit. NO FILE IS REQUIRED: with none of them present the presenter runs on port 3000.",
+  "//resolution": "First file found wins, whole file: $PRESENTER_CONFIG_FILE (must exist) > <repo>/presenter-config.json > ${XDG_CONFIG_HOME:-~/.config}/argus-presenter/presenter-config.json > built-in defaults. Loader: lib/deployment-config.mjs.",
+
+  "//presenterPort": "The port the presenter binds — used by `node app/server.mjs` with no argument AND by the presenter_start MCP tool. It must match whatever your public ingress (tunnel/reverse proxy) forwards to, or the session is unreachable while every local check says 200. 0 = let the OS assign one.",
+  "presenterPort": 3000
+}

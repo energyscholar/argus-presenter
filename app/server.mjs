@@ -29,6 +29,7 @@ import { ALL as ALL_READ_ROLES } from './permissions.mjs';
 import { validate, summarize } from './validate.mjs';
 import { createAsr } from './asr.mjs';
 import { verifyCapability, mintCapability } from '../lib/capability.mjs';
+import { presenterPort } from '../lib/deployment-config.mjs';
 import { selectProfile, DEFAULT_PROFILE } from './profiles.mjs';
 import { createHeuristicSummarizer } from './summarizer.mjs';
 import { buildDigest } from './digests.mjs';
@@ -3490,7 +3491,11 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
 
 // Runnable standalone: `node app/server.mjs [port]`
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const p = parseInt(process.argv[2] || '4300', 10);
+  // Plan 0522 P16.1 (R1): the default port is DEPLOYMENT CONFIG, not a code constant — the same
+  // declared value the MCP surface uses, so `npm start` and presenter_start cannot land on
+  // different ports and disagree about which one the public ingress forwards to. No config file
+  // anywhere ⇒ 3000. An explicit argv port still wins. See lib/deployment-config.mjs.
+  const p = process.argv[2] ? parseInt(process.argv[2], 10) : presenterPort();
   // Real deployments are GATED out of the box: default the presenter password to
   // `password` (override via PRESENTER_ROLE_PASSWORD). This applies ONLY to the CLI
   // self-run — createServer() from tests stays ungated unless a credential is passed.

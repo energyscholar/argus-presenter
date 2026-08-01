@@ -33,3 +33,7 @@ modules/_src/
 modules/_archive/*
 
 !modules/_archive/README.txt
+
+# Plan 0522 P16.1 (R1): the LOCAL deployment config (port now, more later). Local values —
+# a port that matches THIS machine's ingress — are never committed; the documented example is.
+/presenter-config.json

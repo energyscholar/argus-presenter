@@ -7,7 +7,7 @@ required — you drive every step from the browser.
 ## 1. Start the server
 
 ```bash
-npm start                     # runs app/server.mjs on the default port (4300)
+npm start                     # runs app/server.mjs on the CONFIGURED port (default 3000)
 # or
 node app/server.mjs 4300      # pick a port explicitly (0 = auto-assign)
 ```
@@ -16,10 +16,14 @@ On launch it prints the three entry URLs:
 
 ```
 Argus Presenter running:
-  display : http://127.0.0.1:4300/
-  control : http://127.0.0.1:4300/control
-  creator : http://127.0.0.1:4300/creator
+  display : http://127.0.0.1:3000/
+  control : http://127.0.0.1:3000/control
+  creator : http://127.0.0.1:3000/creator
 ```
+
+The port comes from the deployment config file — copy `presenter-config.example.json` to
+`presenter-config.json` (gitignored) or `~/.config/argus-presenter/presenter-config.json`
+and set `presenterPort`. No config file anywhere ⇒ 3000.
 
 - **display** `/` — the audience view (what everyone sees).
 - **control** `/control` — the presenter control panel.

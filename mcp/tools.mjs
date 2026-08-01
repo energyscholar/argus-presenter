@@ -11,6 +11,7 @@ import { assemble } from '../harness/assemble.mjs';
 import { tunnelConfigured, tunnelStatus, tunnelUp, tunnelDown } from './tunnel.mjs';
 import { readFileSync, existsSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
+import { presenterPort } from '../lib/deployment-config.mjs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -40,9 +41,23 @@ const need = () => { if (!server) throw new Error('presenter not started — cal
 // presenter_start raised; a tunnel that was already running when we arrived is somebody else's.
 let tunnelRaisedByUs = false;
 
-// STANDARD Argus Presenter port — pinned in code so the MCP-driven URL is ALWAYS the same
-// (http://127.0.0.1:4300). Never let presenter_start default to a random port again.
-const AP_STANDARD_PORT = 4300;
+/*
+ * The STANDARD Argus Presenter port — DECLARED, and never random. Plan 0522 P16.1 (R1) moved the
+ * declaration out of this file and into the deployment's own config (lib/deployment-config.mjs);
+ * with no config file anywhere it is 3000. The old intent stands unchanged — "never let
+ * presenter_start default to a random port again" — but a port that must match something OUTSIDE
+ * the repo (the public ingress target) cannot be stated correctly by the repo.
+ *
+ * It was 4300 here. Observed cold 2026-07-30: presenter_start bound 127.0.0.1:4300, answered 200
+ * locally, raised the tunnel, reported active:true — and the public url returned 502, because this
+ * deployment's ingress forwards to 3000. Success reported; nobody could reach the session.
+ *
+ * ⚠ Resolved ONCE, at import, and used in BOTH places the number appears: the handler default AND
+ * the JSON-schema description below. They cannot drift apart, because there is now one value. That
+ * matters: the schema is what the AI reads, so a schema saying "default 4300" over a handler using
+ * something else is a documented lie on the agent surface — the I1 parity failure P16.1 closes.
+ */
+export const AP_STANDARD_PORT = presenterPort();
 
 // Plan 0473 P3 — the consumer identity for presenter_situation's SERVER-HELD cursor. This process is
 // ONE MCP stdio connection = ONE consumer, so a stable per-process key identifies it; the server
@@ -55,9 +70,9 @@ const MCP_CONSUMER_ID = 'mcp-stdio';
 export const coreTools = [
   {
     name: 'presenter_start',
-    description: 'Start the Argus Presenter — the whole REACHABLE surface, not just the process: binds the server AND raises the configured public ingress (tunnel), then verifies the PUBLIC url answers. Returns the local url, the public url participants actually open, and the ingress state. S220: a local 200 proves the process is listening and proves NOTHING about whether anyone else can reach it — do not report a session as up on the strength of the local bind.',
+    description: 'Start the Argus Presenter — the whole REACHABLE surface, not just the process: binds the server AND raises the configured public ingress (tunnel), then verifies the PUBLIC url answers. Returns the local url, the public url participants actually open, and the ingress state. S220: a local 200 proves the process is listening and proves NOTHING about whether anyone else can reach it — do not report a session as up on the strength of the local bind. P16.1: if the PUBLIC url does not answer, this is a FAILED START and returns {ok:false, error} — the usual cause is an ingress forwarding to a different port than the one bound. Otherwise {ok:true}.',
     input: { type: 'object', properties: {
-      port: { type: 'number', description: 'Port (default 4300 — the STANDARD, pinned AP port)' },
+      port: { type: 'number', description: `Port (default ${AP_STANDARD_PORT} — the STANDARD port DECLARED by this deployment's config file, which is what its public ingress forwards to; 0 = let the OS assign one). Override only if you know the ingress agrees.` },
       // S220 — see mcp/tunnel.mjs. Default ON, because "start the presenter" means participants
       // can reach it; a deployment with no PRESENTER_TUNNEL_START configured is unaffected.
       tunnel: { type: 'boolean', description: 'Raise the configured public ingress too (default TRUE). Set false to bind locally only. No-op when no ingress is configured.' },
@@ -83,7 +98,7 @@ export const coreTools = [
       floorThresholds: { type: 'object', description: 'Floor-control thresholds override (e.g. {enabled:true}).' },
     } },
     handler: async ({ port = AP_STANDARD_PORT, voice = true, tunnel = true, tunnelTimeoutMs = 30000, ...rest } = {}) => {
-      if (server) return { url: server.url(), already: true, note: 'already running — stop before changing profile or gates', tunnel: await tunnelStatus() };
+      if (server) return { ok: true, url: server.url(), already: true, note: 'already running — stop before changing profile or gates', tunnel: await tunnelStatus() };
       const PASS = ['profile','controlToken','rolePassword','roleSeed','capSecret','settlingMs','queueMaxPending','queueTtlMs','perTurnBudgetMs','perTurnWrapMs','floorThresholds'];
       const opts = { port, voiceEnabled: voice };
       for (const k of PASS) if (rest[k] !== undefined) opts[k] = rest[k];
@@ -115,18 +130,52 @@ export const coreTools = [
       // and left it standing, which is the anti-pattern P16.1 catalogues. Prevented, not warned.
       const gated = !!(opts.controlToken || rest.rolePassword || process.env.PRESENTER_CONTROL_TOKEN);
       const publicUrl = ingress.publicUrl || null;
+      const minted = mintedToken ? { controlToken: mintedToken, controlTokenMinted: true,
+        // The minted secret is RETURNED, never only logged: a credential the caller cannot read
+        // is the same as no write surface at all — the Content Creator and /manage need it, and
+        // the human needs it to reach /control on a gated session.
+        note: 'No credential was passed, so one was minted (P12/R15) — the module write-back never ships open. Use it as x-control-token / ?token=.' } : {};
+
+      /*
+       * ── Plan 0522 P16.1 (I1) — A FAILED PUBLIC PROBE IS A FAILED START, NOT A WARNING ───────
+       * tunnelUp() already fetches the PUBLIC url and, when it does not answer, hands back a
+       * `warning:` on an otherwise successful result. That warning is how 2026-07-30 happened:
+       * `active: true`, a 502 nobody read, and five people who could not join. Starting the
+       * presenter means starting the whole REACHABLE surface (mcp/tunnel.mjs) — so if the address
+       * a participant opens does not answer, the start FAILED, and the tool says so in the field
+       * an agent actually branches on.
+       *
+       * The diagnosis is named because it is the only one available without dashboard access, and
+       * it is the one that was true: the ingress forwards to a port the server is not on.
+       *
+       * The local bind is deliberately LEFT UP. It is a working session on this machine and the
+       * ingress is the broken half; tearing it down would also destroy the minted credential.
+       * The remedy is stated instead — presenter_tunnel to retry, presenter_stop to change port.
+       */
+      const probe = ingress.reachable || null;
+      if (probe && probe.ok === false) {
+        return {
+          ok: false,
+          startFailed: true,
+          error: `public ingress raised, but ${publicUrl} did not answer (${probe.status != null ? 'status ' + probe.status : probe.error}) — participants cannot reach this session. Most likely: the ingress target does not match the configured port (this session bound ${server.url()}). Fix the ingress target, or set presenterPort in the deployment config (see presenter-config.example.json), then retry.`,
+          url: server.url(),
+          publicUrl,
+          gated,
+          tunnel: ingress,
+          remedy: 'the local bind is still up: presenter_tunnel {action:"start"} retries the ingress; presenter_stop then presenter_start {port} changes the port.',
+          ...minted,
+        };
+      }
+
       return {
+        ok: true,
         url: server.url(),
         publicUrl,
         profile: (server.profile && server.profile().name) || rest.profile || 'wearable',
         gated,
         capLinks: !!rest.capSecret,
         tunnel: ingress,
-        // The minted secret is RETURNED, never only logged: a credential the caller cannot read
-        // is the same as no write surface at all — the Content Creator and /manage need it, and
-        // the human needs it to reach /control on a gated session.
-        ...(mintedToken ? { controlToken: mintedToken, controlTokenMinted: true,
-          note: 'No credential was passed, so one was minted (P12/R15) — the module write-back never ships open. Use it as x-control-token / ?token=.' } : {}),
+        ...minted,
       };
     }
   },

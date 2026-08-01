@@ -17,16 +17,21 @@ generate, tweak, and push them live.
 ```bash
 npm ci            # install (ws is the only runtime dependency)
 npm test          # run the full suite (unit + component + live/headless)
-node app/server.mjs 4300   # run the presenter server, then open http://127.0.0.1:4300
+node app/server.mjs        # run the presenter server on the configured port (default 3000)
 ```
 The test suite drives real headless-browser flows via Puppeteer (a dev dependency);
 the first run downloads a browser. `node harness/test.mjs --only <name>` runs a subset.
 
 ## Run
 ```bash
-npm start                  # runs app/server.mjs on the default port (4300)
+npm start                  # runs app/server.mjs on the CONFIGURED port (default 3000)
 node app/server.mjs 4300   # or pick a port explicitly (0 = auto-assign)
 ```
+The default port is deployment configuration, not source: copy
+`presenter-config.example.json` to `presenter-config.json` (gitignored) or to
+`~/.config/argus-presenter/presenter-config.json` and set `presenterPort`. With no config
+file anywhere it is **3000**. Set it to whatever your public ingress forwards to — a
+mismatch is invisible locally and fatal remotely.
 No AI required — it runs standalone. On launch it prints all three entry URLs:
 - **display** `/` — the shared/per-user audience view
 - **control** `/control` — the presenter control panel

@@ -34,7 +34,7 @@ the `presenter_*` tools then appear in-session.
 
 | Tool | Purpose |
 |------|---------|
-| `presenter_start` `{port?}` | Start the (single) presenter server; returns the URL to open. `port:0` = random — **pass `4300`** (the canonical port). |
+| `presenter_start` `{port?}` | Start the (single) presenter server AND raise the public ingress; returns the URL to open. **Omit `port`** — the default is the port this deployment DECLARES in its config file (`presenter-config.json`, default 3000), which is what its ingress forwards to. `port:0` = OS-assigned. Returns `{ok:false, error}` if the PUBLIC url does not answer: an unreachable session is a failed start, not a warning. |
 | `presenter_stop` | Stop it. |
 | `presenter_status` | Running? URL + connected users (presence, incl. `eyesOn`). |
 | `present_module` | Load a content module and begin delivering it. |
