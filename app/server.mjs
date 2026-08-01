@@ -317,7 +317,12 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     if (!module) return { id, error: missing };
     const man = module.manifest || {};
     const v = summarize(validate(module));
+    // Plan 0522 P10 — `summary` rides the list summary. The picker's option LABEL is the title
+    // alone (plus the actionable ⚠/ERR markers); the counts and the one-line summary move into
+    // the option's `title=` tooltip, and the tooltip cannot show what the API never sent. The
+    // field is additive and nullable: every existing consumer of this shape ignores it.
     return { id, title: man.title || module.title || id, version: man.version || null,
+      summary: man.summary || null,
       beats: (module.beats || []).length, sections: (module.sections || []).length, warn: v.warn, info: v.info };
   }
   function listModules() {

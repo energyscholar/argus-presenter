@@ -652,8 +652,17 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
       // just restored. Reading immediately before `innerHTML` is replaced cannot go stale.
       var keep=sel.value;   // preserve selection across the async rebuild
       sel.innerHTML='<option value="">— select a module —</option>';
+      // P10 — the LABEL is the title, and the title is what a GM scans for. The counts were on
+      // every row and discriminated nothing; they are reference, so they move to the option's
+      // `title=` tooltip along with manifest.summary (which the picker could not show at all
+      // before — #mod-info only reveals it AFTER a module is selected, i.e. too late to choose by).
+      // ⚠ The ⚠/ERR markers STAY IN THE LABEL: they are ACTIONABLE, and a tooltip does not exist
+      // on touch input and never appears at all for a list the GM is only arrowing through. A
+      // module that fails to parse must be findable AND visibly broken without hovering (I4).
       list.forEach(function(m){ var o=document.createElement('option'); o.value=m.id;
-        o.textContent=m.title+' — '+m.beats+' beats/'+m.sections+' sec'+(m.warn?(' ⚠'+m.warn):'')+(m.error?' (ERR)':''); sel.appendChild(o); });
+        o.textContent=m.title+(m.warn?(' ⚠'+m.warn):'')+(m.error?' (ERR)':'');
+        o.title=(m.beats||0)+' beats / '+(m.sections||0)+' sections'+(m.summary?(' — '+m.summary):'')+(m.error?('\nERROR: '+m.error):'');
+        sel.appendChild(o); });
       // P9 — the stored default fills in ONLY for a page that has no selection of its own, and
       // only on the first rebuild of that page's life. refreshModules() also runs on every
       // (re)connect and on every module-changed; if the fallback ran there it would resurrect a
