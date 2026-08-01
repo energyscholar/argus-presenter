@@ -20,6 +20,18 @@
      Top-LEFT corner, subtle; z 55 sits BELOW the config overlay (61) and control overlay (70). */
   #ap-goto-control{position:fixed;top:4px;left:6px;z-index:55;background:rgba(6,10,24,.7);color:#cfe9ff;border:1px solid #2a3a5a;border-radius:6px;padding:4px 9px;font:11px/1.4 'Courier New',monospace;letter-spacing:.06em;cursor:pointer;opacity:.45;}
   #ap-goto-control:hover{opacity:1;border-color:#22e5a0;}
+  /* Plan 0522 P13 — AMBIENT SEAT IDENTITY. Which seat this display is sitting at used to be
+     legible ONLY inside the config panel, so a player had to open Settings to find out. This
+     paints it on the main display instead.
+     Top-LEFT but BELOW the ⧉ Control slot (top:4px), because a granted presenter has both and
+     two fixed boxes in one corner is a collision, not a layout. z 54 sits under that button (55)
+     and under every overlay. Ships hidden: a deployment whose plugins declare no stations sees
+     no change whatsoever. pointer-events:none — it is a readout, never a target. */
+  #ap-seat{position:fixed;top:30px;left:6px;z-index:54;display:flex;align-items:baseline;gap:7px;
+    max-width:40vw;background:rgba(6,10,24,.72);border:1px solid #2a3a5a;border-radius:6px;
+    padding:4px 10px;font:13px/1.4 'Courier New',monospace;letter-spacing:.06em;pointer-events:none;}
+  #ap-seat-k{color:#8ab;font-size:10px;letter-spacing:.14em;text-transform:uppercase;}
+  #ap-seat-v{color:#eafff6;font-weight:bold;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   #led.on{background:#22e5a0;box-shadow:0 0 8px #22e5a0;}
   /* max-height: the panel is position:fixed with no intrinsic bound — as rows accumulate it
      grew down across the echo line (#ap-echo, bottom:38px) and the input row, which it
@@ -94,6 +106,11 @@
 <body>
 <button id="led-btn" title="Settings" aria-haspopup="true" aria-label="Connection and settings"><span id="led"></span></button>
 <button id="ap-goto-control" title="Open (or refocus) the presenter control window" style="display:none">⧉ Control</button>
+<!-- Plan 0522 P13 — the seat's own identity, ambient. Ships hidden and is revealed only by a
+     welcome carrying a non-empty registry (the same gate as the selector row above it), so a
+     deployment with no stations renders nothing at all. Every string in it comes from the
+     registry at runtime; core knows no label of its own. -->
+<div id="ap-seat" role="status" aria-live="polite" style="display:none"><span id="ap-seat-k"></span><span id="ap-seat-v"></span></div>
 <div id="ap-config" role="dialog" aria-label="Settings">
   <!-- Plan 0514 §7 — the panel was getting cluttered, so it is GROUPED: You · Your screen ·
        Display · Presenter. The old row labelled "Role (User/Presenter)" is the PRIVILEGE axis
@@ -664,11 +681,40 @@
     if (selEl) selEl.addEventListener('change', function(){
       if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t:'station-select', stationUid: parseInt(selEl.value, 10) }));
     });
+    // ---- Plan 0522 P13: AMBIENT SEAT IDENTITY -----------------------------------------------
+    // I3, TRANSIENT RENDER / DURABLE ASSIGNMENT: this paints what the server already told us and
+    // sends NOTHING. Showing a seat its own label must never write that seat — so there is no
+    // select() here, no request, no round-trip. The registry and the uid both ride the welcome
+    // (0514 §8) and the uid rides every subsequent `station` reply, which is the whole data path.
+    var seatEl = document.getElementById('ap-seat');
+    var seatK = document.getElementById('ap-seat-k');
+    var seatV = document.getElementById('ap-seat-v');
+    var seatReg = null;          // the registry as last relayed — the ONLY source of a label
+    var seatKey = '';            // the deployment's own word for a station, also from the wire
+    function paintSeat(uid){
+      if (!seatEl) return;
+      var st = null;
+      if (Array.isArray(seatReg) && uid != null) {
+        for (var i = 0; i < seatReg.length; i++) { if (seatReg[i] && seatReg[i].stationUid === uid) { st = seatReg[i]; break; } }
+      }
+      // No registry, or a uid this deployment does not know ⇒ render NOTHING, and leave nothing
+      // stale behind. A blank badge is worse than no badge: it reads as a broken seat.
+      if (!st) { seatEl.style.display = 'none'; seatEl.removeAttribute('title'); if (seatK) seatK.textContent = ''; if (seatV) seatV.textContent = ''; return; }
+      var text = (st.icon ? st.icon + ' ' : '') + st.stationLabel;
+      if (seatK) seatK.textContent = seatKey || '';
+      if (seatV) seatV.textContent = text;
+      seatEl.title = ((seatKey ? seatKey + ': ' : '') + st.stationLabel);
+      seatEl.style.display = '';
+    }
     window.__apOnStationWelcome = function(m){
       var row = document.getElementById('cfg-station-row');
       var nameRow = document.getElementById('cfg-name-row');
       var reg = m && m.stationRegistry;
-      if (!Array.isArray(reg) || !reg.length || !selEl) { if (row) row.style.display = 'none'; if (nameRow) nameRow.style.display = 'none'; return; }
+      // P13: the ambient badge reads from the SAME relay as the selector, so the two can never
+      // disagree about where this seat is, and both vanish together on a stationless deployment.
+      seatReg = (Array.isArray(reg) && reg.length) ? reg : null;
+      seatKey = (m && typeof m.stationSelectorLabel === 'string') ? m.stationSelectorLabel : '';
+      if (!Array.isArray(reg) || !reg.length || !selEl) { if (row) row.style.display = 'none'; if (nameRow) nameRow.style.display = 'none'; paintSeat(null); return; }
       if (row) row.style.display = '';
       if (nameRow) { nameRow.style.display = ''; document.getElementById('cfg-name').textContent = identity.userName || 'NAME UNKNOWN'; }
       var lab = document.getElementById('cfg-station-label');
@@ -691,6 +737,7 @@
         });
       });
       if (m.stationUid != null) selEl.value = String(m.stationUid);
+      paintSeat(m.stationUid != null ? m.stationUid : null);   // P13 — ambient, on the welcome
       // The spotlight grant rides the welcome too, so a reconnect restores the Share control
       // instead of hiding it until the GM happens to re-grant (0508 D1).
       var shareRow = document.getElementById('cfg-share-row');
@@ -706,6 +753,10 @@
       }
       if (m.ok && m.stationUid != null) {
         if (selEl) selEl.value = String(m.stationUid);
+        // P13 — the badge FOLLOWS the seat. Every station change lands here, whichever surface
+        // drove it (the selector, or stationSet from the API/MCP), so the ambient label can never
+        // fossilise at whatever the welcome happened to say.
+        paintSeat(m.stationUid);
         stSay('showing your station');
         return;
       }
