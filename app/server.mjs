@@ -89,6 +89,37 @@ export function renderPresenterPage(voiceEnabled) {
   return voiceEnabled ? html : stripVoiceBlocks(html);
 }
 
+// ── Plan 0522 P11 (R11) — MODULE LIFECYCLE ────────────────────────────────────────────────
+// `status` is the ONE optional manifest field this phase adds. `kind` already exists on almost
+// every module and is the grouping axis, so no second hierarchy is invented.
+//
+// ⚠ I1 (surface parity) BY CONSTRUCTION. The control page reads /api/modules and the agent
+// reads mcp/tools.mjs `presenter_modules`, and those are two separate directory scans. If the
+// defaults lived in each of them, one surface would eventually decide a module is `retired`
+// and the other would not. They both call THIS function instead.
+//
+// ⚠ FAILURE POSTURE — DELIBERATELY *NOT* buildStationRegistry's. That builder throws at load,
+// because it reads ONE deployment-wide file ONCE at boot: a bad file should stop the server
+// rather than surprise a live session. This reads ~30 independent content files LAZILY, per
+// request, so a throw here would empty the entire picker because one file has a typo — the
+// exact session-stopper I4 forbids. So an unrecognised value CANNOT hide anything: it degrades
+// to the permissive default and is reported back in `statusInvalid` so the surface can say so
+// out loud. Only an explicit, RECOGNISED status ever removes a row from the default view.
+export const MODULE_STATUSES = ['active', 'working', 'retired'];
+export const MODULE_KIND_NONE = 'Uncategorized';
+export function moduleLifecycle(man) {
+  const m = man || {};
+  const kind = typeof m.kind === 'string' ? m.kind.trim() : '';
+  const raw = (m.status === undefined || m.status === null) ? '' : String(m.status).trim();
+  const norm = raw.toLowerCase();
+  const ok = MODULE_STATUSES.includes(norm);
+  return {
+    kind: kind || null,                          // null ⇒ the picker groups it under MODULE_KIND_NONE
+    status: ok ? norm : 'active',                // absent OR unrecognised ⇒ active (I4: the permissive default)
+    statusInvalid: (raw && !ok) ? raw.slice(0, 40) : null,
+  };
+}
+
 /**
  * Plan 0514 §5 — the seat-name slug. lowercase · non-[a-z0-9] → '-' · collapse repeats ·
  * trim · cap 24 chars. Empty ⇒ 'anon'. Same link ⇒ same userId, every time. That is the
@@ -321,8 +352,13 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     // alone (plus the actionable ⚠/ERR markers); the counts and the one-line summary move into
     // the option's `title=` tooltip, and the tooltip cannot show what the API never sent. The
     // field is additive and nullable: every existing consumer of this shape ignores it.
+    // Plan 0522 P11 — `kind` (grouping) and `status` (lifecycle) ride the same list summary,
+    // normalised by the shared moduleLifecycle() so /api/modules and the MCP surface cannot
+    // disagree about what a module's lifecycle IS. Additive and nullable, like `summary`.
+    const life = moduleLifecycle(man);
     return { id, title: man.title || module.title || id, version: man.version || null,
       summary: man.summary || null,
+      kind: life.kind, status: life.status, statusInvalid: life.statusInvalid,
       beats: (module.beats || []).length, sections: (module.sections || []).length, warn: v.warn, info: v.info };
   }
   function listModules() {

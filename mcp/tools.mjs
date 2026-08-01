@@ -6,7 +6,7 @@
  * A single presenter server instance is managed here (start/stop). Every component +
  * poll capability is reachable through this surface — "tie everything to MCP".
  */
-import { createServer } from '../app/server.mjs';
+import { createServer, moduleLifecycle } from '../app/server.mjs';
 import { assemble } from '../harness/assemble.mjs';
 import { tunnelConfigured, tunnelStatus, tunnelUp, tunnelDown } from './tunnel.mjs';
 import { readFileSync, existsSync } from 'node:fs';
@@ -331,7 +331,7 @@ export const coreTools = [
   },
   {
     name: 'presenter_modules',
-    description: 'List the content modules available on disk (id, title, beat count) — the ids accepted by present_module({moduleId}). Reads MODULES_DIR directly; does not require the server to be started.',
+    description: 'List the content modules available on disk (id, title, beat count, kind, status) — the ids accepted by present_module({moduleId}). Reads MODULES_DIR directly; does not require the server to be started. `status` is the lifecycle field (active|working|retired, default active) and `kind` is the grouping the human control page uses. DECLARED DIFFERENCE (Plan 0522 P11, I1): this list is NEVER filtered by status — the human picker hides non-active modules behind a "Show All Modules" checkbox, but an agent has no checkbox to tick, so it always sees the whole catalogue and decides from `status` itself. `unlisted:true` marks a module the human picker hides by default.',
     input: { type: 'object', properties: {} },
     handler: async () => {
       if (!existsSync(MODULES_DIR)) return { dir: MODULES_DIR, modules: [] };
@@ -342,7 +342,12 @@ export const coreTools = [
           const id = f.slice(0, -5);
           try {
             const m = readModuleById(id);
-            return { id, title: (m.manifest && m.manifest.title) || id, beats: m.beats.length };
+            // Plan 0522 P11 — SAME normaliser as /api/modules (app/server.mjs moduleLifecycle),
+            // so the two surfaces cannot drift on what a module's lifecycle is. What they DO
+            // with it differs, and that difference is declared above and asserted by t30.
+            const life = moduleLifecycle(m.manifest || {});
+            return { id, title: (m.manifest && m.manifest.title) || id, beats: m.beats.length,
+              kind: life.kind, status: life.status, unlisted: life.status !== 'active' };
           } catch (e) { return null; }
         })
         .filter(Boolean);

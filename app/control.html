@@ -358,6 +358,16 @@
           <select id="mod-select" style="flex:1 1 auto"><option value="">— select a module —</option></select>
           <button id="mod-refresh" class="mini" title="rescan">⟳</button>
         </div>
+        <!-- Plan 0522 P11 (R13) — THE ESCAPE HATCH. The picker groups by `kind` and shows only
+             `status: active` by default. This one checkbox reveals EVERY module in the scan path
+             regardless of status — working AND retired, no third state, no second control. It sits
+             next to the picker it governs and is one click, always, because a picker that hides
+             things must never be able to hide the one you need at 20:05 (I4). -->
+        <div class="row" style="margin-top:6px">
+          <label for="mod-showall" style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--dim);cursor:pointer;user-select:none">
+            <input type="checkbox" id="mod-showall"> Show All Modules
+          </label>
+        </div>
         <div id="mod-info" style="margin-top:6px;font-size:12px;color:var(--dim)"></div>
         <div class="row" style="margin-top:6px">
           <button id="mod-load" class="primary" disabled>Validate &amp; Load</button>
@@ -642,34 +652,88 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   function setModPref(id){ try{ if(id) localStorage.setItem(MOD_KEY,id); else localStorage.removeItem(MOD_KEY); }catch(e){} }
   function hasOpt(sel,v){ for(var i=0;i<sel.options.length;i++){ if(sel.options[i].value===v) return true; } return false; }
 
+  // ── Plan 0522 P11 (R11/R13) — LIFECYCLE + GROUPED PICKER ──────────────────────────────────
+  // Grouping is by the manifest's EXISTING `kind` (R11 dropped the proposed `collection`: it
+  // would have been a fourth grouping axis for a list that already had one). Native <optgroup>,
+  // so there is no new widget and keyboard navigation is untouched.
+  //
+  // ⚠ <optgroup> CHANGES THE DOM SHAPE, and three P9 mechanisms depend on it:
+  //   · sel.options is a FLAT HTMLOptionsCollection that walks INTO optgroups, so hasOpt() and
+  //     selectedIndex keep working unchanged.
+  //   · the placeholder is still appended straight onto the <select> BEFORE any group, so it
+  //     stays options[0] and stays the fallback when nothing is selectable.
+  //   · sel.value= still matches by value across groups.
+  //
+  // ⚠⚠ A PICKER THAT HIDES THINGS CAN HIDE THE ONE YOU NEED AT 20:05. Three guarantees, and
+  // every one of them is load-bearing: hiding is caused ONLY by an explicit, recognised status
+  // (never by an absent or misspelled field — see moduleLifecycle in server.mjs); the checkbox
+  // is one click and always visible; and the module the GM is pointing at or has LOADED is
+  // never hidden whatever its status says.
+  var SHOWALL_KEY=NS+':showAllModules';
+  var KIND_NONE='Uncategorized';
+  var loadedModuleId=null;   // the module actually pushed to the room — exempt from hiding
+  var pinnedModuleIds={};    // ids some other surface has asked for by name — also exempt (see queueModule)
+  function showAllModules(){ var c=$('mod-showall'); if(c) return !!c.checked;
+    try{ return localStorage.getItem(SHOWALL_KEY)==='1'; }catch(e){ return false; } }
+  // Build ONE <option>. P10's contract is preserved exactly: the LABEL is the title plus the
+  // ACTIONABLE markers (⚠ count, (ERR)), and everything that is mere reference lives in title=.
+  // P11 adds one marker to the label and only for a non-active module: with "Show All Modules"
+  // ticked the list is mixed, and a retired module that looked identical to a live one would be
+  // a trap. kind/status/an unrecognised status value are reference ⇒ tooltip.
+  function modOption(m){
+    var o=document.createElement('option'); o.value=m.id;
+    var st=m.status||'active';
+    o.textContent=m.title+(m.warn?(' ⚠'+m.warn):'')+(m.error?' (ERR)':'')+(st!=='active'?(' · '+st):'');
+    o.title=(m.beats||0)+' beats / '+(m.sections||0)+' sections'+(m.summary?(' — '+m.summary):'')
+      +'\nkind: '+((m.kind&&String(m.kind))||KIND_NONE)+' · status: '+st
+      +(m.statusInvalid?('\n⚠ unrecognized status "'+m.statusInvalid+'" — treated as active'):'')
+      +(m.error?('\nERROR: '+m.error):'');
+    return o;
+  }
+
+  // ⚠ Returns the rebuild's promise (P11). Every existing call site ignores it; queueModule()
+  // needs it, because it may have to REVEAL a module before it can select one.
   function refreshModules(){
     var sel=$('mod-select');
-    fetch('/api/modules',{cache:'no-store'}).then(function(r){return r.json();}).then(function(list){
+    return fetch('/api/modules',{cache:'no-store'}).then(function(r){return r.json();}).then(function(list){
       // ⚠ P9 — `keep` is read HERE, at apply time, not at call time. refreshModules() has four
       // call sites and TWO of them fire at boot (the bottom-of-file kickoff and ws.onopen), so
       // two rebuilds are in flight at once: a snapshot taken at call time is already stale when
       // the later response lands, and it silently overwrote the selection the earlier one had
       // just restored. Reading immediately before `innerHTML` is replaced cannot go stale.
       var keep=sel.value;   // preserve selection across the async rebuild
-      sel.innerHTML='<option value="">— select a module —</option>';
-      // P10 — the LABEL is the title, and the title is what a GM scans for. The counts were on
-      // every row and discriminated nothing; they are reference, so they move to the option's
-      // `title=` tooltip along with manifest.summary (which the picker could not show at all
-      // before — #mod-info only reveals it AFTER a module is selected, i.e. too late to choose by).
-      // ⚠ The ⚠/ERR markers STAY IN THE LABEL: they are ACTIONABLE, and a tooltip does not exist
-      // on touch input and never appears at all for a list the GM is only arrowing through. A
-      // module that fails to parse must be findable AND visibly broken without hovering (I4).
-      list.forEach(function(m){ var o=document.createElement('option'); o.value=m.id;
-        o.textContent=m.title+(m.warn?(' ⚠'+m.warn):'')+(m.error?' (ERR)':'');
-        o.title=(m.beats||0)+' beats / '+(m.sections||0)+' sections'+(m.summary?(' — '+m.summary):'')+(m.error?('\nERROR: '+m.error):'');
-        sel.appendChild(o); });
       // P9 — the stored default fills in ONLY for a page that has no selection of its own, and
       // only on the first rebuild of that page's life. refreshModules() also runs on every
       // (re)connect and on every module-changed; if the fallback ran there it would resurrect a
       // selection the GM had just cleared, and re-fire the fetch below mid-session.
+      //
+      // ⚠ P11 moved these three lines UP, ahead of the rebuild, and nothing else about them
+      // changed: `want` has to be known BEFORE the list is filtered, or the filter could drop
+      // the very option we are about to select. Still read after the response landed, so P9's
+      // race fix is intact.
       var want=keep, fresh=false;
       if(!want && !modPreselected){ want=modPref(); fresh=!!want; }
       modPreselected=true;
+      // P11 — the lifecycle filter, and its exemptions.
+      var all=showAllModules();
+      var rows=(list||[]).filter(function(m){
+        var st=m.status||'active';
+        return all || st==='active' || m.id===want || m.id===keep || m.id===loadedModuleId || !!pinnedModuleIds[m.id];
+      });
+      sel.innerHTML='<option value="">— select a module —</option>';
+      // P11 — group by `kind`; a module with NO kind is grouped, never dropped (I4). Groups are
+      // ordered A–Z by their label and members A–Z by title, so the picker's order stops being
+      // "whatever readdir returned" and no module can hide by sorting oddly.
+      var groups={}, names=[];
+      rows.forEach(function(m){ var k=(m.kind&&String(m.kind).trim())||KIND_NONE;
+        if(!groups[k]){ groups[k]=[]; names.push(k); } groups[k].push(m); });
+      names.sort(function(a,b){ return a.toUpperCase().localeCompare(b.toUpperCase()); });
+      names.forEach(function(k){
+        var g=document.createElement('optgroup'); g.label=k.toUpperCase();
+        groups[k].sort(function(a,b){ return String(a.title||a.id).localeCompare(String(b.title||b.id),undefined,{sensitivity:'base'}); })
+          .forEach(function(m){ g.appendChild(modOption(m)); });
+        sel.appendChild(g);
+      });
       // I4 — a stored (or held) id that is no longer on disk degrades SILENTLY to the placeholder.
       // Never an error dialog at 20:05. `sel.value=<absent>` would leave selectedIndex at -1, i.e.
       // a blank picker that looks broken, so the placeholder is selected explicitly. The stored key
@@ -695,12 +759,21 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     }).catch(function(){ $('mod-info').textContent='Error loading module'; $('mod-load').disabled=true; });
   };
   $('mod-load').onclick=function(){ if(!module) return; control('load_module',{module:module}); curBeat=-1; renderNav(); $('btn-start').disabled=false;
+    // P11 — remember WHICH module went to the room. A module that is live must stay findable in
+    // the picker even if its status says otherwise and even after the GM browses away from it.
+    loadedModuleId=$('mod-select').value||null;
     // S210: loaded ⇒ the picker is done doing its job. Collapse it and surface the live
     // module's title on the summary so the GM still knows what is loaded at a glance.
     var t=(module.manifest&&module.manifest.title)||$('mod-select').value||'';
     var cur=$('mod-current'); if(cur) cur.textContent = t? ' · '+t : '';
     var d=$('mod-details'); if(d) d.open=false; };
   $('mod-refresh').onclick=refreshModules;
+  // P11 (R13) — restore the checkbox from localStorage BEFORE the first refreshModules() runs
+  // (the bottom-of-file kickoff), so the very first list a returning GM sees is the one they
+  // left. Same mechanism as TOKEN_KEY / NP_KEY / MOD_KEY — no new persistence machinery.
+  (function(){ var c=$('mod-showall'); if(!c) return;
+    try{ c.checked = localStorage.getItem(SHOWALL_KEY)==='1'; }catch(e){}
+    c.addEventListener('change',function(){ try{ localStorage.setItem(SHOWALL_KEY,this.checked?'1':'0'); }catch(e){} refreshModules(); }); })();
 
   // SCH-2: Series picker — the level above Module. Choosing a series queues its first module
   // into #mod-select (the GM still clicks Validate&Load per module); "Next in series ▶" advances.
@@ -714,7 +787,16 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   }
   function updateSeriesNav(){ var b=$('series-next'); if(b) b.disabled = !(seriesModules.length && seriesPos < seriesModules.length-1); }
   // Point #mod-select at module id `mid` and trigger its onchange (fetch+validate), ready to Load.
-  function queueModule(mid){ var ms=$('mod-select'); if(!ms) return; ms.value=mid; if(ms.onchange) ms.onchange(); }
+  // ⚠ P11 — a SERIES may name a module the lifecycle filter is hiding. `ms.value=<absent>` leaves
+  // selectedIndex at -1, i.e. a blank picker and no module: the GM asks for the next chapter and
+  // gets nothing, with no message. So an id asked for BY NAME pins itself past the filter, the
+  // list is rebuilt, and only then is it selected. Zero *.series.json files exist on disk today,
+  // which is exactly why this path would have rotted unnoticed.
+  function queueModule(mid){ var ms=$('mod-select'); if(!ms) return;
+    if(hasOpt(ms,mid)){ ms.value=mid; if(ms.onchange) ms.onchange(); return; }
+    pinnedModuleIds[mid]=1;
+    refreshModules().then(function(){ ms.value=mid; if(ms.onchange) ms.onchange(); });
+  }
   $('series-select').onchange=function(){ var id=this.value; seriesModules=[]; seriesPos=-1; updateSeriesNav();
     if(!id) return;
     fetch('/api/series/'+encodeURIComponent(id)).then(function(r){return r.json();}).then(function(d){
@@ -1463,6 +1545,7 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     lastControl:function(){return lastControl;},   // P5 t10: the last control frame this page emitted, verbatim
     setModule:function(m){ module=m; curBeat=-1; recBeat=-1; renderOutline(); renderNav(); },   // DEL-2 test/automation hook: load a module into the panel directly
     series:function(){return {mods:seriesModules.slice(),pos:seriesPos};},   // SCH-2 test hook
+    queueModule:queueModule,   // P11 t31 hook: a series naming a module the lifecycle filter hides
     staged:function(){return staged;}, lastSent:function(){return lastSent;},   // P6 t14/t15/t16 hooks: the armed candidate + the last delivery receipt
     fullscreen:function(){return fsOpen;}, setFullscreen:setFullscreen,   // P7.2 t17/t18/t19 hooks
     previewDrops:function(){return pvDrops.slice();},   // P7.1 t21 hook: results the preview posted and this page DROPPED
