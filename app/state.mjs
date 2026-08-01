@@ -64,7 +64,15 @@ const SEEN_MAX = 4000;
 // crud/*/items). The rate limiter caps additions/sec; this caps TOTAL — evict oldest (FIFO).
 const COLLECTION_MAX = 1000;
 
-export function createStore({ permissions } = {}) {
+/*
+ * Plan 0522 P16.2 — `onOp` is the DURABLE SINK SEAM. The oplog below is a bounded in-memory ring:
+ * past OPLOG_MAX the oldest entry is shifted out, and at process exit the whole thing is freed.
+ * That is why every "run one session and then measure" criterion in plans 0508/0514/0516 has been
+ * unfalsifiable in practice — the evidence was gone before anyone came to read it. `onOp` receives
+ * each DURABLE op exactly once, at the moment it is appended, and lib/session-log.mjs buffers it
+ * to disk. Absent ⇒ nothing changes and nothing is written.
+ */
+export function createStore({ permissions, onOp = null } = {}) {
   const perms = permissions || createPermissions();
   const state = nobj();
   const oplog = [];        // bounded, in-order applied ops (B5)
@@ -210,6 +218,10 @@ export function createStore({ permissions } = {}) {
     if (eph) return { diff, by, path: op.path, verb: op.verb, ephemeral: true };
     const version = ++_version;                          // B5 monotonic version (durable only)
     oplog.push({ version, by, role: who.role || null, ts: Date.now(), opId: op.opId != null ? op.opId : null, path: op.path, verb: op.verb, value: clone(op.value), diff });
+    // P16.2: hand the entry to the durable sink BEFORE the ring can shift it out. Wrapped,
+    // because the sink is instrumentation: a broken or full log must degrade the RECORD of the
+    // session, never the session. Nothing thrown here may reach the caller applying the op.
+    if (onOp) { try { onOp(oplog[oplog.length - 1]); } catch { /* the log is not allowed to break play */ } }
     if (oplog.length > OPLOG_MAX) oplog.shift();
     if (op.opId != null) {                               // remember only successfully-applied opIds
       seenOps.add(op.opId); seenOrder.push(op.opId);

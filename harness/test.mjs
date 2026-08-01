@@ -13,9 +13,28 @@
  * Output: per-test PASS/FAIL, per-tier counts (unit|component|live), one final
  * `N passed / M failed` summary; exit code non-zero iff any test failed.
  */
-import { readdirSync, statSync, existsSync } from 'fs';
+import { readdirSync, statSync, existsSync, mkdtempSync, rmSync } from 'fs';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { dirname, join, relative, sep } from 'path';
+import { tmpdir } from 'os';
+
+/*
+ * ── Plan 0522 P16.2 — TEST ISOLATION FOR THE DURABLE SESSION LOG ────────────────────────────
+ * The deployment paths (the CLI self-run and presenter_start) now write the session op-log to
+ * ${XDG_STATE_HOME:-~/.local/state}/argus-presenter/logs. That is correct for a real session and
+ * WRONG for a test run: a suite must not leave files in a human's actual state directory, and
+ * some of these tests spawn the CLI as a child process, so an in-process override would not
+ * reach them.
+ *
+ * Set at IMPORT, not in main(), because a single file can be direct-run (`node test/unit/x.test.mjs`)
+ * and never reaches main() — but every test file imports this module. An explicit env var set by
+ * the operator still wins, so a run can be pointed somewhere deliberately.
+ */
+if (!process.env.PRESENTER_SESSION_LOG_DIR) {
+  const scratchLogDir = mkdtempSync(join(tmpdir(), 'ap-test-session-log-'));
+  process.env.PRESENTER_SESSION_LOG_DIR = scratchLogDir;
+  process.on('exit', () => { try { rmSync(scratchLogDir, { recursive: true, force: true }); } catch {} });
+}
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');

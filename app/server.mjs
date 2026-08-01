@@ -30,6 +30,7 @@ import { validate, summarize } from './validate.mjs';
 import { createAsr } from './asr.mjs';
 import { verifyCapability, mintCapability } from '../lib/capability.mjs';
 import { presenterPort } from '../lib/deployment-config.mjs';
+import { createSessionLog, resolveSessionLogDir } from '../lib/session-log.mjs';
 import { selectProfile, DEFAULT_PROFILE } from './profiles.mjs';
 import { createHeuristicSummarizer } from './summarizer.mjs';
 import { buildDigest } from './digests.mjs';
@@ -164,7 +165,7 @@ function sendStatic(res, req, absPath, contentType) {
   } catch (e) { res.writeHead(404); res.end('not found'); }
 }
 
-export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null, profile = DEFAULT_PROFILE, settlingMs = null, queueMaxPending = null, queueTtlMs = null, perTurnBudgetMs = null, perTurnWrapMs = null, floorThresholds = null } = {}) {
+export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null, profile = DEFAULT_PROFILE, settlingMs = null, queueMaxPending = null, queueTtlMs = null, perTurnBudgetMs = null, perTurnWrapMs = null, floorThresholds = null, sessionLogDir = null } = {}) {
   // Plan 0473 P1 — SESSION-TYPE PROFILE (the config-knob spine). Selected ONCE at session start;
   // its knobs are DATA the working-set engine will READ (settling/shedding/budget/floor/digest/queue).
   // Unknown/absent name falls back cleanly to the default (wearable). Profiles are data, not forks.
@@ -258,7 +259,34 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   /** A single representative socket for `userId` — the most recently bound. For single-answer paths. */
   function latestFor(userId) { const s = socketsFor(userId); return s.length ? s[s.length - 1] : null; }
   let connSeq = 0;             // per-server connection counter -> stable socketId (S5-ready)
-  const store = createStore(); // core session state machine (Plan 0435 group B)
+  /*
+   * ── Plan 0522 P16.2 (R3) — THE DURABLE SESSION LOG ────────────────────────────────────────
+   * The store's op-log is a bounded in-memory ring that dies with the process. S17 (2026-07-28)
+   * is the worked example: its process had exited before anyone came to measure, so Tuesday's
+   * evidence is unrecoverable — and with it every "run one session and measure" criterion in
+   * 0508/0514/0516. This writes the same ops to disk, OUTSIDE any repository.
+   *
+   * ⚠ ENABLEMENT IS DELIBERATELY ASYMMETRIC, exactly like the credential rule ~90 lines above.
+   * A bare createServer() — every test in this suite — passes no `sessionLogDir` and sets no
+   * PRESENTER_SESSION_LOG_DIR, so the handle comes back DISABLED and writes nothing: tests must
+   * not scribble in a human's real ~/.local/state. The DEPLOYMENT paths (the CLI self-run at the
+   * foot of this file, and presenter_start in mcp/tools.mjs) resolve the directory from
+   * lib/deployment-config.mjs and pass it in, so a REAL session logs by default.
+   *
+   * ⚠ Nothing in this construction may throw: resolveSessionLogDir never does, and an unwritable
+   * directory disables the log rather than the server (t44).
+   */
+  const sessionLogTarget = sessionLogDir
+    ? { sessionLogDir, sessionLogDirSource: 'option', sessionLogDirError: null }
+    : (process.env.PRESENTER_SESSION_LOG_DIR ? resolveSessionLogDir() : { sessionLogDir: null, sessionLogDirSource: null, sessionLogDirError: 'no session log directory configured — pass sessionLogDir, set PRESENTER_SESSION_LOG_DIR, or run the CLI/presenter_start (which read it from the deployment config)' });
+  const sessionLog = createSessionLog({
+    ...sessionLogTarget,
+    header: { profile: ACTIVE_PROFILE.name || null, voiceEnabled: VOICE_ENABLED, gated: !!(CONTROL_TOKEN || ROLE_HASH) },
+    onWarn: (event, detail) => log.warn('session-log', event, detail),
+  });
+  if (sessionLog.status().enabled) log.info('session-log', 'open', { sessionLogId: sessionLog.sessionLogId, dir: sessionLog.status().sessionLogDir, source: sessionLog.status().sessionLogDirSource });
+  // core session state machine (Plan 0435 group B); P16.2 hangs the durable sink off its op path
+  const store = createStore({ onOp: (entry) => sessionLog.append({ kind: 'op', ...entry }) });
   // Current DISPLAY per role / per user (C6): what a (re)connecting client should
   // be shown. A descriptor is re-rendered per connection on hello.
   const displayByRole = {};    // role -> descriptor
@@ -640,6 +668,62 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       if (!module) { res.writeHead(404); res.end(JSON.stringify({ error: 'not found' })); return; }
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ id, module, validation: summarize(validate(module)) }));
+    } else if (req.url === '/api/session-log' || req.url.startsWith('/api/session-log?')) {
+      /*
+       * ── Plan 0522 P16.2 (R6) — READING THE DURABLE LOG IS ROLE-GATED, AND FAILS CLOSED ──────
+       *
+       * This endpoint serves the session's op-log off disk. That log carries the session
+       * TRANSCRIPT: a `t:'chat'` message is applied as an op on `chat` (see handleOp below), so
+       * these lines are participants' own words.
+       *
+       * ⚠ THE RULING, RECORDED BECAUSE IT SHOULD OUTLIVE THE DECISION. Bruce's first call was
+       * "no need to protect the log". Shown that an ungated endpoint on a publicly-reachable
+       * host makes THIRD PARTIES' speech world-readable to anyone holding the url, he ruled
+       * role-gated. The people whose words these are were not in the room for that conversation.
+       *
+       * FAIL CLOSED, unlike /api/situation. Every other read gate here is "ungated ⇒ open", and
+       * that is right for them: an ungated deployment is a LAN/test posture. It is NOT right
+       * here, and the reason is P16.1's own finding — presenter_start raises a PUBLIC ingress,
+       * and the ungated-and-public combination is a real observed state of this deployment, not
+       * a hypothetical. "No credential configured" is not "no gate to apply"; it is "nothing to
+       * verify against", and the only safe answer to an unverifiable request for other people's
+       * speech is no. Same reasoning as moduleWriteAuthed (P12/R15), different harm.
+       *
+       * NO SECOND AUTH SCHEME: the credential is the SAME control credential the ws control
+       * roles (presenter/ai — CONTROL_ROLES) authenticate with, i.e. CONTROL_TOKEN or the
+       * roleSeed+rolePassword hash.
+       */
+      const a = sessionLogReadAuthed(req);
+      if (!a.ok) { res.writeHead(a.code, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: a.error })); return; }
+      const qs = new URLSearchParams((req.url.split('?')[1] || ''));
+      const rawLimit = parseInt(qs.get('limit') || '', 10);
+      const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 2000) : 200;
+      const wanted = qs.get('session') || sessionLog.sessionLogId;
+      const st = sessionLog.status();
+      let payload;
+      try { payload = st.enabled ? sessionLog.read({ sessionLogId: wanted, limit }) : { sessionLogId: wanted, entries: [], parts: [], bytes: 0, truncated: false, unparsedLines: 0 }; }
+      catch (e) { payload = { sessionLogId: wanted, entries: [], parts: [], bytes: 0, truncated: false, unparsedLines: 0, error: String((e && e.message) || e) }; }
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      // Enumerated, never spread: `parts` means one thing on the status object (this run's part
+      // FILENAMES) and another on a read (the requested session's parts with sizes). One name,
+      // one meaning — docs/naming-canon.md rule zero.
+      res.end(JSON.stringify({
+        enabled: st.enabled,
+        sessionLogDir: st.sessionLogDir,
+        sessionLogDirSource: st.sessionLogDirSource,
+        sessionLogDirError: st.sessionLogDirError,
+        caps: st.caps,
+        stats: st.stats,
+        currentSessionLogId: sessionLog.sessionLogId,
+        sessions: sessionLog.sessions(),
+        limit,
+        sessionLogId: payload.sessionLogId,
+        entries: payload.entries,
+        entryParts: payload.parts,
+        bytes: payload.bytes,
+        truncated: payload.truncated,
+        unparsedLines: payload.unparsedLines,
+      }));
     } else if (req.url === '/api/series') {
       // Discover available series (id, title, module count) — for the GM panel's series SELECT.
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-cache' });
@@ -706,6 +790,28 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     const q = new URLSearchParams((req.url.split('?')[1] || ''));
     const token = req.headers['x-control-token'] || q.get('token');
     return (CONTROL_TOKEN && token === CONTROL_TOKEN) || (ROLE_HASH && token === ROLE_HASH);
+  }
+  /*
+   * Plan 0522 P16.2 (R6) — the control-credential CHECK, without the "ungated ⇒ open" policy.
+   * The token is the SAME one the ws control roles (presenter/ai) present on hello; this is the
+   * one auth scheme this server has, read out of a header or the query string.
+   * ⚠ moduleWriteAuthed below does the identical check inline and is LEFT UNTOUCHED on purpose:
+   * it is the data-loss guard SHAPE-A7/P12 own, and a refactor there buys three lines and risks
+   * the one gate whose failure writes through a symlink into another repository.
+   */
+  function httpControlCredentialOk(req) {
+    const q = new URLSearchParams((req.url.split('?')[1] || ''));
+    const token = req.headers['x-control-token'] || q.get('token');
+    return !!((CONTROL_TOKEN && token === CONTROL_TOKEN) || (ROLE_HASH && token === ROLE_HASH));
+  }
+  /** P16.2 (R6): the durable log is readable only by a control role, and only on a gated server. */
+  function sessionLogReadAuthed(req) {
+    if (!CONTROL_TOKEN && !ROLE_HASH) {
+      log.warn('session-log', 'read-refused-ungated', { url: '/api/session-log',
+        reason: 'no control credential is configured — the session log carries participants\' own words and fails closed (Plan 0522 P16.2 / R6)' });
+      return { ok: false, code: 403, error: 'reading the session log requires a control credential, and this server has none configured — start it with a rolePassword (or a controlToken). The log carries the session transcript; it is not served ungated.' };
+    }
+    return httpControlCredentialOk(req) ? { ok: true } : { ok: false, code: 403, error: 'forbidden' };
   }
   /*
    * ── Plan 0522 P12 (R15) — MODULE MUTATION IS GATED UNCONDITIONALLY. FAIL CLOSED. ──────────
@@ -3476,7 +3582,11 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       };
     },
     store,
-    close: () => new Promise((res) => { clearInterval(heartbeat); /* Plan 0468 (INV-7) */ if (ephTimer) clearTimeout(ephTimer); for (const t of hotTimers.values()) clearTimeout(t); hotTimers.clear(); for (const w of [...inboxWaiters]) w.wake(); /* Plan 0472: drain pending long-poll waiters (resolve, no dangling) */ if (openTurn && openTurn.timer) { clearTimeout(openTurn.timer); openTurn.timer = null; } /* Plan 0473 P2: clear a pending turn-settling timer */ for (const [, c] of conns) { if (c.voice && c.voice.timer) clearTimeout(c.voice.timer); } if (asr) { try { asr.close(); } catch (e) {} asr = null; } watcher && watcher.close(); wss.clients.forEach((c) => c.close()); httpServer.close(() => res()); }),
+    // Plan 0522 P16.2 — the durable session log HANDLE (like `store`, an object, not a getter).
+    // status()/read()/sessions() are the observability the phase exists to provide; append() is
+    // the same seam createStore drives. Reading it over HTTP is role-gated (/api/session-log).
+    sessionLog,
+    close: () => new Promise((res) => { try { sessionLog.close(); } catch { /* a log must never block a shutdown either */ } clearInterval(heartbeat); /* Plan 0468 (INV-7) */ if (ephTimer) clearTimeout(ephTimer); for (const t of hotTimers.values()) clearTimeout(t); hotTimers.clear(); for (const w of [...inboxWaiters]) w.wake(); /* Plan 0472: drain pending long-poll waiters (resolve, no dangling) */ if (openTurn && openTurn.timer) { clearTimeout(openTurn.timer); openTurn.timer = null; } /* Plan 0473 P2: clear a pending turn-settling timer */ for (const [, c] of conns) { if (c.voice && c.voice.timer) clearTimeout(c.voice.timer); } if (asr) { try { asr.close(); } catch (e) {} asr = null; } watcher && watcher.close(); wss.clients.forEach((c) => c.close()); httpServer.close(() => res()); }),
     _http: httpServer,
     _acks: acks,                 // Plan 0471 M2: test-only observability (bounded map)
     _lastResults: lastResults,   // Plan 0471 M3: test-only observability (bounded object)
@@ -3502,16 +3612,26 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   // Plan 0471 H1: default to a REAL control token (random when unset) so the module
   // write-back never ships open — printed in the banner for the creator/writeback client.
   const cliToken = process.env.PRESENTER_CONTROL_TOKEN || createHash('sha256').update('argus-cli-' + Date.now() + '-' + Math.random()).digest('hex').slice(0, 32);
+  // Plan 0522 P16.2 (R3): a REAL session logs to disk by default — that is the whole point, and
+  // it is why the resolution happens HERE rather than inside createServer(). The library default
+  // stays off so 475 tests never write into a human's ~/.local/state; the deployment default is
+  // ${XDG_STATE_HOME:-~/.local/state}/argus-presenter/logs. Never fatal: a refused or unwritable
+  // directory disables the log and the presenter still starts.
+  const logTarget = resolveSessionLogDir();
+  if (logTarget.sessionLogDirError) console.log('  session log:', 'DISABLED —', logTarget.sessionLogDirError);
   createServer({
     port: p,
     controlToken: cliToken,
     rolePassword: process.env.PRESENTER_ROLE_PASSWORD || 'password',
+    sessionLogDir: logTarget.sessionLogDir,
   }).then((s) => {
     const u = s.url();   // base like http://127.0.0.1:PORT (no trailing slash)
+    const slog = s.sessionLog.status();
     console.log('Argus Presenter running:');
     console.log('  display :', u + '/');
     console.log('  control :', u + '/control');
     console.log('  creator :', u + '/creator');
     console.log('  control token (x-control-token / ?token=):', cliToken);
+    console.log('  session log:', slog.enabled ? `${slog.sessionLogDir}/${slog.sessionLogId}.p0.jsonl  (read: ${u}/api/session-log?token=…)` : `DISABLED — ${slog.sessionLogDirError}`);
   });
 }

@@ -1,7 +1,11 @@
 {
-  "//": "Argus Presenter — LOCAL DEPLOYMENT CONFIG (Plan 0522 P16.1, R1). Copy to presenter-config.json (gitignored) or to ~/.config/argus-presenter/presenter-config.json, then edit. NO FILE IS REQUIRED: with none of them present the presenter runs on port 3000.",
-  "//resolution": "First file found wins, whole file: $PRESENTER_CONFIG_FILE (must exist) > <repo>/presenter-config.json > ${XDG_CONFIG_HOME:-~/.config}/argus-presenter/presenter-config.json > built-in defaults. Loader: lib/deployment-config.mjs.",
+  "//": "Argus Presenter — LOCAL DEPLOYMENT CONFIG (Plan 0522 P16.1/P16.2). Copy to presenter-config.json (gitignored) or to ~/.config/argus-presenter/presenter-config.json, then edit. NO FILE IS REQUIRED: with none of them present the presenter runs on port 3000 and logs sessions to ${XDG_STATE_HOME:-~/.local/state}/argus-presenter/logs.",
+  "//resolution": "First file found wins, WHOLE FILE — not key-by-key: $PRESENTER_CONFIG_FILE (must exist) > <repo>/presenter-config.json > ${XDG_CONFIG_HOME:-~/.config}/argus-presenter/presenter-config.json > built-in defaults. Loader: lib/deployment-config.mjs.",
+  "//resolution-trap": "BECAUSE IT IS WHOLE-FILE: a repo-local presenter-config.json that sets ONLY presenterPort makes an ~/.config file containing sessionLogDir INVISIBLE — the second file is never opened, and the log falls back to the built-in default. Keep every key you care about in the SAME file. GET /api/session-log reports sessionLogDirSource ('env' | 'config' | 'built-in'), so you can see which one actually won.",
 
   "//presenterPort": "The port the presenter binds — used by `node app/server.mjs` with no argument AND by the presenter_start MCP tool. It must match whatever your public ingress (tunnel/reverse proxy) forwards to, or the session is unreachable while every local check says 200. 0 = let the OS assign one.",
-  "presenterPort": 3000
+  "presenterPort": 3000,
+
+  "//sessionLogDir": "Plan 0522 P16.2 — where the DURABLE SESSION LOG goes: one JSONL file per session, one line per durable op, so a session's record outlives the process that made it (the in-memory op-log is a 1000-entry ring and is freed at exit). MUST BE OUTSIDE ANY REPOSITORY — a path inside the checkout is REFUSED and the log disables itself, because these lines carry the session transcript. Omit the key to get ${XDG_STATE_HOME:-~/.local/state}/argus-presenter/logs; $PRESENTER_SESSION_LOG_DIR overrides both. Reading it over HTTP (GET /api/session-log) requires the control credential and FAILS CLOSED when none is configured, so set rolePassword or controlToken if you want to read it. Caps: 4 MiB per part, 4 parts per session, 50 sessions retained, oldest dropped.",
+  "sessionLogDir": "/home/you/.local/state/argus-presenter/logs"
 }

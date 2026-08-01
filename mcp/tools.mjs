@@ -12,6 +12,7 @@ import { tunnelConfigured, tunnelStatus, tunnelUp, tunnelDown } from './tunnel.m
 import { readFileSync, existsSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { presenterPort } from '../lib/deployment-config.mjs';
+import { resolveSessionLogDir } from '../lib/session-log.mjs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -115,6 +116,17 @@ export const coreTools = [
       const mintedToken = (opts.controlToken || process.env.PRESENTER_CONTROL_TOKEN || rest.rolePassword)
         ? null : randomBytes(16).toString('hex');
       if (mintedToken) opts.controlToken = mintedToken;
+      /*
+       * ── Plan 0522 P16.2 (R3) — THE AGENT-RAISED SESSION LOGS TO DISK, AND THE AGENT DOES NOT
+       * GET TO SAY WHERE. This is the path that raised S17, whose op-log died with its process.
+       * The directory is DEPLOYMENT config (lib/deployment-config.mjs / $PRESENTER_SESSION_LOG_DIR,
+       * default ${XDG_STATE_HOME:-~/.local/state}/argus-presenter/logs) and is deliberately NOT a
+       * property on this tool's input schema: the log carries participants' own words, so a
+       * caller-settable destination would be a redirect primitive for other people's speech. It
+       * is resolved here, not inside createServer(), so a bare library call still writes nothing.
+       */
+      const sessionLogTarget = resolveSessionLogDir();
+      if (sessionLogTarget.sessionLogDir) opts.sessionLogDir = sessionLogTarget.sessionLogDir;
       server = await createServer(opts);
 
       // Raise the ingress AFTER the bind, so the first public request has something to hit.

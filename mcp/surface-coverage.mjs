@@ -38,6 +38,15 @@ export const CONSTRUCTOR_COVERAGE = {
   perTurnBudgetMs: { tool: 'presenter_start' },
   perTurnWrapMs:   { tool: 'presenter_start' },
   floorThresholds: { tool: 'presenter_start' },
+  // Plan 0522 P16.2 — DELIBERATELY NOT ON THE TOOL SCHEMA, and that is the security decision, not
+  // an oversight. presenter_start DOES enable the durable log (it resolves the directory from
+  // lib/deployment-config.mjs / $PRESENTER_SESSION_LOG_DIR and passes it in), so the agent-raised
+  // session — the one that raised S17, whose op-log died with its process — is now recorded. What
+  // the agent may not do is CHOOSE THE DESTINATION: the log carries the session transcript, i.e.
+  // participants' own words, so a caller-settable path is a redirect primitive for other people's
+  // speech. Where it lands is the deployment's declaration; reading it is role-gated (R6) at
+  // GET /api/session-log.
+  sessionLogDir:   { declined: 'DEPLOYMENT CONFIG, not a per-call knob (Plan 0522 P16.2 / R3, R6). presenter_start ENABLES the durable session log — it resolves the directory from lib/deployment-config.mjs and passes it to createServer — but the destination is never taken from the caller: the log carries participants\' own words, so an agent-settable path would be a redirect primitive for third parties\' speech. Set it in presenter-config.json or $PRESENTER_SESSION_LOG_DIR.' },
 };
 
 // --- api surface ------------------------------------------------------------------------
@@ -63,6 +72,15 @@ export const API_COVERAGE = {
   presentText:         { tool: 'present_text' },   // Plan 0493 §8 — standard markdown text-response card
   presence:            { tool: 'presenter_attendance' },
   store:               { declined: VIA_MCP_STATE },
+  // Plan 0522 P16.2 — the durable session-log handle (status/read/sessions/append/flush/close).
+  // NOT exposed as a tool, and the reason is the R6 ruling rather than tidiness: the log is the
+  // session TRANSCRIPT, and its read surface is deliberately one role-gated HTTP endpoint
+  // (GET /api/session-log, control credential required, fails closed when none is configured) so
+  // there is exactly one gate to reason about. A `presenter_session_log` tool is a reasonable
+  // later ask — the AI is a control role and is the party that most wants to measure a session —
+  // but it is a NEW read surface for third parties' speech and earns its own decision, not a
+  // bolt-on here. Recorded as owed, not quietly dropped.
+  sessionLog:          { declined: 'NOT YET EXPOSED — owed. Role-gated read only, at GET /api/session-log (Plan 0522 P16.2 / R6). The log is the session transcript; adding a second read surface for participants\' own words is a decision, not a convenience, so it is not bolted onto this phase.' },
   // GAP #4 of the S210 six: the server CAN push raw HTML (server.mjs:1820) and no tool exposes
   // it. Argus told Bruce it was impossible; it wasn't. Recorded as owed, not quietly dropped.
   pushContent:         { declined: 'NOT YET EXPOSED — owed. Raw-HTML push into the sandboxed iframe; needs a decision on the injection surface before it gets a tool.' },
