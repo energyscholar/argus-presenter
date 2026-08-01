@@ -225,6 +225,18 @@
   .cp.copied,.u-copy.copied{color:var(--ok);border-color:var(--ok);}
   .u-copy{cursor:copy;opacity:.5;margin-left:4px;}.u-copy:hover{opacity:1;color:var(--ok);}
   .u-reset{cursor:pointer;opacity:.5;margin-left:4px;font-size:9px;}.u-reset:hover{opacity:1;color:var(--ok);}
+  /* Plan 0522 P14 — ROSTER ROW ACTIONS. Three capabilities that have existed server-side since
+     0508/0514 with no button on any human surface, so a GM without an AI in the loop could not
+     reach them at all. Styled as the existing ↺ default affordance, not as buttons: they sit on a
+     row whose whole click target is "preview as this seat", and a row of chunky buttons there
+     would compete with it. */
+  .user .u-acts{display:block;margin-top:2px;}
+  .u-act{cursor:pointer;opacity:.55;margin-left:6px;font-size:9px;}
+  .u-act:hover{opacity:1;color:var(--ok);}
+  .u-act.on{opacity:1;color:var(--warn);}
+  .user select.u-station{font-size:9px;padding:0 2px;margin-left:6px;max-width:120px;background:#12161f;color:var(--dim);border:1px solid #2a3a5a;border-radius:4px;}
+  #u-stat{font-size:10px;color:var(--dim);min-height:13px;margin-top:4px;padding:0 6px;}
+  #u-stat.alert{color:var(--warn);font-weight:700;}
   .mini{font-size:11px;padding:3px 6px;}
   textarea{width:100%;box-sizing:border-box;min-height:40px;}
   /* ATT (Plan 0466 §2.7): attendance overlay — full columns + per-row controls + summary footer. */
@@ -429,6 +441,11 @@
       <select id="target-select" style="flex:1;min-width:0" title="Preview as, and send to, this target"></select>
     </div>
     <div id="users"></div>
+    <!-- Plan 0522 P14 — the ROSTER's own receipt line. Every row action answers here, refusals
+         included, because a seat action that says nothing is indistinguishable from one that did
+         not happen (I5). Deliberately NOT #gostat: that line belongs to the staged-beat delivery
+         receipt, and two unrelated verdicts sharing one line is how an operator reads the wrong one. -->
+    <div id="u-stat"></div>
   </section>
 </div>
 
@@ -504,6 +521,8 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     if(m.t==='welcome'){ onWelcome(m); return; }   // P5.5: effective granted role (downgrade → unlock)
     if(m.t==='presence'){ users=m.users||[]; renderUsers(); onPresenceRefresh(); return; }
     if(m.t==='mirror'){ onMirror(m); return; }   // MON-2: target user's live display html
+    if(m.t==='station-set'){ onStationSet(m); return; }   // Plan 0522 P14: seat-someone-else verdict, refusals INCLUDED (I5)
+    if(m.t==='spotlight'){ onSpotlight(m); return; }      // Plan 0522 P14: 0508 grant/revoke receipt
     if(m.t==='attendance'){ onAttendance(m); return; }   // ATT (Plan 0466): roster reply
     if(m.t==='content'){ renderPreview(m.html, m.contentId); return; }
     if(m.t==='clear'){ renderPreview(null,'idle'); return; }
@@ -1008,12 +1027,83 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
         +'<br>station: '+esc(u.stationLabel||'—')
         +'<br>sees: '+esc(u.display||'—')+(seen?(' · '+seen):'')+(eyes?(' · '+eyes):'')
         +' <span class="u-copy" data-copy="'+esc(rowText)+'" title="copy row">⧉</span>'
-        +' <span class="u-reset" data-reset="'+esc(u.userId)+'" title="reset to default (follow role display)">↺ default</span></span>';
+        +' <span class="u-reset" data-reset="'+esc(u.userId)+'" title="reset to default (follow role display)">↺ default</span>'
+        +rowActions(u)+'</span>';
       el.onclick=function(){ selectView(u.userId); };
       box.appendChild(el);
     });
     [].forEach.call(box.querySelectorAll('[data-copy]'),function(c){ c.onclick=function(e){ e.stopPropagation(); copyText(c.getAttribute('data-copy'), c); }; });
     [].forEach.call(box.querySelectorAll('[data-reset]'),function(c){ c.onclick=function(e){ e.stopPropagation(); control('reset_user',{userId:c.getAttribute('data-reset')}); }; });
+    // Plan 0522 P14 — the three row actions. Every one stops propagation: the row's own click is
+    // "preview as this seat", and an action that also retargeted would make the two impossible to
+    // tell apart. `<select>` needs it on click as well as change, or opening the list retargets.
+    [].forEach.call(box.querySelectorAll('[data-mirror]'),function(c){ c.onclick=function(e){ e.stopPropagation(); rowMirror(c.getAttribute('data-mirror')); }; });
+    [].forEach.call(box.querySelectorAll('[data-spot]'),function(c){ c.onclick=function(e){ e.stopPropagation();
+      control('spotlight',{userId:c.getAttribute('data-spot'), granted:c.getAttribute('data-granted')!=='1'}); }; });
+    [].forEach.call(box.querySelectorAll('[data-station-for]'),function(s){
+      s.onclick=function(e){ e.stopPropagation(); };
+      s.onchange=function(e){ e.stopPropagation();
+        control('set_station',{userId:s.getAttribute('data-station-for'), stationUid:(s.value===''?null:+s.value)}); };
+    });
+  }
+  // ── Plan 0522 P14 — ROSTER ROW ACTIONS ─────────────────────────────────────────────────────
+  // Three seat-addressed capabilities have existed server-side since 0508/0514 with no button on
+  // any human surface: they were reachable only from MCP, so a GM running a session without an AI
+  // in the loop could not use them at all. I1 (surface parity) says that is a defect, not a style.
+  //
+  // HOW EACH ONE RESOLVES ITS TARGET ON A CONTESTED SEAT (P3: one row, two live sockets):
+  //   ◱ mirror — SOCKET-scoped, and unavoidably so: the server returns ONE html (A4) and picks
+  //              the latest socket. It now REPORTS the socketId it answered for, so the choice is
+  //              disclosed rather than assumed.
+  //   ◌ share  — IDENTITY-scoped. The 0508 grant set is keyed by userId, so it reaches every
+  //              socket that identity holds. Correct: the capability belongs to a person.
+  //   station  — IDENTITY-scoped. The 0514 resolver keys a seat by userId and has no socket
+  //              concept, so one identity has ONE seat and both of its clients move together.
+  //              The receipt reports how many were actually re-rendered.
+  //
+  // The station control renders ONLY when a plugin declares stations, so a teaching deployment
+  // sees no change whatsoever — the same guarantee P13's t35a and P15's t39 make.
+  function rowActions(u){
+    var on = !!u.spotlightGranted;
+    var st='';
+    if(stations.length){
+      st='<select class="u-station" data-station-for="'+esc(u.userId)+'" title="seat this person at a station — controller only; a participant asking for this is refused by name">';
+      stations.forEach(function(s){
+        st+='<option value="'+esc(s.stationUid)+'"'+(u.stationUid===s.stationUid?' selected':'')+'>'
+          +esc((s.icon?s.icon+' ':'')+s.stationLabel)+'</option>';
+      });
+      st+='</select>';
+    }
+    return '<div class="u-acts">'
+      +'<span class="u-act" data-mirror="'+esc(u.userId)+'" title="show me what this seat is actually being sent">◱ mirror</span>'
+      +'<span class="u-act'+(on?' on':'')+'" data-spot="'+esc(u.userId)+'" data-granted="'+(on?'1':'0')
+      +'" title="'+(on?'revoke this seat&#39;s right to promote its screen to the room':'let this seat promote its screen to the room (0508 spotlight, throttled 1 per 3s)')+'">'
+      +(on?'◉ share ON':'◌ share')+'</span>'
+      +st+'</div>';
+  }
+  /** The roster's own receipt line. Never silent, refusals included (I5). */
+  function ustat(text, alert){ var el=$('u-stat'); if(!el) return; el.textContent=text||''; el.classList.toggle('alert', !!alert && !!text); }
+  var mirrorAsked=null;
+  // An EXPLICIT mirror must never quietly do nothing. Both conditions that would swallow the reply
+  // (a staged candidate owns the preview — P6; live preview off or degraded — MON-2) are reported
+  // here instead of being discovered as a thumbnail that failed to change.
+  function rowMirror(uid){
+    if(staged){ setTarget(uid); ustat('⚠ a beat is STAGED — discard it or press GO before mirroring a seat', true); return; }
+    if(!livePreview||degraded){ setTarget(uid); ustat('⚠ live preview is off — the mirror cannot render', true); return; }
+    mirrorAsked=uid;
+    setTarget(uid);   // sets the unified target AND pulls the mirror (requestMirror) — one request, not two
+  }
+  function onStationSet(m){
+    if(!m||!m.ok){ ustat('⚠ station NOT set — '+((m&&m.reason)||'refused'), true); renderUsers(); return; }
+    var n=m.delivered|0;
+    if(n===0) ustat('⚠ station set but NO client was told', true);       // cannot happen post-P14; reported, not assumed
+    else ustat('✔ seated '+(m.userId||'')+' · '+n+' client'+(n===1?'':'s')+' updated');
+  }
+  function onSpotlight(m){
+    if(!m) return;
+    var n=m.notified|0;
+    ustat((m.granted?'✔ share GRANTED to ':'✔ share revoked for ')+(m.userId||'')
+      +' · '+n+' client'+(n===1?'':'s')+' told'+(n?'':' (nobody connected under that id yet)'), !n);
   }
   // ── Plan 0522 P5 — THE UNIFIED TARGET SELECTOR ───────────────────────────────────────────
   // `setTarget` is the ONLY mutator. Clicking a roster row and choosing from the dropdown are two
@@ -1128,6 +1218,11 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     var lbl = targetLabel(target);
     if(m.html==null){ renderPreview(null, lbl+"'s view · "+(targetOccupancy(target)?'idle':'nobody here')); }
     else { renderPreview(m.html, lbl+"'s view"); }
+    // Plan 0522 P14 — an EXPLICITLY requested mirror reports WHICH socket answered. On a contested
+    // seat (one row, two live sockets) the server picks the latest; disclosing it is the difference
+    // between "the GM knows which client this is" and "the GM assumes it is the only one".
+    if(mirrorAsked===key){ mirrorAsked=null;
+      ustat('◱ '+lbl+(m.socketId?(' · socket '+m.socketId):'')+(m.html==null?' · nothing to show':'')); }
     // keep the reverse-link note (set by setTarget / presence)
   }
   // Refresh trigger #2: what the target sees CHANGED (event-driven, never a timer).

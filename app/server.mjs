@@ -913,8 +913,11 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     const users = byPerson((c) => {
       const uid = seatStationUid(c.userId);
       const st = uid == null ? null : stationRegistry.get(uid);
+      // Plan 0522 P14 — the spotlight grant rides the roster so the row's toggle shows the state
+      // the server actually holds. A toggle that renders from its own last click is a toggle that
+      // lies after any reconnect, and the grant already survives one (welcome.spotlightGranted).
       return { userId: c.userId, userName: c.userName, role: c.role, ip: c.ip, socketId: c.id, lastSeen: c.lastSeen, display: displayIdFor(c), eyesOn: c.eyesOn || null,
-        stationUid: uid, stationLabel: st ? st.stationLabel : null, socketIds: [c.id], ips: [c.ip || null] };
+        stationUid: uid, stationLabel: st ? st.stationLabel : null, spotlightGranted: spotlight.has(c.userId), socketIds: [c.id], ips: [c.ip || null] };
     });
     for (const [ws, c] of conns.entries()) if (c.role === 'presenter' || c.role === 'ai') send(ws, { t: 'presence', users });
   }
@@ -1371,6 +1374,21 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // P1: presenter control-message handler — the SAME server API the AI/MCP drives.
   // Presenter/ai only (server-authoritative role, S1/S2); others are ignored.
   function handleControl(c, m, ws) {
+    // ── Plan 0522 P14 — `set_station` IS DISPATCHED BEFORE THE BLANKET ROLE CHECK, DELIBERATELY ──
+    // It is this batch's one privilege escalation, and its gate lives in exactly ONE place:
+    // `api.stationSet`, which this frame and the MCP tool both funnel through. Checking the role
+    // here as well would put the decision in two places — and the surface that was checked here
+    // would then be gated by a rule the MCP surface never runs, which is the I1 (surface parity)
+    // failure this phase exists to prevent. It also lets the refusal carry a REASON back to the
+    // caller (I5): the blanket drop below answers nothing at all, and a refusal that says nothing
+    // is indistinguishable from a refusal that never happened.
+    if (m.action === 'set_station') {
+      const sa = m.args || {};
+      const r = api.stationSet(sa.userId, sa.stationUid, c);
+      send(ws, Object.assign({ t: 'station-set' }, r));
+      log.info('control', 'set_station', { socketId: c.id, role: c.role, ok: r.ok, reason: r.reason || null });
+      return;
+    }
     if (c.role !== 'presenter' && c.role !== 'ai') { log.warn('control', 'denied', { socketId: c.id, role: c.role }); return; }
     const a = m.args || {};
     switch (m.action) {
@@ -1387,9 +1405,20 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         const tc = liveConnForTarget(tgt);   // A4: one representative socket — mirror returns ONE html
         const desc = (tc && (displayByUser.get(tc.userId) || displayByRole[tc.role])) || null;
         const html = (desc && tc) ? descToHtml(tc, desc) : null;
-        send(ws, { t: 'mirror', target: tgt, userId: a.userId != null ? a.userId : (tc ? tc.userId : null), html });
+        // Plan 0522 P14 — SAY WHICH SOCKET ANSWERED. P3 collapsed the roster to one row per
+        // PERSON, so a contested seat (two live sockets, one derived identity) is one row with
+        // two clients behind it, and `liveConnForTarget` silently picks the latest. Mirror is the
+        // one row action that is inherently SOCKET-scoped (A4: it returns ONE html), so it now
+        // reports the socketId it actually rendered rather than leaving the operator to assume.
+        send(ws, { t: 'mirror', target: tgt, userId: a.userId != null ? a.userId : (tc ? tc.userId : null), socketId: tc ? tc.id : null, html });
         break;
       }
+      // Plan 0522 P14 — SPOTLIGHT from the roster row. api.spotlight has existed since 0508 with
+      // no button on any human surface: the grant was reachable only from MCP, so a GM without an
+      // AI in the loop could not let a player share their station at all. IDENTITY-scoped by
+      // construction — the grant set is keyed by userId — so it reaches every socket that identity
+      // holds, which is the correct behaviour for a capability that belongs to a person.
+      case 'spotlight': send(ws, Object.assign({ t: 'spotlight' }, api.spotlight(a.userId, a.granted !== false))); break;
       // Bell as a control: playable from the control page (🔔) and the verify-watching
       // path (👁 = bell + requireAck) via the SAME api.chime method the MCP tools drive.
       case 'bell': api.chime(a); break;
@@ -1714,6 +1743,15 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
 
   /** Stations are live only when a registry exists AND a plugin registered a seat resolver. */
   function stationsActive() { return !stationRegistry.isEmpty() && !!seatResolver; }
+
+  // ── Plan 0522 P14 — WHO MAY SEAT SOMEBODY ELSE ───────────────────────────────────────────
+  // The in-process API principal. `api` is handed to the MCP bridge and to registered plugins and
+  // to nobody else; a participant reaches core only over the wire, where the actor is their own
+  // connection. So a direct `api.stationSet(a, b)` is a CONTROL call by construction, and saying
+  // so explicitly is what lets the same gate serve both surfaces without a second rule.
+  const API_ACTOR = Object.freeze({ userId: 'api', role: 'ai', principal: 'in-process' });
+  /** True only for a control role (presenter/ai). Anything else — including absent — is refused. */
+  function isControllerActor(actor) { return !!actor && CONTROL_ROLES.has(actor.role); }
 
   /** Ask the plugin what this seat holds. Cheap + synchronous by contract; never cached here. */
   function seatStation(userId) {
@@ -2759,10 +2797,14 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     // Tells that seat immediately so its Config panel can show or hide the Share control.
     spotlight(userId, granted = true) {
       if (granted) spotlight.add(userId); else { spotlight.delete(userId); spotlightLast.delete(userId); }
-      for (const ws of socketsFor(userId)) send(ws, { t: 'station', ok: true, granted: !!granted });
-      log.info('station', granted ? 'spotlight-granted' : 'spotlight-revoked', { userId });
+      // Plan 0522 P14 (I5) — how many live clients were told. A grant to somebody not yet
+      // connected is legitimate (it rides their `welcome` when they arrive), so 0 is not an
+      // error here; it is a fact the operator is entitled to see rather than infer.
+      let notified = 0;
+      for (const ws of socketsFor(userId)) { send(ws, { t: 'station', ok: true, granted: !!granted }); notified++; }
+      log.info('station', granted ? 'spotlight-granted' : 'spotlight-revoked', { userId, notified });
       pushPresence();
-      return { userId, granted: !!granted, holders: [...spotlight] };
+      return { userId, granted: !!granted, notified, holders: [...spotlight] };
     },
     spotlightHolders: () => [...spotlight],
     // ── Plan 0514 §9 — the agent's read of the room and its hand on a seat ────────────────
@@ -2775,14 +2817,45 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         seats: presence().map((p) => ({ userId: p.userId, userName: p.userName, stationUid: p.stationUid })),
       };
     },
-    /** Seat a player who cannot manage the dropdown. Unresolvable ⇒ the default, never an error. */
-    stationSet(userId, stationUid) {
-      if (!stationsActive()) return { userId, stationUid: null, ok: false, reason: 'no-stations' };
+    /**
+     * Seat a player who cannot manage the dropdown. Unresolvable uid ⇒ the default, never an error.
+     *
+     * ⛔ Plan 0522 P14 — THIS IS THE GATE, AND IT IS THE ONLY ONE.
+     *
+     * Self-selection (`station-select`, 0514 §8) is ungated by the zero-privilege argument: it
+     * changes only what the caller sees. `stationSet` takes an ARBITRARY userId, so it changes
+     * what ANOTHER person sees — a different capability wearing the same resolver call.
+     * `seatResolver.select()`'s signature does not distinguish its callers (join, self-select and
+     * this all reach it with the same two arguments), so the gate cannot live in the resolver;
+     * and if it lived in the transport, the control page and the MCP tool would each be gated by
+     * a rule the other never runs. It lives here, before select(), where BOTH surfaces meet.
+     *
+     * `actor` is the requesting connection, or the in-process API principal when core is driven
+     * directly. `api` is handed only to the MCP bridge and to plugins — a participant never holds
+     * it — so the default is the declared control principal, not an absent check.
+     */
+    stationSet(userId, stationUid, actor = API_ACTOR) {
+      if (!isControllerActor(actor)) {
+        log.warn('station', 'set-denied', { userId, role: (actor && actor.role) || null, socketId: (actor && actor.id) || null });
+        return { userId, stationUid: null, ok: false, reason: 'not-controller', delivered: 0 };
+      }
+      if (!stationsActive()) return { userId, stationUid: null, ok: false, reason: 'no-stations', delivered: 0 };
+      // I5 — NO SILENT NON-DELIVERY. Before P14 this returned ok:true for a userId nobody
+      // occupies: it wrote a resolver record no socket would ever read, and let a caller "prove"
+      // a station change that never reached a human. A seat link re-derives identity and re-seats
+      // on hello (§5.1), so such a record could not even survive the person actually arriving.
+      // Refuse by name, and write nothing.
+      const socks = socketsFor(userId);
+      if (!socks.length) return { userId, stationUid: null, ok: false, reason: 'not-connected', delivered: 0 };
       const seat = seatResolver.select(userId, stationUid);
-      for (const ws of socketsFor(userId)) { const c = conns.get(ws); if (c) { renderStationTo(ws, c, seat); send(ws, { t: 'station', ok: true, stationUid: seat.uid }); } }
-      log.info('station', 'set', { userId, stationUid: seat.uid });
+      // IDENTITY-scoped, and necessarily so: the resolver keys a seat by userId and has no socket
+      // concept, so a CONTESTED identity (P3: two live sockets, one derived id) has ONE seat and
+      // both of its clients move together. `delivered` reports how many were actually re-rendered.
+      let delivered = 0;
+      for (const ws of socks) { const c = conns.get(ws); if (c) { renderStationTo(ws, c, seat); send(ws, { t: 'station', ok: true, stationUid: seat.uid }); delivered++; } }
+      log.info('station', 'set', { userId, stationUid: seat.uid, delivered });
       pushPresence();
-      return { userId, stationUid: seat.uid, ok: true };
+      return { userId, stationUid: seat.uid, ok: true, delivered };
     },
     /** Tools a plugin contributed through register() (§4.2). Core holds the list, not the meaning. */
     pluginTools: () => [...pluginTools.values()].map((t) => ({ name: t.name, description: t.description || '', input: t.input || null, plugin: t.plugin })),
