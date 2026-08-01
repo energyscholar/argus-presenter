@@ -494,9 +494,10 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   // variables that can disagree about who is receiving is exactly the footgun P5 exists to close.
   // It starts at 'all' on every load and is NEVER persisted (t13).
   // Plan 0522 P15 — the deployment's OWN word for a station, straight off the welcome
-  // (`stationSelectorLabel`, 0514 §8). Core must contain no domain vocabulary (A3), so the tier is
-  // headed with the word the plugin declared, exactly as P13 heads the seat line on the display
-  // page. The fallback is the generic English one, never a guess about the deployment.
+  // (`stationSelectorLabel`, 0514 §8). Core ships domain-NEUTRAL and domain vocabulary lives in
+  // plugins (docs/naming-canon.md §0 "domain-neutral, like the core it governs"; README §Plugins),
+  // so the tier is headed with the word the plugin declared, exactly as P13 heads the seat line on
+  // the display page. The fallback is the generic English one, never a guess about the deployment.
   var target='all', stations=[], stationWord='Stations', lastControl=null;
   var seriesModules=[], seriesPos=-1;   // SCH-2: active series (ordered module ids) + walk position
   // MON-2: live "view-as" thumbnail — luxury feature, first thing sacrificed under load.

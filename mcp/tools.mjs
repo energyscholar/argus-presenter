@@ -456,6 +456,15 @@ export const coreTools = [
     handler: async ({ userId, stationUid }) => need().stationSet(userId, stationUid)
   },
   {
+    name: 'presenter_station_project',
+    description: 'Plan 0522 P15: put ONE station\'s screen on other people\'s displays — "everyone look at what Sensors is seeing". TRANSIENT, and that is the whole point: NO SEAT IS WRITTEN. Nobody is re-seated, no station assignment changes, and nothing records that this happened; each viewer keeps the station they were sitting at and the next push replaces the projection. (The obvious wrong implementation is to seat the room at that station — that would re-seat every player durably, through the same resolver presenter_station_set uses, and every one of them would have to be put back by hand.) Each viewer is rendered in THEIR OWN context, so identity stamping and the visibility strip still apply — never a verbatim copy of one seat\'s bytes. An empty station is a legitimate thing to project: it renders the generic placeholder built from registry values. Reply: {ok, stationUid, stationLabel, projected (how many displays actually received it — a truthful 0 is possible and is not silently swallowed), targets}. Refusals are BY NAME, never a silent no-op: `no-stations` (this deployment declares none) or `no-such-station` (that uid is not in the registry — deliberately NOT resolved to the deployment default the way seating is, because silently projecting a different station than the one asked for is worse than refusing). The identical capability is on the human control page\'s station tier, so what you can do here and what a GM can do there are the same thing (I1).',
+    input: { type: 'object', properties: {
+      stationUid: { type: 'number', description: 'Station uid from presenter_stations' },
+      targets: { type: 'array', items: { type: 'string' }, description: 'Who sees it. Wire targets: "all" (default — the room), a userId, a role, or "station:<uid>". Omit for the room.' },
+    }, required: ['stationUid'] },
+    handler: async ({ stationUid, targets = null } = {}) => need().stationProject(stationUid, targets)
+  },
+  {
     name: 'presenter_plugin_tool',
     description: 'Plan 0514 §9: list or invoke a tool contributed by a server-side PLUGIN. Core has no idea what these do — a plugin registers them at load and their vocabulary is the plugin\'s, not the presenter\'s, which is exactly why they are not hardcoded here. Call with no arguments to list what this deployment offers (name, description, input schema); call with a name to invoke it.',
     input: { type: 'object', properties: {

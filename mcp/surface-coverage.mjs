@@ -105,6 +105,11 @@ export const API_COVERAGE = {
   // NOT core's and is asked for on demand, so there is nothing here for an agent to corrupt.
   stations:            { tool: 'presenter_stations' },
   stationSet:          { tool: 'presenter_station_set' },
+  // Plan 0522 P15 (R18). Shipped as a control-page-only capability and a CLOSURE, so it was
+  // invisible to this very manifest — the shape that hides a capability from the one instrument
+  // built to find it. Exposed rather than declined: putting a station's screen on the room is an
+  // AI-in-the-loop narration move, and it writes nothing, so there is nothing to protect.
+  stationProject:      { tool: 'presenter_station_project' },
   pluginTools:         { tool: 'presenter_plugin_tool' },
   callPluginTool:      { tool: 'presenter_plugin_tool' },
   spotlightHolders:    { declined: 'NOT YET EXPOSED — owed. Who currently holds a share grant is READ-only state; it belongs on presenter_status/attendance alongside the roster rather than in its own tool. Grant/revoke is already reachable via presenter_spotlight.' },

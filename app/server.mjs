@@ -2924,6 +2924,35 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       pushPresence();
       return { userId, stationUid: seat.uid, ok: true, delivered };
     },
+    /**
+     * Plan 0522 P15 (R18) — ▣ PROJECT a station's screen. Exposed by REFERENCE, so the wire's
+     * `case 'project_station'` and this method are one implementation, not two that must be kept
+     * in step. See projectStation's own header for the I3 argument.
+     *
+     * ⚠ THREE NAMES, ONE CAPABILITY, AND THE SPLIT IS DELIBERATE (R19) — it is the same one
+     * `stationSet` already runs: the WIRE action is verb-first (`project_station`, beside
+     * `set_station`), the API method is noun-first (`stationProject`, beside `stationSet`), and
+     * the TOOL prefixes that (`presenter_station_project`, beside `presenter_station_set`). The
+     * api/tool halves are noun-first so the station family sorts together in an alphabetical tool
+     * list instead of scattering across p- and s-.
+     *
+     * ⛔ WHY THIS IS NOT GATED, WHILE `stationSet` IS. The difference is not that one is riskier
+     * in feel; it is that they sit on opposite sides of handleControl's role gate.
+     * `case 'set_station'` is handled BEFORE that gate on purpose — so a participant's attempt is
+     * refused BY NAME (I5) instead of silently dropped — which means the wire can hand
+     * `api.stationSet` a non-controller actor, and the gate has to live inside the method.
+     * `case 'project_station'` sits AFTER the gate, so the only callers that reach here are a
+     * control connection, the MCP bridge, and a registered plugin: there is no second caller
+     * class to defend against, and a gate would be checking a condition already proven.
+     *
+     * And the capability itself carries the zero-privilege argument that ungates `station-show`
+     * and `api.spotlight`'s siblings: it writes NOTHING. No seat moves, no descriptor is stored,
+     * no state records that it happened; the next push replaces it. Pushing content to the room
+     * is a controller's ordinary business — every other content-push api method (pushComponent,
+     * showBeat, chime, clear) is ungated in-process for the same reason. `stationSet` is gated
+     * because it DURABLY re-seats another person, and that is an escalation this is not.
+     */
+    stationProject: projectStation,
     /** Tools a plugin contributed through register() (§4.2). Core holds the list, not the meaning. */
     pluginTools: () => [...pluginTools.values()].map((t) => ({ name: t.name, description: t.description || '', input: t.input || null, plugin: t.plugin })),
     /** Dispatch one plugin tool by name. Unknown name ⇒ a listed error, never a throw into the room. */
