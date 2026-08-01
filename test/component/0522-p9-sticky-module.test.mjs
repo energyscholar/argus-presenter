@@ -65,22 +65,40 @@ async function boot() {
 // wait here is therefore explicit and generous; a genuinely broken page still fails, just later.
 const PATIENT = 90000;
 
+// ⚠ FIXED BY PLAN 0522 (Auditor, S224) — t24 WAS INTERMITTENT, AND THE CAUSE WAS THE WAIT PRIMITIVE.
+//
+// Diagnosed during P12 and confirmed during P13: puppeteer's `page.waitForFunction` polls on
+// `requestAnimationFrame`, and **Chrome PAUSES rAF in a backgrounded tab**. t24 holds three pages
+// open at once, so whichever is not frontmost stops polling — and the wait expires against a page
+// that is perfectly healthy. It is not slowness and it is not memory: P13 reproduced the failure at
+// baseline with its own test file entirely REMOVED, so more patience was never going to fix it.
+// (An earlier Auditor diagnosis blamed ~100 sequential browser launches. That was wrong.)
+//
+// ⇒ `waitFor()` below polls from the TEST process via setTimeout (harness `until()`), driving
+// `page.evaluate` — which runs on demand and does not care whether the tab is backgrounded.
+// PATIENT is kept as the ceiling so a genuinely broken page still fails, just later.
+//
+// A suite that fails intermittently trains people to re-run instead of read — the exact habit that
+// let this harness print ALL PASS for months (P1). That is why this was worth fixing, not tolerating.
+const waitFor = (pg, fn, label, ...args) =>
+  until(() => pg.evaluate(fn, ...args), { timeout: PATIENT, every: 150, label });
+
 /** Control page, connected, with the module list populated. Collects page errors. */
 async function openControl(browser, server, errs) {
   const pg = await browser.newPage();
   pg.setDefaultTimeout(PATIENT);
   pg.on('pageerror', (e) => { if (errs) errs.push(e.message); console.log('CTRL PAGEERR', e.message); });
   await pg.goto(`${server.url()}/control?userId=op&role=presenter`, { waitUntil: 'domcontentloaded', timeout: PATIENT });
-  await pg.waitForFunction(() => window.__gm && typeof window.__control === 'function'
-    && document.getElementById('mod-select').options.length > 1, { timeout: PATIENT });
+  await waitFor(pg, () => !!(window.__gm && typeof window.__control === 'function'
+    && document.getElementById('mod-select').options.length > 1), 'control page ready with a populated picker');
   return pg;
 }
 
 /** Pick a module in the picker (the fetch-and-validate path) and wait for the body to arrive. */
 async function selectModule(pg, id, beats) {
   await pg.evaluate((i) => { const s = document.getElementById('mod-select'); s.value = i; s.onchange(); }, id);
-  await pg.waitForFunction((n) => { const m = window.__gm.module(); return !!m && (m.beats || []).length === n; },
-    { timeout: PATIENT }, beats);
+  await waitFor(pg, (n) => { const m = window.__gm.module(); return !!m && (m.beats || []).length === n; },
+    'the picked module body arrived', beats);
 }
 
 /** Raw participant socket that records every frame it receives — the wire, not an inference. */
@@ -126,8 +144,8 @@ test('0522 t23 — a persisted moduleId is PRESELECTED on the next load', async 
 
     // …and the page is reloaded, as it is between sessions.
     await ctl.reload({ waitUntil: 'domcontentloaded', timeout: PATIENT });
-    await ctl.waitForFunction(() => window.__gm && document.getElementById('mod-select').options.length > 1, { timeout: PATIENT });
-    await ctl.waitForFunction((id) => document.getElementById('mod-select').value === id, { timeout: PATIENT }, B).catch(() => {});
+    await waitFor(ctl, () => !!(window.__gm && document.getElementById('mod-select').options.length > 1), 'the picker repopulated after reload');
+    await waitFor(ctl, (id) => document.getElementById('mod-select').value === id, 'B is preselected', B).catch(() => {});
 
     const after = await pickerState(ctl);
     expect('the persisted module is preselected after reload', after.value === B, JSON.stringify(after));
@@ -136,7 +154,7 @@ test('0522 t23 — a persisted moduleId is PRESELECTED on the next load', async 
     // A default the GM cannot act on is a trap: ▶ Validate & Load is disabled until the body has
     // been fetched, and re-picking an already-selected <option> fires no change event. So the
     // preselection also runs the picker's own fetch+validate — "ready to Load", NOT loaded.
-    await ctl.waitForFunction(() => !document.getElementById('mod-load').disabled, { timeout: PATIENT }).catch(() => {});
+    await waitFor(ctl, () => !document.getElementById('mod-load').disabled, 'Validate & Load became enabled').catch(() => {});
     const ready = await pickerState(ctl);
     expect('the preselection is ACTIONABLE — Validate & Load is enabled', ready.loadDisabled === false, JSON.stringify(ready));
     expect('…and it is still only a selection: nothing was pushed to the server', ready.lastControl === null, JSON.stringify(ready));
@@ -172,7 +190,7 @@ test('0522 t24 — PRESELECT DOES NOT LOAD: opening a second control page change
     await until(() => player.frames.some((f) => f.t === 'content' && f.contentId === 'pr-a2'), { label: 'players are showing a2', timeout: PATIENT });
 
     const frame = await waitContentFrame(display, { timeout: PATIENT });
-    await frame.waitForFunction(() => /Beat a2/.test(document.body.innerText), { timeout: PATIENT });
+    await waitFor(frame, () => /Beat a2/.test(document.body.innerText), 'the player is showing Beat a2');
 
     // The GM's stored default is module B — last session's choice, NOT what is live. B declares a
     // defaultBeatId, so if opening a page auto-loaded it the room would jump to 'Beat b1'.
@@ -191,7 +209,7 @@ test('0522 t24 — PRESELECT DOES NOT LOAD: opening a second control page change
 
     // ⚠ THE ACT UNDER TEST: a second control page is opened mid-session.
     const ctl2 = await openControl(browser, server);
-    await ctl2.waitForFunction((id) => document.getElementById('mod-select').value === id, { timeout: PATIENT }, B).catch(() => {});
+    await waitFor(ctl2, (id) => document.getElementById('mod-select').value === id, 'the SECOND control page preselected B', B).catch(() => {});
     await wait(800);   // settle: any load_module the new page fired would have landed long since
 
     const after = await snap();
@@ -232,7 +250,7 @@ test('0522 t25 — a persisted module that is GONE yields no selection and no er
     seed.on('dialog', async (d) => { dialogs++; await d.dismiss(); });
     seed.on('pageerror', (e) => errs.push(e.message));
     await seed.reload({ waitUntil: 'domcontentloaded', timeout: PATIENT });
-    await seed.waitForFunction(() => window.__gm && document.getElementById('mod-select').options.length > 1, { timeout: PATIENT });
+    await waitFor(seed, () => !!(window.__gm && document.getElementById('mod-select').options.length > 1), 'seed page picker populated');
     await wait(600);   // settle: an error path would have painted by now
 
     const st = await pickerState(seed);
@@ -260,7 +278,7 @@ test('0522 t25 — a persisted module that is GONE yields no selection and no er
     expect('mid-check: B is selected', (await pickerState(seed)).value === B, JSON.stringify(await pickerState(seed)));
     rmSync(join(dir, B + '.json'), { force: true });
     await seed.evaluate(() => document.getElementById('mod-refresh').click());
-    await seed.waitForFunction(() => document.getElementById('mod-select').options.length === 2, { timeout: PATIENT });
+    await waitFor(seed, () => document.getElementById('mod-select').options.length === 2, 'the deleted module left the picker');
     await wait(300);
 
     const gone = await pickerState(seed);
