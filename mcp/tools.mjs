@@ -327,7 +327,7 @@ export const coreTools = [
   },
   {
     name: 'presenter_health',
-    description: 'Health check: status (green/degraded), per-connection liveness (stale detection), op throughput, error rate, state/op-log size.',
+    description: 'Health check: status (green/degraded), per-connection liveness (stale detection), op throughput, error rate, state/op-log size, AND (Plan 0525 P2) whether THIS SESSION IS BEING RECORDED — `sessionLog: {enabled, sessionLogId, sessionLogDir, sessionLogDirSource, sessionLogDirError, stats}`. Check it once after presenter_start and again before you rely on the record: `enabled:false` means nothing is being written and sessionLogDirError says why, and a rising stats.dropped / stats.failures means the log is degrading mid-session while the session itself is fine. STATE ONLY — the directory and the counters, NEVER the content: the log is participants\' own words and reading it back is role-gated at GET /api/session-log (control credential required).',
     input: { type: 'object', properties: { staleMs: { type: 'number', default: 10000, description: 'A connection idle longer than this is stale' } } },
     handler: async ({ staleMs = 10000 } = {}) => need().health({ staleMs })
   },

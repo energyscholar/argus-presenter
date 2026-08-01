@@ -3548,11 +3548,51 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       };
       const faultCount = faults.renderErrors + faults.opApplyFailures + faults.frameErrors + faults.throttled + faults.malformed;
       const status = (anyStale || faultCount > 0) ? 'degraded' : 'green';
+      /*
+       * ── Plan 0525 P2 (I1) — IS THIS SESSION BEING RECORDED? ─────────────────────────────────
+       * The CLI banner has answered that since P16.2 ("session log: <dir>/<id>.p0.jsonl" or
+       * "DISABLED — <reason>"). The AGENT had no way to ask — and presenter_start, which is the
+       * path that raises the public ingress, is the path the real sessions come up on. A recorder
+       * nobody can confirm is running is the failure P16.2 exists to fix, with extra steps.
+       *
+       * It lands HERE, beside `opLogSize`, because that is the IN-MEMORY ring this log backstops:
+       * the two numbers are the same measurement, one bounded at 1000 and freed with the process,
+       * the other durable. The counters below are of a kind with opsApplied / faults / errorRate,
+       * and the failure modes that matter are silent DEGRADATIONS mid-session (a directory that
+       * stops being writable, three consecutive write failures disabling the log, lines dropped by
+       * a wedged disk) — which need the surface an agent polls, not one it reads once at start.
+       *
+       * ⛔ STATE, NEVER CONTENT. Directory, provenance, id, counters. The log carries participants'
+       * own spoken and typed words, and its read surface is deliberately ONE role-gated endpoint
+       * (GET /api/session-log, control credential required, fails closed when none is configured —
+       * R6). Adding a second read path for third parties' speech is a decision, and it is not this
+       * one's to make. Nothing below can carry an entry: the fields are enumerated, never spread.
+       *
+       * ⚠ DELIBERATELY NOT FOLDED INTO `status`. A disabled log does not degrade the verdict. The
+       * library default IS off — a bare createServer() writes nothing, which is what keeps this
+       * suite out of a human's ~/.local/state — so degrading on it would paint every test red and
+       * teach a reader to ignore the word. Whether stats.dropped / stats.failures should degrade a
+       * DEPLOYED session is a real question and a separate one; it is reported, not scored.
+       */
+      const slog = sessionLog.status();
       return {
         status, connections,
         opsApplied: o.applied, errorRate,
         faults, faultCount, denied: o.denied,   // denials REPORTED (visible) but never degrading
         stateVersion: store.version(), opLogSize: store.oplogSince(0).length,
+        sessionLog: {
+          enabled: slog.enabled,
+          sessionLogId: slog.sessionLogId,
+          sessionLogDir: slog.sessionLogDir,
+          sessionLogDirSource: slog.sessionLogDirSource,
+          // The REASON, under the SAME name the CLI banner and /api/session-log already use. A
+          // gauge that reads "off" without saying why is the dead-gauge shape: a reader cannot
+          // tell the deliberate library default from a disk that said no. Non-null while ENABLED
+          // too — that is the "config unreadable, fell back to the built-in default" warning, and
+          // it is worth surfacing rather than swallowing.
+          sessionLogDirError: slog.sessionLogDirError,
+          stats: { ...slog.stats },
+        },
         rtt: telem.rtt.last, reconnects: telem.reconnects,
       };
     },

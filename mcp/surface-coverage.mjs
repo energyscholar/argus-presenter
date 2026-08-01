@@ -73,14 +73,20 @@ export const API_COVERAGE = {
   presence:            { tool: 'presenter_attendance' },
   store:               { declined: VIA_MCP_STATE },
   // Plan 0522 P16.2 — the durable session-log handle (status/read/sessions/append/flush/close).
-  // NOT exposed as a tool, and the reason is the R6 ruling rather than tidiness: the log is the
-  // session TRANSCRIPT, and its read surface is deliberately one role-gated HTTP endpoint
-  // (GET /api/session-log, control credential required, fails closed when none is configured) so
-  // there is exactly one gate to reason about. A `presenter_session_log` tool is a reasonable
-  // later ask — the AI is a control role and is the party that most wants to measure a session —
-  // but it is a NEW read surface for third parties' speech and earns its own decision, not a
-  // bolt-on here. Recorded as owed, not quietly dropped.
-  sessionLog:          { declined: 'NOT YET EXPOSED — owed. Role-gated read only, at GET /api/session-log (Plan 0522 P16.2 / R6). The log is the session transcript; adding a second read surface for participants\' own words is a decision, not a convenience, so it is not bolted onto this phase.' },
+  // The READ is NOT exposed as a tool, and the reason is the R6 ruling rather than tidiness: the
+  // log is the session TRANSCRIPT, and its read surface is deliberately one role-gated HTTP
+  // endpoint (GET /api/session-log, control credential required, fails closed when none is
+  // configured) so there is exactly one gate to reason about. A `presenter_session_log` tool is a
+  // reasonable later ask — the AI is a control role and is the party that most wants to measure a
+  // session — but it is a NEW read surface for third parties' speech and earns its own decision,
+  // not a bolt-on. Recorded as owed, not quietly dropped.
+  //
+  // ⚠ Plan 0525 P2 SPLIT THIS ENTRY IN TWO, and the split is the point. status() — enabled, the
+  // directory, its provenance, the id, the counters — now rides on api.health() and therefore on
+  // presenter_health, because an agent that cannot ask "is anything being recorded?" is back to
+  // the failure P16.2 exists to fix. read()/sessions() stay behind the one gate. STATE is not
+  // CONTENT, and only the state crossed.
+  sessionLog:          { declined: 'PARTLY EXPOSED, DELIBERATELY. STATE — status(): enabled / sessionLogDir / sessionLogDirSource / sessionLogId / stats — is reported by presenter_health (Plan 0525 P2, I1). CONTENT — read()/sessions() — is NOT, and remains role-gated at GET /api/session-log (Plan 0522 P16.2 / R6): the log is the session transcript, so a second read surface for participants\' own words is a decision, not a convenience. append()/flush()/close() are the server\'s own plumbing.' },
   // GAP #4 of the S210 six: the server CAN push raw HTML (server.mjs:1820) and no tool exposes
   // it. Argus told Bruce it was impossible; it wasn't. Recorded as owed, not quietly dropped.
   pushContent:         { declined: 'NOT YET EXPOSED — owed. Raw-HTML push into the sandboxed iframe; needs a decision on the injection surface before it gets a tool.' },
