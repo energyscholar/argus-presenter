@@ -10,7 +10,8 @@
  * Schema (neutral naming — Library › Series › Module › Section › Sequence › Beat › Layer):
  *   { manifest:{title,version,kind,summary,requirements:{terminalClear,gateTimeoutMs,assets,perUserPush}},
  *     sections:[{id,title,kind,summary,beatIds:[],sequences?:[{id,title,beatIds:[]}]}],
- *     beats:[{id,component,opts,promptId?,target?,requires?,gate?:{user,target},branch?,variantOf?,layers?:[{target|when,opts}]}] }
+ *     beats:[{id,component,opts,promptId?,target?,requires?,gate?:{user,target},branch?,variantOf?,
+ *             layers?:[{target|when,opts}],durationSec?,onDemand?}] }
  */
 
 // The 14 real components in components/, plus 'clear' as a recognised terminal pseudo-beat.
@@ -18,6 +19,29 @@ export const DEFAULT_COMPONENTS = [
   'card', 'choice', 'crud', 'dice', 'form', 'image', 'map',
   'narration', 'poll-results', 'scene', 'slider', 'stepper', 'svg-reactive', 'text-input',
 ];
+/*
+ * Plan 0525 P1.3 — THE DECLARED BEAT KEYS.
+ *
+ * `onDemand` — a note to whoever is presenting, meaning "this beat is prepared but is not on the
+ * linear path; show it only when they ask for it" — sat inert in authored modules for months
+ * because NOTHING ANYWHERE SAID THE FIELD EXISTED. Neither presenting surface rendered it and the
+ * validator did not know its name, so the marker could not be seen, and its absence could not be
+ * noticed either. This list is the cure: every beat-level key the product actually reads, in one
+ * place, so the next field an author invents is ANNOUNCED rather than silently ignored.
+ *
+ * ⚠ ALLOW-LIST, ADVISORY ONLY (I4 — the permissive default). An unlisted key produces `info`,
+ * NEVER `warn` and never an error, because authoring metadata the product does not read is
+ * perfectly legitimate: a beat may carry whatever its author finds useful. The only fact being
+ * reported is "the product will not act on this" — precisely the fact that was missing.
+ */
+export const KNOWN_BEAT_KEYS = [
+  'id', 'component', 'opts', 'promptId', 'target', 'requires',
+  'gate', 'branch', 'variantOf', 'layers', 'durationSec',
+  // Read by presenter_beats (the MCP cue sheet) and beatRow() (the GM outline) — 0525 P1.1/P1.2.
+  // It informs the presenter and changes NO navigation: R5.
+  'onDemand',
+];
+
 const TERMINAL_PSEUDO = 'clear';
 const INTERACTIVE = new Set(['choice', 'dice', 'text-input', 'slider', 'form']);
 const PASSIVE = new Set(['card', 'narration', 'image']);
@@ -123,6 +147,15 @@ export function validate(module, ctx = {}) {
   // has no title/default page, so it shows branding on load until Start. Advisory (matches V19's
   // tone) even though most existing modules trip it.
   if (beats.length && !(m.manifest && m.manifest.defaultBeatId)) info('V20-no-default', 'no manifest.defaultBeatId — module shows branding on load until Start (no title page)');
+
+  // V21 (Plan 0525 P1.3) advisory-only, MODULE-level — not per-beat, for the reason V19/V20 give:
+  // a key repeated across 300 beats would produce 300 lines and be deleted within a week. Reports
+  // the DISTINCT beat-level keys outside KNOWN_BEAT_KEYS once, with the allow-list beside them so
+  // the reader can tell a typo from deliberate metadata without opening this file.
+  const knownBeatKeys = new Set(KNOWN_BEAT_KEYS);
+  const undeclaredKeys = [...new Set(beats.reduce((acc, b) => (b && typeof b === 'object') ? acc.concat(Object.keys(b)) : acc, []))]
+    .filter((k) => !knownBeatKeys.has(k)).sort();
+  if (undeclaredKeys.length) info('V21-undeclared-beat-key', `beat keys the product does not read: ${undeclaredKeys.join(', ')} — authoring metadata is fine, nothing acts on them. Declared keys: ${KNOWN_BEAT_KEYS.join(', ')}`);
 
   return { warnings };
 }

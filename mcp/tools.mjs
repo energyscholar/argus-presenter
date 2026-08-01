@@ -398,7 +398,7 @@ export const coreTools = [
   },
   {
     name: 'presenter_beats',
-    description: 'List the beats of the CURRENTLY loaded module (index, id, component, title) — the cue sheet for show_beat. This is the GM catalog: what can be put on screen right now, in any order.',
+    description: 'List the beats of the CURRENTLY loaded module (index, id, component, title) — the cue sheet for show_beat. This is the GM catalog: what can be put on screen right now, in any order. ⚑ A beat carrying `onDemand:true` is PREPARED BUT NOT ON THE PATH — a note to whoever is presenting, not a rule the product enforces: do not walk onto it in sequence, show it only when the audience asks for that thing. The classic shape is the beat behind a closed door — it exists, and it appears iff they find the door and decide to open it. When they do ask, just call show_beat as usual; nothing is blocked. The key is ABSENT on an ordinary beat.',
     input: { type: 'object', properties: {} },
     handler: async () => {
       const s = need();
@@ -407,7 +407,11 @@ export const coreTools = [
       return {
         title: mod && mod.title,
         count: beats.length,
-        beats: beats.map((b, i) => ({ index: i, id: b && b.id, component: b && b.component, title: (b && b.opts && (b.opts.title || b.opts.speaker || b.opts.prompt)) || null, target: (b && b.target) || 'all' }))
+        // Plan 0525 P1.1 (R5) — `onDemand` is ADDITIVE and PRESENT-ONLY-WHEN-TRUE: an ordinary
+        // beat's shape is byte-for-byte what it was, so no existing caller changes. It had been
+        // dropped on the floor here since it was first authored, which meant the marker was
+        // invisible on the one surface an AI presenter reads.
+        beats: beats.map((b, i) => ({ index: i, id: b && b.id, component: b && b.component, title: (b && b.opts && (b.opts.title || b.opts.speaker || b.opts.prompt)) || null, target: (b && b.target) || 'all', ...(b && b.onDemand ? { onDemand: true } : {}) }))
       };
     }
   },

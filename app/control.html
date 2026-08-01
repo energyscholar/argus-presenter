@@ -210,6 +210,11 @@
   .beat.rec{border-left-color:var(--warn);color:var(--warn);background:rgba(255,180,84,.06);}
   .beat .recnote{font-size:9px;color:var(--warn);margin-left:4px;}
   .beat .comp{font-size:9px;opacity:.6;}
+  /* Plan 0525 P1.2 (R5) — ON-DEMAND MARKER. A note to whoever is presenting: this beat is prepared
+     but is not on the linear path — show it only when the audience asks. The product does NOT
+     enforce it; the row stages on click exactly like every other row, because when they DO ask you
+     just click it. Same dim/small grammar as .comp and .u-act: a legend, not a button. */
+  .beat .ondemand{font-size:9px;opacity:.6;margin-left:4px;letter-spacing:.04em;}
   #autofollow-lbl{font-size:11px;color:var(--dim);display:inline-flex;align-items:center;gap:3px;margin-left:6px;cursor:pointer;}
   #users{max-height:290px;overflow:auto;}
   .user{display:flex;gap:6px;align-items:center;padding:4px 6px;border-radius:5px;cursor:pointer;border:1px solid transparent;}
@@ -915,8 +920,8 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   // DEL-3: build one .beat row (same cur/rec/label/onclick logic) — shared by section- and sequence-level rendering.
   function beatRow(bid){ var b=beatById(bid); if(!b) return null; var i=beatIndex(bid);
     var el=document.createElement('div'); el.className='beat'+(i===curBeat?' cur':'')+(i===recBeat&&i!==curBeat?' rec':''); el.dataset.i=i;
-    el.innerHTML=esc((((b.opts&&(b.opts.title||b.opts.prompt||b.opts.text))||b.id)+'').slice(0,42))+' <span class="comp">'+esc(b.component)+(b.target?(' →'+esc(b.target)):'')+'</span>'+((i===recBeat&&i!==curBeat)?' <span class="recnote">→ recommended</span>':'');   // Plan 0471 C4: escape module-authored strings
-    el.onclick=function(){ stageBeatAt(i); };   // P6/R4: STAGES — GO ships it. R14: by id.
+    el.innerHTML=esc((((b.opts&&(b.opts.title||b.opts.prompt||b.opts.text))||b.id)+'').slice(0,42))+' <span class="comp">'+esc(b.component)+(b.target?(' →'+esc(b.target)):'')+'</span>'+(b.onDemand?' <span class="ondemand" title="ON DEMAND — prepared, but not on the linear path. Do not walk onto it; show it only when they ask for this thing.">◈ on demand</span>':'')+((i===recBeat&&i!==curBeat)?' <span class="recnote">→ recommended</span>':'');   // Plan 0471 C4: escape module-authored strings. Plan 0525 P1.2: the on-demand badge is a LABEL — the row's behaviour below is untouched.
+    el.onclick=function(){ stageBeatAt(i); };   // P6/R4: STAGES — GO ships it. R14: by id. 0525 P1.2: an on-demand row stages IDENTICALLY — the marker informs the human, it never gates the click.
     return el; }
   // Plan 0456 P2: first RESOLVABLE beat index of a tier (section or sequence) — shared by the
   // KBD-1 digit jump and the TOC ⏵ jump buttons. Returns -1 when the tier has none.
