@@ -10,6 +10,7 @@ import { createServer, moduleLifecycle } from '../app/server.mjs';
 import { assemble } from '../harness/assemble.mjs';
 import { tunnelConfigured, tunnelStatus, tunnelUp, tunnelDown } from './tunnel.mjs';
 import { readFileSync, existsSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -86,6 +87,19 @@ export const coreTools = [
       const PASS = ['profile','controlToken','rolePassword','roleSeed','capSecret','settlingMs','queueMaxPending','queueTtlMs','perTurnBudgetMs','perTurnWrapMs','floorThresholds'];
       const opts = { port, voiceEnabled: voice };
       for (const k of PASS) if (rest[k] !== undefined) opts[k] = rest[k];
+      // ── Plan 0522 P12 (R15) — MINT A CONTROL TOKEN WHEN THE CALLER PASSES NONE ──────────────
+      // The CLI has done this since Plan 0471 H1 (app/server.mjs, "so the module write-back never
+      // ships open"). presenter_start did not, so the ONE path that also raises a public ingress
+      // was the ungated one: reachable from the open internet, and — until P12 closed it — able
+      // to accept an uncredentialed module write that followed a symlink into another repository.
+      // The asymmetry was backwards. It is minted here, returned below, and used by the Content
+      // Creator + the Manage Modules page, which now REQUIRE a credential to write at all.
+      // ⚠ Only when the caller supplies neither a controlToken nor the env var: an explicit
+      // credential still wins, and a rolePassword-only deployment gets a token as well, because
+      // module writes verify against CONTROL_TOKEN or ROLE_HASH and either one is a real gate.
+      const mintedToken = (opts.controlToken || process.env.PRESENTER_CONTROL_TOKEN || rest.rolePassword)
+        ? null : randomBytes(16).toString('hex');
+      if (mintedToken) opts.controlToken = mintedToken;
       server = await createServer(opts);
 
       // Raise the ingress AFTER the bind, so the first public request has something to hit.
@@ -95,7 +109,11 @@ export const coreTools = [
         if (ingress.started && (ingress.active !== false)) tunnelRaisedByUs = true;
       }
 
-      const gated = !!(rest.controlToken || rest.rolePassword);
+      // P12/R15 — a minted token counts: the session IS gated, and there is now no route through
+      // this tool that produces an ungated one. The old `warning: PUBLICLY REACHABLE AND UNGATED`
+      // branch is therefore unreachable and gone — it announced a hazard on a SUCCESSFUL return
+      // and left it standing, which is the anti-pattern P16.1 catalogues. Prevented, not warned.
+      const gated = !!(opts.controlToken || rest.rolePassword || process.env.PRESENTER_CONTROL_TOKEN);
       const publicUrl = ingress.publicUrl || null;
       return {
         url: server.url(),
@@ -104,8 +122,11 @@ export const coreTools = [
         gated,
         capLinks: !!rest.capSecret,
         tunnel: ingress,
-        // Reachable + ungated is the posture worth saying out loud rather than discovering later.
-        ...(publicUrl && !gated ? { warning: 'PUBLICLY REACHABLE AND UNGATED — anyone with the url is in. Pass controlToken/rolePassword to gate.' } : {}),
+        // The minted secret is RETURNED, never only logged: a credential the caller cannot read
+        // is the same as no write surface at all — the Content Creator and /manage need it, and
+        // the human needs it to reach /control on a gated session.
+        ...(mintedToken ? { controlToken: mintedToken, controlTokenMinted: true,
+          note: 'No credential was passed, so one was minted (P12/R15) — the module write-back never ships open. Use it as x-control-token / ?token=.' } : {}),
       };
     }
   },

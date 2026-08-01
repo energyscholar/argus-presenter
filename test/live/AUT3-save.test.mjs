@@ -3,6 +3,13 @@
  * POSTs the authored module to the write-back endpoint (AUT-1), so it enters the registry;
  * __creator.load(id) GETs it back and re-populates the editor. Proof: author → save →
  * appears in GET /api/modules → clear the editor → load → the beat body survives the trip.
+ *
+ * ⚠ AMENDED BY PLAN 0522 P12 (R15) — SETUP ONLY; every claim is preserved verbatim.
+ * Module write-back now requires a control credential unconditionally (see the header of
+ * test/live/AP0471-H1-writeback-auth.test.mjs for the ruling). The creator page has forwarded a
+ * `?token=` to the endpoint since AUTH-1 (app/creator.html), so the fixture configures a token
+ * and hands it to the page. The round-trip under test — author → save → registry → load — is
+ * unchanged, and so is every assertion about it.
  */
 import { test, expect } from '../../harness/test.mjs';
 import { createServer } from '../../app/server.mjs';
@@ -17,12 +24,13 @@ const ID = '_creator_save_test';
 const cleanup = () => { const f = join(MODULES_DIR, ID + '.json'); if (existsSync(f)) unlinkSync(f); };
 
 test('AUT-3-save — creator save() writes to the registry; load() re-populates the editor (round-trip)', async () => {
-  const server = await createServer({ port: 0 });
+  const TOKEN = 'aut3-save-token';
+  const server = await createServer({ port: 0, controlToken: TOKEN });
   const browser = await launch();
   try {
     const page = await browser.newPage();
     page.on('pageerror', (e) => console.log('PAGEERR creator-save', e.message));
-    await page.goto(`${server.url()}/creator?userId=gm&role=presenter`, { waitUntil: 'domcontentloaded' });
+    await page.goto(`${server.url()}/creator?userId=gm&role=presenter&token=${TOKEN}`, { waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => window.__creator && typeof window.__creator.save === 'function' && typeof window.__creator.load === 'function');
 
     // Author a module in the editor, then Save it via the hook.

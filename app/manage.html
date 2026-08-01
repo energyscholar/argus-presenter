@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en" data-theme="argus">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Argus Presenter — Manage Modules</title>
+<style>
+  :root{--bg:#0a0e1c;--panel:rgba(10,16,32,.6);--line:#21314f;--ink:#cfe9ff;--dim:#8ab;--ok:#22e5a0;--warn:#ffb454;--danger:#ff6b6b;}
+  html,body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.45 'Segoe UI',system-ui,sans-serif;}
+  body{padding:16px;max-width:1100px;margin:0 auto;}
+  h1{font:600 15px/1.4 inherit;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);margin:0 0 4px;}
+  .note{color:var(--dim);font-size:12px;margin:0 0 14px;max-width:780px;}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+  input,select,button{background:#0d1424;color:var(--ink);border:1px solid var(--line);border-radius:4px;padding:4px 7px;font:inherit;}
+  button{cursor:pointer;}
+  button.primary{border-color:var(--ok);color:var(--ok);}
+  button.danger{border-color:var(--danger);color:var(--danger);}
+  button:disabled{opacity:.4;cursor:not-allowed;}
+  table{border-collapse:collapse;width:100%;margin-top:14px;}
+  th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:middle;}
+  th{color:var(--dim);font-weight:600;font-size:11px;letter-spacing:.06em;text-transform:uppercase;}
+  td.num{text-align:right;font-variant-numeric:tabular-nums;color:var(--dim);}
+  .badge{display:inline-block;padding:1px 6px;border-radius:3px;border:1px solid var(--line);font-size:11px;}
+  .badge.link{border-color:var(--warn);color:var(--warn);}
+  .badge.err{border-color:var(--danger);color:var(--danger);}
+  .reason{color:var(--warn);font-size:11px;}
+  #msg{margin-top:10px;min-height:18px;font-size:12px;}
+  #msg.bad{color:var(--danger);}
+  #msg.good{color:var(--ok);}
+</style>
+</head>
+<body>
+<h1>Manage Modules</h1>
+<!-- Plan 0522 P12 (R12) — a SEPARATE surface, reached at /manage. Curating the catalogue is
+     between-sessions work; the picker on /control is in-session work. The one thing this page
+     must never become is a control on the surface that runs a live session. -->
+<p class="note">
+  Between-sessions curation. <strong>Retire moves a module into <code>modules/_archive/</code> — it never
+  deletes it</strong>; move the file back to restore it. Setting a status only hides a module behind the
+  control page's <em>Show All Modules</em> checkbox, and is undone by setting it back to <code>active</code>.
+  Symlinked modules point into another repository and are read-only here.
+</p>
+
+<div class="row">
+  <label for="tok" style="color:var(--dim)">Control token</label>
+  <input id="tok" type="password" style="width:280px" placeholder="x-control-token" autocomplete="off">
+  <button id="load" class="primary">Load catalogue</button>
+  <span id="count" style="color:var(--dim)"></span>
+</div>
+<div id="msg"></div>
+
+<table id="tbl" hidden>
+  <thead><tr>
+    <th>Module</th><th>Kind</th><th class="num">Beats</th><th class="num">Sections</th>
+    <th>State</th><th>Status</th><th>Actions</th>
+  </tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+
+<script>
+(function(){
+  var $=function(id){return document.getElementById(id);};
+  // Same localStorage namespace + key the control page uses for the unlock token (TOKEN_KEY).
+  // No second auth scheme and no second persistence mechanism — R12 says gate on the EXISTING
+  // controlToken, so a token already unlocked on /control unlocks this page too.
+  var NS='argus-presenter', TOKEN_KEY=NS+':token';
+  var q=new URLSearchParams(location.search);
+  try{ $('tok').value=q.get('token')||localStorage.getItem(TOKEN_KEY)||''; }catch(e){ $('tok').value=q.get('token')||''; }
+
+  function tok(){ return $('tok').value.trim(); }
+  function say(text,bad){ var m=$('msg'); m.textContent=text; m.className=bad?'bad':(text?'good':''); }
+  function hdr(){ return { 'content-type':'application/json', 'x-control-token': tok() }; }
+
+  // The panel NEVER reports an outcome it did not read back. Every mutation re-fetches the
+  // catalogue, so what is on screen after a click is disk, not an optimistic local edit — a
+  // curation surface that lies about what it moved is worse than one that does nothing.
+  function refresh(){
+    return fetch('/api/module-admin',{headers:hdr(),cache:'no-store'}).then(function(r){
+      return r.json().then(function(d){ return {status:r.status,d:d}; });
+    }).then(function(res){
+      if(res.status!==200){ $('tbl').hidden=true; $('count').textContent='';
+        say((res.d&&res.d.error)||('HTTP '+res.status),true); return; }
+      try{ if(tok()) localStorage.setItem(TOKEN_KEY,tok()); }catch(e){}
+      render(res.d);
+    }).catch(function(e){ say('could not reach the server: '+e,true); });
+  }
+
+  function render(d){
+    var rows=$('rows'); rows.innerHTML='';
+    var list=d.modules||[];
+    $('count').textContent=list.length+' modules · archive: '+d.archive;
+    list.forEach(function(m){
+      var tr=document.createElement('tr');
+
+      var tdName=document.createElement('td');
+      var strong=document.createElement('strong'); strong.textContent=m.title||m.id; tdName.appendChild(strong);
+      var sub=document.createElement('div'); sub.style.color='var(--dim)'; sub.style.fontSize='11px'; sub.textContent=m.id;
+      tdName.appendChild(sub); tr.appendChild(tdName);
+
+      var tdKind=document.createElement('td'); tdKind.textContent=m.kind||'Uncategorized'; tr.appendChild(tdKind);
+      var tdB=document.createElement('td'); tdB.className='num'; tdB.textContent=m.beats; tr.appendChild(tdB);
+      var tdS=document.createElement('td'); tdS.className='num'; tdS.textContent=m.sections; tr.appendChild(tdS);
+
+      // STATE — the two facts the picker never shows and curation cannot work without: whether
+      // this file is a symlink into another repository, and whether it is too broken to load.
+      var tdState=document.createElement('td');
+      if(m.symlink){ var b=document.createElement('span'); b.className='badge link'; b.textContent='⇥ symlink'; tdState.appendChild(b); }
+      if(m.error){ var e=document.createElement('span'); e.className='badge err'; e.textContent='ERR'; e.title=m.error; tdState.appendChild(e); }
+      if(!m.symlink&&!m.error) tdState.textContent='—';
+      tr.appendChild(tdState);
+
+      var tdStatus=document.createElement('td');
+      var sel=document.createElement('select'); sel.className='status'; sel.setAttribute('data-id',m.id);
+      (d.statuses||['active','working','retired']).forEach(function(s){
+        var o=document.createElement('option'); o.value=s; o.textContent=s; if(s===m.status) o.selected=true; sel.appendChild(o); });
+      if(m.statusInvalid) sel.title='file says "'+m.statusInvalid+'" — unrecognised, read as active';
+      tdStatus.appendChild(sel); tr.appendChild(tdStatus);
+
+      var tdAct=document.createElement('td'); tdAct.className='row';
+      var retire=document.createElement('button'); retire.className='danger'; retire.textContent='Retire → _archive/';
+      retire.setAttribute('data-id',m.id);
+      tdAct.appendChild(retire);
+
+      // ⚠ REFUSE VISIBLY, NOT SILENTLY. The server refuses a write through a symlink whatever
+      // this page does (that guard is the real one). The page disables the controls AND states
+      // the reason, so an operator is never left clicking something that quietly does nothing.
+      if(m.symlink){
+        sel.disabled=true; retire.disabled=true;
+        var why=document.createElement('span'); why.className='reason';
+        why.textContent='read-only — symlink into another repository';
+        tdAct.appendChild(why);
+      } else {
+        sel.addEventListener('change',function(){ op(m.id,{op:'status',status:this.value},'status → '+this.value); });
+        retire.addEventListener('click',function(){ op(m.id,{op:'retire'},'moved to _archive/'); });
+      }
+      tr.appendChild(tdAct);
+      rows.appendChild(tr);
+    });
+    $('tbl').hidden=false;
+    if(!list.length) say('no modules on disk');
+  }
+
+  function op(id,msg,okText){
+    say('');
+    return fetch('/api/module-admin/'+encodeURIComponent(id),{method:'POST',headers:hdr(),body:JSON.stringify(msg)})
+      .then(function(r){ return r.json().then(function(d){ return {status:r.status,d:d}; }); })
+      .then(function(res){
+        if(res.status!==200) say(id+': '+((res.d&&res.d.error)||('HTTP '+res.status)),true);
+        else say(id+': '+okText);
+        return refresh();
+      }).catch(function(e){ say(id+': '+e,true); });
+  }
+
+  $('load').addEventListener('click',refresh);
+  $('tok').addEventListener('keydown',function(ev){ if(ev.key==='Enter') refresh(); });
+  // A page opened with a token already in hand loads straight away; otherwise it waits, because
+  // an unauthenticated fetch would only paint an error over an empty table.
+  if(tok()) refresh();
+  window.__manage={ refresh:refresh, op:op, setToken:function(t){ $('tok').value=t; } };   // test hook
+})();
+</script>
+</body>
+</html>

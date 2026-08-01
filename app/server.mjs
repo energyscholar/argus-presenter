@@ -16,7 +16,7 @@
  */
 import http from 'http';
 import { createHash } from 'node:crypto';
-import { readFileSync, readdirSync, statSync, existsSync, writeFileSync, watch, mkdirSync, unlinkSync, appendFileSync, lstatSync } from 'fs';
+import { readFileSync, readdirSync, statSync, existsSync, writeFileSync, watch, mkdirSync, unlinkSync, renameSync, appendFileSync, lstatSync } from 'fs';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { dirname, join } from 'path';
 import { tmpdir } from 'os';
@@ -328,6 +328,16 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // (default ./modules; set PRESENTER_MODULES_DIR to point at your content, e.g. a campaign's
   // adventures/). Read + validated on demand, cached by file mtime so repeat loads are snappy.
   const MODULES_DIR = process.env.PRESENTER_MODULES_DIR || join(__dirname, '..', 'modules');
+  // ── Plan 0522 P12 — THE ARCHIVE. Retirement is a MOVE, never a delete. `modules/*.json` is
+  // gitignored, so 28 of 29 modules on this box have NO version history whatsoever: an `rm` is
+  // permanent and unrecoverable, and a session deck is indistinguishable from a throwaway
+  // iteration to anything but a human. So the hard retirement relocates the file one directory
+  // down and stops there. Undo is `mv` back — the only undo that exists.
+  //
+  // ⚠ NO EXCLUSION CODE IS NEEDED to keep the archive out of the picker: listModules() /
+  // listSeries() are non-recursive readdirSync scans filtered to `.json`, so a SUBDIRECTORY is
+  // never a candidate. That is also why the archive is a directory rather than a suffix.
+  const ARCHIVE_DIR = join(MODULES_DIR, '_archive');
   const moduleCache = new Map();   // id -> { mtimeMs, module }
   function readModuleFile(id) {
     if (!/^[\w.-]+$/.test(id)) return null;          // no path traversal
@@ -393,6 +403,89 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       })
       .filter(Boolean);
   }
+
+  // ── Plan 0522 P12 — MANAGE MODULES: the curation surface ──────────────────────────────────
+  //
+  // ⚠ THIS IS NOT listModules(). The picker's list is an IN-SESSION list and is deliberately
+  // lossy: it drops `error` rows and 0-beat/0-section rows so a broken file cannot put a bogus
+  // entry in front of the GM at 20:05. The curation list is BETWEEN-SESSIONS and must be the
+  // opposite — a module too broken to load is precisely what someone curating needs to see, and
+  // a file that is invisible in both lists is a file nobody can ever clean up. So this scan
+  // drops nothing and reports the breakage as a field.
+  //
+  // `symlink` is the other field the picker has no use for and this surface cannot work without.
+  // A module file in MODULES_DIR may be a SYMLINK into a live source tree, so a manifest write
+  // through it edits a DIFFERENT repository. The panel renders the flag and the write path
+  // refuses (below) — belt and braces, because a UI-only guard is one stale render from useless.
+  function moduleAdminRow(id) {
+    const file = join(MODULES_DIR, id + '.json');
+    let symlink = false;
+    try { symlink = lstatSync(file).isSymbolicLink(); } catch (e) { /* unreadable ⇒ reported below */ }
+    let module = null, error = null;
+    try { module = JSON.parse(readFileSync(file, 'utf8')); } catch (e) { error = String((e && e.message) || e).slice(0, 120); }
+    const man = (module && module.manifest) || {};
+    const life = moduleLifecycle(man);
+    return {
+      id, symlink, error,
+      title: man.title || (module && module.title) || id,
+      kind: life.kind, status: life.status, statusInvalid: life.statusInvalid,
+      beats: (module && module.beats || []).length, sections: (module && module.sections || []).length,
+    };
+  }
+  function listModulesAdmin() {
+    if (!existsSync(MODULES_DIR)) return [];
+    return readdirSync(MODULES_DIR)
+      .filter((f) => f.endsWith('.json') && !f.endsWith('.series.json'))
+      .map((f) => moduleAdminRow(f.slice(0, -5)))
+      .sort((a, b) => String(a.title).localeCompare(String(b.title), undefined, { sensitivity: 'base' }));
+  }
+  /**
+   * Apply ONE curation op. Returns { code, body } — never throws, never partially applies.
+   *
+   * ⚠ THE WRITE PATH IS STRICTER THAN THE READ PATH, ON PURPOSE. moduleLifecycle() degrades an
+   * unrecognised status to `active` because a throw there would empty the whole picker over one
+   * typo (P11/I4). Here the input is a human clicking a control this second, so an unrecognised
+   * status is REJECTED rather than silently rewritten: permissive on read, strict on write.
+   */
+  function moduleAdminOp(id, msg) {
+    if (!/^[\w.-]+$/.test(id)) return { code: 400, body: { error: 'bad id' } };
+    const file = join(MODULES_DIR, id + '.json');
+    if (!existsSync(file)) return { code: 404, body: { error: 'not found', id } };
+    // The symlink refusal is FIRST and applies to every op. It is stated as a reason the panel
+    // can render, not a bare 4xx — "refuse VISIBLY" is the requirement; a silent no-op here means
+    // an operator believing they curated something they did not.
+    let symlink = false;
+    try { symlink = lstatSync(file).isSymbolicLink(); } catch (e) { /* fall through to the op */ }
+    if (symlink) {
+      log.warn('modules', 'admin-refused-symlink', { id, op: msg && msg.op });
+      return { code: 409, body: { error: 'refusing to modify a symlinked module — it points into another repository', id, symlink: true } };
+    }
+    const op = msg && msg.op;
+    if (op === 'status') {
+      const status = String((msg && msg.status) || '').trim().toLowerCase();
+      if (!MODULE_STATUSES.includes(status)) return { code: 400, body: { error: 'bad status (' + MODULE_STATUSES.join('|') + ')', id, got: (msg && msg.status) || null } };
+      let module;
+      try { module = JSON.parse(readFileSync(file, 'utf8')); } catch (e) { return { code: 422, body: { error: 'module is not readable JSON — fix or archive it', id, detail: String((e && e.message) || e).slice(0, 120) } }; }
+      module.manifest = Object.assign({}, module.manifest, { status });
+      try { writeFileSync(file, JSON.stringify(module, null, 2)); } catch (e) { return { code: 500, body: { error: String((e && e.message) || e) } }; }
+      moduleCache.delete(id);
+      log.info('modules', 'admin-status', { id, status });
+      return { code: 200, body: { ok: true, id, status } };
+    }
+    if (op === 'retire') {
+      // MOVE. Never unlinkSync — see the ARCHIVE_DIR note. An existing destination is a REFUSAL,
+      // not an overwrite: the archive is the only copy, so clobbering it destroys the one thing
+      // this whole mechanism exists to preserve.
+      const dest = join(ARCHIVE_DIR, id + '.json');
+      if (existsSync(dest)) return { code: 409, body: { error: 'a module of that id is already archived — move it aside first', id, archived: dest } };
+      try { mkdirSync(ARCHIVE_DIR, { recursive: true }); renameSync(file, dest); }
+      catch (e) { return { code: 500, body: { error: String((e && e.message) || e) } }; }
+      moduleCache.delete(id);
+      log.info('modules', 'admin-retired', { id, dest, note: 'MOVED, not deleted — restore with mv' });
+      return { code: 200, body: { ok: true, id, retired: true, archived: dest } };
+    }
+    return { code: 400, body: { error: 'bad op (status|retire)', id } };
+  }
   // AUT-2: hot-reload. Watch MODULES_DIR; when a *.json module file changes on disk,
   // invalidate its cache and notify the control roles (presenter/ai) so a just-
   // edited/just-saved module is discoverable without a server restart. Debounced —
@@ -423,6 +516,14 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     } else if (req.url === '/control' || req.url.startsWith('/control?')) {
       res.writeHead(200, htmlHeaders());
       res.end(readFileSync(CONTROL, 'utf8'));
+    } else if (req.url === '/manage' || req.url.startsWith('/manage?')) {
+      // Plan 0522 P12 (R12) — Manage Modules. A SEPARATE page, deliberately not a panel on
+      // /control: curating the catalogue is between-sessions work and the picker is in-session
+      // work, and the surface that carried 95% of S17 should not grow a control whose whole
+      // purpose is to make modules disappear. Served exactly like /control and /creator; the
+      // credential is entered on the page, never in the served HTML.
+      res.writeHead(200, htmlHeaders());
+      res.end(readFileSync(join(__dirname, 'manage.html'), 'utf8'));
     } else if (req.url === '/creator' || req.url.startsWith('/creator?')) {
       // AUT-3: the Content Creator authoring panel (beat-list editor + manifest + in-browser
       // validate + live preview). Served exactly like /control.
@@ -458,6 +559,34 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       // Discover available modules (id, title, counts, validation summary) — for the GM panel's SELECT list.
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-cache' });
       res.end(JSON.stringify(listModules()));
+    } else if (req.url === '/api/module-admin' || req.url.startsWith('/api/module-admin?')) {
+      // Plan 0522 P12 — the curation LIST. Gated on the same credential as the write, because it
+      // is the write surface's own view: an operator who cannot act on it has no use for it, and
+      // it reports which files are unreadable (a small map of the box's disk).
+      const a = moduleWriteAuthed(req, null);
+      if (!a.ok) { res.writeHead(a.code, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: a.error })); return; }
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-cache' });
+      res.end(JSON.stringify({ dir: MODULES_DIR, archive: ARCHIVE_DIR, statuses: MODULE_STATUSES, modules: listModulesAdmin() }));
+    } else if (req.url.startsWith('/api/module-admin/')) {
+      // Plan 0522 P12 — the curation WRITE: set `status`, or retire (MOVE to _archive/).
+      // ⚠ It is a SEPARATE route from POST /api/modules/:id on purpose. That endpoint replaces a
+      // module WHOLESALE (the Content Creator's save); this one edits one manifest field or
+      // relocates the file. Folding curation into a whole-body PUT would mean the panel had to
+      // round-trip every module's entire content — including the 2 MB one — to change a word.
+      const rawPath = req.url.slice('/api/module-admin/'.length);
+      const id = decodeURIComponent(rawPath.split('?')[0]);
+      if (req.method !== 'POST') { res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'method not allowed' })); return; }
+      const a = moduleWriteAuthed(req, rawPath);
+      if (!a.ok) { res.writeHead(a.code, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: a.error })); return; }
+      const CAP = 16 * 1024; let body = ''; let aborted = false;
+      req.on('data', (chunk) => { if (aborted) return; body += chunk; if (body.length > CAP) { aborted = true; res.writeHead(413, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'too large' })); req.destroy(); } });
+      req.on('end', () => {
+        if (aborted) return;
+        let msg; try { msg = JSON.parse(body || '{}'); } catch (e) { res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'invalid json' })); return; }
+        const out = moduleAdminOp(id, msg);
+        res.writeHead(out.code, { 'content-type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify(out.body));
+      });
     } else if (req.url.startsWith('/api/modules/')) {
       const rawPath = req.url.slice(13);
       const id = decodeURIComponent(rawPath.split('?')[0]);
@@ -468,13 +597,9 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         // Plan 0471 H1: gate on ANY control credential (was CONTROL_TOKEN-only, so a
         // rolePassword/ROLE_HASH-gated deployment left this write endpoint OPEN). Mirror the
         // WS control gate: require a token matching CONTROL_TOKEN OR ROLE_HASH when either is set.
-        if (CONTROL_TOKEN || ROLE_HASH) {
-          const q = rawPath.split('?')[1] || '';
-          const qtoken = new URLSearchParams(q).get('token');
-          const token = req.headers['x-control-token'] || qtoken;
-          const ok = (CONTROL_TOKEN && token === CONTROL_TOKEN) || (ROLE_HASH && token === ROLE_HASH);
-          if (!ok) { res.writeHead(403, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'forbidden' })); return; }
-        }
+        // Plan 0522 P12 (R15): and require one UNCONDITIONALLY — see moduleWriteAuthed.
+        const auth = moduleWriteAuthed(req, rawPath);
+        if (!auth.ok) { res.writeHead(auth.code, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: auth.error })); return; }
         // id guard: no path separators / traversal (reuse readModuleFile's rule).
         if (!/^[\w.-]+$/.test(id)) { res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'bad id' })); return; }
         // Body with a HARD size cap — accumulate, abort past the cap.
@@ -580,6 +705,40 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     const q = new URLSearchParams((req.url.split('?')[1] || ''));
     const token = req.headers['x-control-token'] || q.get('token');
     return (CONTROL_TOKEN && token === CONTROL_TOKEN) || (ROLE_HASH && token === ROLE_HASH);
+  }
+  /*
+   * ── Plan 0522 P12 (R15) — MODULE MUTATION IS GATED UNCONDITIONALLY. FAIL CLOSED. ──────────
+   *
+   * Every OTHER gate on this server is "ungated ⇒ open", and that is right for them: an ungated
+   * deployment is a LAN/test posture, and reading the roster or claiming a work item cannot
+   * destroy anything. Module mutation is not in that class, and the difference is not a matter
+   * of taste:
+   *
+   *   writeFileSync FOLLOWS SYMLINKS, and a module file in MODULES_DIR may be a symlink into a
+   *   live source tree in a different repository. An uncredentialed POST overwrites a file in
+   *   that repository, and the fs watcher then hot-reloads the wreckage. Deployments commonly
+   *   gitignore their module directory, so there is often no version history to restore from.
+   *
+   * "No credential configured" is therefore not "no gate to apply" — it is "nothing to verify
+   * against", and the only safe answer to an unverifiable request to destroy data is no. This
+   * REPLACES the earlier LAN back-compat allowance (Plan 0471 H1's second test), deliberately.
+   * The symlink refusal further down is the second, independent layer; neither is sufficient
+   * alone — the symlink guard does not stop a stranger clobbering a real module, and a
+   * credential does not stop a legitimate operator writing through a link by mistake.
+   *
+   * Returns { ok, code, error } so the caller can distinguish "you sent no credential" from
+   * "this server has none to check", which is a configuration fault the operator must see.
+   */
+  function moduleWriteAuthed(req, rawPath) {
+    if (!CONTROL_TOKEN && !ROLE_HASH) {
+      log.warn('modules', 'write-refused-ungated', { url: req.url, method: req.method,
+        reason: 'no control credential is configured — module writes fail closed (Plan 0522 P12 / R15)' });
+      return { ok: false, code: 403, error: 'module writes require a control credential, and this server has none configured — start it with a controlToken (or PRESENTER_CONTROL_TOKEN)' };
+    }
+    const q = new URLSearchParams((String(rawPath == null ? req.url : rawPath).split('?')[1] || ''));
+    const token = req.headers['x-control-token'] || q.get('token');
+    const ok = (CONTROL_TOKEN && token === CONTROL_TOKEN) || (ROLE_HASH && token === ROLE_HASH);
+    return ok ? { ok: true } : { ok: false, code: 403, error: 'forbidden' };
   }
   // ── Plan 0482 A2 — THE IDENTITY SEAM ────────────────────────────────────────────────
   // The ONE place role + userId are decided. Roles are an ALLOWLIST (a closed set); anything

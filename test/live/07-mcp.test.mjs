@@ -1,4 +1,11 @@
 // Rep 07 — MCP TOOL SURFACE: drive the whole presenter through mcp/tools handlers.
+//
+// ⚠ AMENDED BY PLAN 0522 P12 (R15) — SETUP ONLY; every claim is preserved verbatim.
+// presenter_start now mints a control token when the caller passes none (see mcp/tools.mjs), so
+// the GM page has to present that credential to be granted the `presenter` role instead of being
+// downgraded to participant. The token comes from presenter_start's own return value, which is
+// also the assertion that it IS returned rather than only logged — a minted secret the caller
+// cannot read would be indistinguishable from having no control surface at all.
 import { test, check as expect } from '../../harness/test.mjs';
 import { toolMap, _server } from '../../mcp/tools.mjs';
 import { launch, connectUser, frameClick, until } from '../../harness/multi.mjs';
@@ -7,12 +14,15 @@ test('rep 07 — mcp surface drives a full poll + push + reload + close', async 
   const T = toolMap();
   const started = await T.presenter_start.handler({ port: 0 });
   expect('presenter_start returns url', /^http:\/\//.test(started.url), started.url);
+  expect('presenter_start MINTS and RETURNS a control token when none was passed (P12/R15)',
+    typeof started.controlToken === 'string' && started.controlToken.length >= 16 && started.gated === true,
+    JSON.stringify({ minted: started.controlTokenMinted, gated: started.gated }));
   const server = _server();
   const browser = await launch();
   try {
     const p1 = await connectUser(browser, server, { userId: 'u1', userName: 'Alice' });
     const p2 = await connectUser(browser, server, { userId: 'u2', userName: 'Bob' });
-    await connectUser(browser, server, { userId: 'gm', userName: 'GM', role: 'presenter' });
+    await connectUser(browser, server, { userId: 'gm', userName: 'GM', role: 'presenter', token: started.controlToken });
     await until(() => server.presence().length === 3 && server.presence().some((u) => u.role === 'presenter'),
       { label: '3 connected incl presenter role' });
 

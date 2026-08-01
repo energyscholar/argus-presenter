@@ -165,7 +165,17 @@ test('S220 — presenter_start raises the ingress and returns the PUBLIC url', a
     expect(started.publicUrl === pub.url, 'the result carries the address a PARTICIPANT opens', started.publicUrl);
     expect(started.tunnel && started.tunnel.active === true, 'ingress up');
     expect(u.isUp(), 'the start command actually ran');
-    expect(/UNGATED/.test(started.warning || ''), 'publicly reachable + ungated is said out loud', started.warning);
+    // ⚠ AMENDED BY PLAN 0522 P12 (R15). This asserted `warning: 'PUBLICLY REACHABLE AND UNGATED'`
+    // — a hazard ANNOUNCED on a successful return and then left standing, which is the exact
+    // anti-pattern plan 0522 §P16.1 catalogues. presenter_start now mints a control token when
+    // the caller passes none (parity with the CLI, which has done so since Plan 0471 H1), so the
+    // publicly-reachable-and-ungated state this warned about can no longer be reached through
+    // this tool. The claim is STRENGTHENED, not dropped: prevented beats warned, and the minted
+    // secret must come back to the caller or the control surface is unusable.
+    expect(started.gated === true && !/UNGATED/.test(started.warning || ''),
+      'publicly reachable + ungated is now PREVENTED, not warned about', JSON.stringify({ gated: started.gated, warning: started.warning }));
+    expect(typeof started.controlToken === 'string' && started.controlToken.length >= 16 && started.controlTokenMinted === true,
+      'and the minted credential is RETURNED to the caller, not merely logged', JSON.stringify(started.controlTokenMinted));
 
     const st = await T.presenter_status.handler({});
     expect(st.tunnel && st.tunnel.configured === true, 'presenter_status reports ingress state');

@@ -12,10 +12,21 @@ export async function launch() {
   return puppeteer.launch(launchOpts());
 }
 
-export async function connectUser(browser, server, { userId, userName, role = 'participant' }) {
+/*
+ * Open a browser page as one user.
+ *
+ * ⚠ ADDITIVE, Plan 0522 P12 (R15): the optional `token`. presenter_start now mints a control
+ * token when the caller passes none, so a CONTROL role (presenter/ai) on an MCP-started server
+ * must present a credential or be downgraded to participant — silently, which is exactly how a
+ * test starts asserting something it is no longer exercising. app/presenter.html has forwarded
+ * `?token=` to its hello since AUTH-1; this only lets a caller supply one. Omitted ⇒ the URL is
+ * byte-identical to before, so every existing call site is unaffected.
+ */
+export async function connectUser(browser, server, { userId, userName, role = 'participant', token = null }) {
   const p = await browser.newPage();
   p.on('pageerror', (e) => console.log('PAGEERR', userId, e.message));
-  await p.goto(`${server.url()}/?userId=${userId}&name=${encodeURIComponent(userName)}&role=${role}`,
+  await p.goto(`${server.url()}/?userId=${userId}&name=${encodeURIComponent(userName)}&role=${role}`
+    + (token ? `&token=${encodeURIComponent(token)}` : ''),
     { waitUntil: 'domcontentloaded' });
   return p;
 }
