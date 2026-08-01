@@ -237,6 +237,15 @@
   .user select.u-station{font-size:9px;padding:0 2px;margin-left:6px;max-width:120px;background:#12161f;color:var(--dim);border:1px solid #2a3a5a;border-radius:4px;}
   #u-stat{font-size:10px;color:var(--dim);min-height:13px;margin-top:4px;padding:0 6px;}
   #u-stat.alert{color:var(--warn);font-weight:700;}
+  /* Plan 0522 P15 — the station tier. Same visual grammar as the roster: a dim group heading,
+     a row per station, the action as a .u-act so "one more thing you can press" reads the same
+     everywhere on this page. */
+  .st-grp{font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);margin:6px 0 2px;}
+  .st-row{display:flex;gap:6px;align-items:center;padding:3px 6px;border-radius:5px;border:1px solid transparent;}
+  .st-row:hover{border-color:#1c2a44;}
+  .st-name{flex:1 1 auto;min-width:0;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  #st-stat{font-size:10px;color:var(--dim);min-height:13px;margin-top:4px;padding:0 6px;}
+  #st-stat.alert{color:var(--warn);font-weight:700;}
   .mini{font-size:11px;padding:3px 6px;}
   textarea{width:100%;box-sizing:border-box;min-height:40px;}
   /* ATT (Plan 0466 §2.7): attendance overlay — full columns + per-row controls + summary footer. */
@@ -414,6 +423,22 @@
       <div class="row"><button id="op-open" class="mini">Open poll</button><input id="op-id" value="p1" style="width:50px"><input id="op-prompt" value="Ship it?" style="width:110px"><input id="op-options" value="yes,no" style="width:90px"><button id="op-close" class="mini">Close</button></div>
     </details>
   </section>
+
+  <!-- Plan 0522 P15 — THE STATION TIER. One row at the BOTTOM of the content column, collapsed:
+       the cost of availability is a row, not a mode. Ships hidden and stays hidden unless a plugin
+       actually declares stations, so a teaching deployment sees no change at all — not an empty
+       tier. It lives OUTSIDE #outline on purpose: renderOutline() and the module picker both do
+       `$('outline').innerHTML=''`, and stations outlive modules (0514 §13.1). -->
+  <section id="st-tier-wrap" style="display:none">
+    <details id="st-tier">
+      <summary class="acc-sum"><span id="st-tier-title"></span> <span class="badge" id="st-tier-count"></span></summary>
+      <div id="st-tier-list" style="margin-top:8px"></div>
+      <!-- The tier's OWN receipt line. Deliberately not #u-stat: that belongs to the roster row
+           actions in the other column (P14), and two unrelated verdicts sharing one line is how an
+           operator reads the wrong one. -->
+      <div id="st-stat"></div>
+    </details>
+  </section>
 </div>
 
 <div class="col">
@@ -468,7 +493,11 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   // roster highlight already speak, DERIVED from `target` and never set independently — two
   // variables that can disagree about who is receiving is exactly the footgun P5 exists to close.
   // It starts at 'all' on every load and is NEVER persisted (t13).
-  var target='all', stations=[], lastControl=null;
+  // Plan 0522 P15 — the deployment's OWN word for a station, straight off the welcome
+  // (`stationSelectorLabel`, 0514 §8). Core must contain no domain vocabulary (A3), so the tier is
+  // headed with the word the plugin declared, exactly as P13 heads the seat line on the display
+  // page. The fallback is the generic English one, never a guess about the deployment.
+  var target='all', stations=[], stationWord='Stations', lastControl=null;
   var seriesModules=[], seriesPos=-1;   // SCH-2: active series (ordered module ids) + walk position
   // MON-2: live "view-as" thumbnail — luxury feature, first thing sacrificed under load.
   var livePreview=true, degraded=false, lastDisplay={}, monLastTick=0, monLate=0, monOnTime=0;
@@ -522,6 +551,7 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     if(m.t==='presence'){ users=m.users||[]; renderUsers(); onPresenceRefresh(); return; }
     if(m.t==='mirror'){ onMirror(m); return; }   // MON-2: target user's live display html
     if(m.t==='station-set'){ onStationSet(m); return; }   // Plan 0522 P14: seat-someone-else verdict, refusals INCLUDED (I5)
+    if(m.t==='station-project'){ onStationProject(m); return; }   // Plan 0522 P15: the ▣ projection receipt, refusals INCLUDED (I5)
     if(m.t==='spotlight'){ onSpotlight(m); return; }      // Plan 0522 P14: 0508 grant/revoke receipt
     if(m.t==='attendance'){ onAttendance(m); return; }   // ATT (Plan 0466): roster reply
     if(m.t==='content'){ renderPreview(m.html, m.contentId); return; }
@@ -1203,6 +1233,78 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   /** Kept for the roster row click — it is the same target, reached by another affordance. */
   function selectView(uid){ setTarget(uid); }
 
+  // ── Plan 0522 P15 — THE `▸ STATIONS (n)` TIER ─────────────────────────────────────────────
+  // Every declared station was reachable from this page only as a TARGET (P5's dropdown) — i.e.
+  // as a set of people to send something TO. There was no way to LOOK at the list of stations,
+  // and no way to put one station's own screen on the room's displays. This is that, as ONE
+  // COLLAPSED ROW at the bottom of the content column: the cost of availability is a row, not a
+  // mode, and an operator who never opens it pays a single line of height for the session.
+  //
+  // ⚠ HIDDEN ENTIRELY when no plugin declares stations. A teaching deployment must see no change
+  // whatsoever — not an empty tier, not a heading with nothing under it. Same guarantee P13's
+  // t35a makes on the display page, and the reason the wrapper ships `display:none` rather than
+  // being conditional markup: there is exactly one code path, and it starts from hidden.
+  //
+  // ⚠ It is NOT a child of #outline, and that is structural rather than incidental. Both
+  // renderOutline() and the module picker's own onchange do `$('outline').innerHTML=''`, so a
+  // tier rendered in there would be destroyed on every module change with nothing to rebuild it —
+  // while stations, by 0514 §13.1, are precisely the thing a module load must not clear.
+  var stTierSig=null;
+  function renderStationTier(){
+    var wrap=$('st-tier-wrap'); if(!wrap) return;
+    // Rebuild only when the REGISTRY would actually differ. onWelcome fires again on every
+    // reconnect, and silently re-rendering would slam a <details> the operator had just opened.
+    var sig=JSON.stringify([stationWord, stations.map(function(s){return [s.stationUid,s.stationLabel,s.group,s.sortOrder,s.icon];})]);
+    if(sig===stTierSig) return;
+    stTierSig=sig;
+    if(!stations.length){
+      wrap.style.display='none';
+      $('st-tier-title').textContent=''; $('st-tier-count').textContent='';
+      $('st-tier-list').innerHTML=''; ststat('');
+      return;
+    }
+    wrap.style.display='';
+    $('st-tier-count').textContent='('+stations.length+')';
+    renderStationTierTitle();
+    // sortOrder, then grouped by `group` — sorted HERE, like renderTargets, so the order does not
+    // depend on a server-side promise. A station with no declared group falls under the
+    // deployment's own word rather than under an invented one.
+    var order=[], byGroup={};
+    stations.slice().sort(function(a,b){ return (a.sortOrder-b.sortOrder)||(a.stationUid-b.stationUid); })
+      .forEach(function(st){ var g=st.group||stationWord; if(!byGroup[g]){ byGroup[g]=[]; order.push(g); } byGroup[g].push(st); });
+    var html='';
+    order.forEach(function(gname){
+      html+='<div class="st-grp">'+esc(gname)+'</div>';
+      byGroup[gname].forEach(function(st){
+        html+='<div class="st-row" data-uid="'+esc(st.stationUid)+'">'
+          +'<span class="st-name">'+esc((st.icon?st.icon+' ':'')+st.stationLabel)+'</span>'
+          +'<span class="u-act" data-project="'+esc(st.stationUid)+'" title="put this station’s screen on THE ROOM’s displays — transient: nobody is re-seated, and the next push replaces it">▣ project</span>'
+        +'</div>';
+      });
+    });
+    $('st-tier-list').innerHTML=html;
+    [].forEach.call($('st-tier-list').querySelectorAll('[data-project]'),function(b){
+      b.onclick=function(e){ e.stopPropagation(); projectStation(+b.getAttribute('data-project')); };
+    });
+  }
+  /** The caret describes the state it is attached to, so a collapsed tier LOOKS collapsed. */
+  function renderStationTierTitle(){
+    var d=$('st-tier'), t=$('st-tier-title'); if(!d||!t||!stations.length) return;
+    t.textContent=(d.open?'▾ ':'▸ ')+stationWord;
+  }
+  /** The tier's own receipt line — never silent, refusals included (I5). */
+  function ststat(text, alert){ var el=$('st-stat'); if(!el) return; el.textContent=text||''; el.classList.toggle('alert', !!alert && !!text); }
+  // ⚠ ALWAYS THE ROOM, and deliberately not P5's unified target. "Show everyone what Alpha is
+  // looking at" is the whole reason this button exists; a projection that quietly went to whoever
+  // happened to be selected in the Target dropdown would be the I4 surprise P5 was written to
+  // remove, arriving from the other direction. The wire form is P5's array all the same.
+  function projectStation(uid){ ststat('▣ projecting…'); control('project_station',{stationUid:uid, targets:['all']}); }
+  function onStationProject(m){
+    if(!m||!m.ok){ ststat('⚠ NOT projected — '+((m&&m.reason)||'refused'), true); return; }
+    var n=m.projected|0;
+    ststat('▣ projected '+(m.stationLabel||'')+' → '+n+' screen'+(n===1?'':'s'), !n);
+  }
+
   // ---- MON-2: live "view-as" thumbnail (lightweight, event-driven, gracefully degrading) ----
   // P5: mirror is asked for the TARGET, which may be a station; `userId` rides along only when the
   // target IS a userId, so the existing server echo and PRIM-mirror's contract are untouched.
@@ -1518,7 +1620,9 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     // the selector survives a reconnect without a second fetch. Absent ⇒ stations are inert for
     // this deployment and the dropdown is simply ALL + people.
     if(Array.isArray(m.stationRegistry)) stations=m.stationRegistry;
+    if(typeof m.stationSelectorLabel==='string' && m.stationSelectorLabel) stationWord=m.stationSelectorLabel;
     renderTargets();
+    renderStationTier();   // P15: the tier is built from the SAME welcome, so it survives a reconnect without a fetch
     if(attempting){
       attempting=false;
       if(effRole==='presenter'){ var mg=$('cfg-msg'); mg.textContent='✓ unlocked'; mg.style.color='var(--ok)'; if($('cfg-pw')) $('cfg-pw').value=''; }
@@ -1632,11 +1736,16 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   // a remembered one would silently narrow the first send of the next session.
   renderTargets();
   renderStageState();   // P6: the indicator states LIVE from the first paint — never blank, never ambiguous
+  // P15: the tier starts from its hidden state before any welcome lands, and the caret follows the
+  // <details> rather than being written once at build time and then lying.
+  renderStationTier();
+  $('st-tier').addEventListener('toggle', renderStationTierTitle);
   connect(); refreshModules(); refreshSeries(); startDigest();
   window.__ctlAuth = { role:function(){return effRole;}, gated:function(){return authGated;}, open:function(){return $('ap-config').classList.contains('open');} };   // test hook
   window.__control = control;   // test/automation hook (P1) — drive control ops programmatically
   window.__gm={ users:function(){return users;}, module:function(){return module;}, cur:function(){return curBeat;}, rec:function(){return recBeat;},
     target:function(){return target;}, targetArray:targetArray, setTarget:setTarget, stations:function(){return stations;},   // P5 test hooks
+    stationWord:function(){return stationWord;},   // P15 t40 hook: the deployment's OWN word for a station, off the welcome
     lastControl:function(){return lastControl;},   // P5 t10: the last control frame this page emitted, verbatim
     setModule:function(m){ module=m; curBeat=-1; recBeat=-1; renderOutline(); renderNav(); },   // DEL-2 test/automation hook: load a module into the panel directly
     series:function(){return {mods:seriesModules.slice(),pos:seriesPos};},   // SCH-2 test hook

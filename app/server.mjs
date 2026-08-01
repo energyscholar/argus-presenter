@@ -1419,6 +1419,14 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       // construction — the grant set is keyed by userId — so it reaches every socket that identity
       // holds, which is the correct behaviour for a capability that belongs to a person.
       case 'spotlight': send(ws, Object.assign({ t: 'spotlight' }, api.spotlight(a.userId, a.granted !== false))); break;
+      // Plan 0522 P15 — ▣ project a station's screen to the room. CONTROLLER-ONLY by
+      // construction: every case in this switch is already past the role gate above, and unlike
+      // `set_station` (which is reachable from MCP with an arbitrary userId and therefore needs
+      // its own gate inside api.stationSet) this capability exists on exactly one surface.
+      // TRANSIENT: it writes no seat — see projectStation's header for why that is load-bearing.
+      case 'project_station':
+        send(ws, Object.assign({ t: 'station-project' }, projectStation(a.stationUid, a.targets)));
+        break;
       // Bell as a control: playable from the control page (🔔) and the verify-watching
       // path (👁 = bell + requireAck) via the SAME api.chime method the MCP tools drive.
       case 'bell': api.chime(a); break;
@@ -1788,6 +1796,65 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     const desc = (seat && seat.descriptor) || stationPlaceholder(seat && seat.uid, c);
     renderDisplay(ws, c, desc);
     return desc;
+  }
+
+  /**
+   * Plan 0522 P15 — a STATION's current screen, as a descriptor, or null.
+   *
+   * Core holds no occupancy and no station→screen map (0514 §13.2): the descriptor lives on the
+   * SEAT, so a station's screen is whatever the plugin is currently answering for somebody who is
+   * sitting there. Nobody sitting there ⇒ null, and the caller falls back to the core generic
+   * placeholder — which is the honest answer for an empty station rather than a blank screen.
+   */
+  function stationDescriptor(uid) {
+    for (const userId of usersAtStation(uid)) {
+      const seat = seatStation(userId);
+      if (seat && seat.uid === uid && seat.descriptor) return seat.descriptor;
+    }
+    return null;
+  }
+
+  /**
+   * Plan 0522 P15 — ▣ PROJECT a station's screen onto a target's displays.
+   *
+   * ⚠⚠ I3 — TRANSIENT RENDER, DURABLE ASSIGNMENT, AND THIS IS THE WHOLE DESIGN CONSTRAINT.
+   * The tempting implementation of "put station N on the room's screens" is to seat the room at
+   * station N. That would durably re-seat every player through `seatResolver.select()` to show one
+   * screen for thirty seconds, and every one of them would have to be put back by hand — so this
+   * function does not call select(), does not touch a seat, and writes nothing the plugin owns.
+   *
+   * It also deliberately does NOT go through pushComponent: setDisplay('all') does
+   * `displayByUser.clear()`, so a single projection would wipe every seat's per-seat push and
+   * `▣ My station screen` would answer "nothing has been sent to your seat" for the rest of the
+   * session. That is 0508's T7, found the hard way when `station-share` was written (above); the
+   * same reasoning applies verbatim here, so the same shape does: render straight to the sockets.
+   *
+   * Each viewer is rendered in THEIR OWN context (renderDisplay stamps per connection), so the
+   * identity stamp and the OPSEC visibility strip still apply — never a verbatim copy of one
+   * seat's bytes fanned out to everybody.
+   */
+  function projectStation(stationUid, targetList) {
+    const none = { ok: false, stationUid: null, stationLabel: null, projected: 0, targets: [] };
+    if (!stationsActive()) return { ...none, reason: 'no-stations' };
+    const uid = Number(stationUid);
+    const st = Number.isFinite(uid) ? stationRegistry.get(uid) : null;
+    // Refuse an unknown uid BY NAME. `select()` resolves an unknown uid to the deployment default
+    // (0514 §5) because a player must always land somewhere; a projection has no such duty, and
+    // silently projecting a different station than the one asked for is I5's silent wrong answer.
+    if (!st) return { ...none, reason: 'no-such-station' };
+    const bases = (Array.isArray(targetList) && targetList.length) ? targetList.slice() : ['all'];
+    const reached = new Set();
+    for (const t of bases) for (const ws of targets(t)) reached.add(ws);
+    const shared = stationDescriptor(uid);
+    let projected = 0;
+    for (const ws of reached) {
+      const c = conns.get(ws);
+      if (!c) continue;
+      renderDisplay(ws, c, shared || stationPlaceholder(uid, c));
+      projected++;
+    }
+    log.info('station', 'projected', { stationUid: uid, targets: bases, projected, placeholder: !shared });
+    return { ok: true, stationUid: uid, stationLabel: st.stationLabel, projected, targets: bases };
   }
 
   /**
