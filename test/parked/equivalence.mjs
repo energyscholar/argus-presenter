@@ -1,12 +1,102 @@
 /*
- * test/harness/equivalence.mjs — THE PLAN 0530 EQUIVALENCE HARNESS.
+ * test/parked/equivalence.mjs — THE PLAN 0530 EQUIVALENCE HARNESS. ⏸ PARKED, NOT ABANDONED.
  *
- * ⛔ SCAFFOLDING. Plan 0530 P9 DELETES this file, `test/fixtures/0530-baseline.json` and
- *    `test/unit/0530-p1-equivalence.test.mjs`, and P9 FAILS if any of them still exists.
- *    Nothing in `app/`, `lib/`, `mcp/`, `harness/` or `components/` may import it — the only
- *    importer is the scaffolding test beside the fixture. Deleting the three files must leave
- *    a working suite, which is why the comparison lives in its own test file rather than being
- *    threaded into an existing one.
+ * ════ READ THIS FIRST IF YOU HAVE JUST FOUND THIS DIRECTORY ═══════════════════════════════════
+ *
+ * WHAT THIS IS. An instrument that drives a server through a fixed script, writes down everything
+ * it observably did, and compares that fingerprint against a captured baseline. It exists so that
+ * a refactor of `app/server.mjs` can be asserted to change NOTHING — not a route, not a log line,
+ * not an error string, not the order of a broadcast. Full description under WHAT IT IS below.
+ *
+ * WHAT COMMIT THE BASELINE DESCRIBES. `test/parked/0530-baseline-at-897aa8f.json` is the behaviour
+ * of commit **897aa8f** on branch `plan-0530` ("Plan 0530 phase 2c: the gate stops depending on
+ * when you look at it"). The commit hash is IN THE FILENAME because a JSON file cannot carry a
+ * comment, and a baseline whose provenance is unrecorded is worthless. That tree already contains
+ * seam S-A: `app/http-routes.mjs` had been lifted out of `createServer()` and the fingerprint was
+ * unchanged by it.
+ *
+ * WHY IT IS PARKED RATHER THAN DELETED OR LEFT RUNNING. Plan 0530 stopped after seam S-A (Bruce's
+ * call, S227); phases P3–P9 are deferred to a future plan. Two things follow.
+ *   - It cannot stay in the suite. `t0530-p1-01` asserts fingerprint EQUALITY, and the next plan
+ *     (0526) changes behaviour ON PURPOSE — a surface registry, `peek`/`unpeek`, `scene.facets`.
+ *     The test would go red on legitimate work, and the obvious "fix" would be re-capturing the
+ *     baseline. ⛔ An equivalence baseline that is not serving an active refactor is not a safety
+ *     net; it is a trap that teaches people to re-capture.
+ *   - It cannot be deleted. It took three phases, it caught FOUR REAL BREAKS in four independent
+ *     sections, and it is stable at 20/20 quiet and 10/10 under concurrent full-suite load. It is
+ *     the instrument the eventual refactor needs, and rebuilding it is three phases of work.
+ * ⇒ The files stay in the tree, outside the runner's discovery. Note that this supersedes the old
+ *   teardown instruction "deleted in 0530 P9; P9 fails if they exist" — P9 is not running.
+ *
+ * HOW IT IS HIDDEN FROM THE SUITE. `harness/test.mjs` discovers files named `*.test.mjs`,
+ * recursively, anywhere under `test/`. (Do not write that as a glob in a comment — the
+ * star-slash inside one closes the comment; that mistake was made here and caught by direct-run.)
+ * Nothing here matches: the test file is `0530-p1-equivalence.mjs`, not `.test.mjs`. Both `.mjs`
+ * files are listed by the runner under "not a suite, not discovered" on every run, so the parking
+ * is VISIBLE rather than silent.
+ *
+ * ════ HOW TO RE-ARM IT ═══════════════════════════════════════════════════════════════════════
+ *
+ * The baseline describes 897aa8f. Any behaviour change committed after that point makes the
+ * stored fixture stale, so re-arming has two forms and YOU MUST PICK DELIBERATELY:
+ *
+ *   (A) You are refactoring and today's tree is ALREADY correct — the normal case. Capture a NEW
+ *       baseline from the tree you are about to refactor, and refactor against that.
+ *         1. git status  →  the tree must be CLEAN. A baseline captured over uncommitted work
+ *            fingerprints work you have not reviewed.
+ *         2. node test/parked/equivalence.mjs stability
+ *            Two consecutive captures must be identical. If not, STOP — find the nondeterminism
+ *            before trusting anything (see the two lists below for the ones already found).
+ *         3. node test/parked/equivalence.mjs capture --out test/parked/0530-baseline-at-<sha>.json
+ *            Name it after the commit you captured it at. Do not overwrite the 897aa8f file;
+ *            it is the historical record of what S-A preserved.
+ *         4. Point `BASELINE_PATH` (below) at the new file.
+ *         5. git mv test/parked/0530-p1-equivalence.mjs test/unit/0530-p1-equivalence.test.mjs
+ *            and fix its import of `./equivalence.mjs`. It is now discovered; `npm test` gains
+ *            exactly 3 tests. ⚠ Read the whole file first — its own header carries the rules that
+ *            make the three tests evidence rather than decoration.
+ *         6. Verify the gate can FAIL before you trust it passing: `t0530-p1-02` proves the
+ *            comparator detects a mutation in each of the four sections, but also break the
+ *            SERVER once for real (P1 changed the 404 body to 'not found.' and watched exactly
+ *            the routes serving it go red) and revert. A gate you have only seen pass is untested.
+ *   (B) You want to know whether today's tree still matches 897aa8f. `node test/parked/
+ *       equivalence.mjs verify`. Expect differences from every deliberate behaviour change since
+ *       — 0526 alone changes several. A difference here is NOT a defect report; it is a diff.
+ *
+ * ⛔ THE ONE RULE. When the gate goes red, the answer is never "re-capture the baseline". Explain
+ *    the difference first. Re-capture only under (A), only on a clean tree, only when you have
+ *    decided in advance which behaviour you intend to change.
+ *
+ * ════ NONDETERMINISM: THREE AREAS HANDLED, ONE RESIDUAL UNRESOLVED ═══════════════════════════
+ *
+ * HANDLED (each is fenced so it cannot quietly grow — see t0530-p1-03):
+ *   1. `sawPing` OUTSIDE the hello-reply window — a 5 s heartbeat on a clock the capture does not
+ *      control; it flipped 2 of 10 sequential runs. Replaced with a token, and BOTH populations
+ *      (compared / excluded) are counted. See `splitPings` and `PING_EXCLUDED`.
+ *   2. The SESSION-LOG FLUSH TIMER — an unref'd `setTimeout(flushNow, 250)`, so what was on disk
+ *      depended on how long the capture happened to take. The harness now `await`s
+ *      `sessionLog.flush()` before every read of the log or the log directory. This changes no
+ *      server behaviour; it removes a race in the observer. See the blocks near `READS_THE_LOG_
+ *      DIRECTORY` and `out.sessionLog`.
+ *   3. DURATION AND BYTE FIELDS — measured elapsed times (`elapsedMs`, `durationMs`, `ageSec`, …)
+ *      are blanked BY NAME, while configured durations (`settlingMs`, `ttlMs`, `flushMs`) stay
+ *      comparable because a refactor changing one would be a real behaviour change. Separately,
+ *      `bytes` wherever it counts SESSION-LOG bytes follows the pid's decimal width (177 vs 178)
+ *      and is excluded; the 100+ HTTP body lengths named `bytes` are still compared.
+ *
+ * ⚠ UNRESOLVED RESIDUAL — THE ONE THING THIS HARNESS STILL CANNOT EXPLAIN.
+ *   Plan 0530 P2b saw the `logs` section report **131 log lines where the baseline had 129**, once.
+ *   It DID NOT REPRODUCE IN 30 CAPTURES. Cause unknown.
+ *   Suspected mechanism: `socketId` is a PER-SERVER COUNTER, so one extra connection — from any
+ *   source, at any point in the script — renumbers every later line, turning a single stray socket
+ *   into a large, alarming, entirely spurious diff.
+ *   ⛔ P2c deliberately did NOT exclude socket ids. Excluding them would blind the gate to real
+ *   changes in which socket did what, which is exactly the kind of change a refactor introduces.
+ *   ⇒ If a future run shows an unexplained `logs.*` diff with renumbering, THIS IS THE SUSPECT.
+ *     Investigate it. Do not wave it away as "the known flake" — it has never been diagnosed, and
+ *     a real regression would look identical.
+ *
+ * ════ END OF THE PARKING NOTICE ══════════════════════════════════════════════════════════════
  *
  * ── WHAT IT IS ────────────────────────────────────────────────────────────────────────────────
  * Plan 0530 decomposes `app/server.mjs` (3,770 lines; `createServer()` is 3,473 of them) by
@@ -67,23 +157,33 @@
  * stations is loaded and seated) but the installed plugin's own behaviour is NOT fingerprinted.
  *
  * ── USE ───────────────────────────────────────────────────────────────────────────────────────
- *   node test/harness/equivalence.mjs capture     # (re)write test/fixtures/0530-baseline.json
- *   node test/harness/equivalence.mjs verify      # capture + diff against the fixture; exit 1 on drift
- *   node test/harness/equivalence.mjs stability   # capture TWICE and diff the two — proves determinism
+ *   node test/parked/equivalence.mjs capture      # (re)write the baseline at BASELINE_PATH
+ *   node test/parked/equivalence.mjs capture --out test/parked/0530-baseline-at-<sha>.json
+ *   node test/parked/equivalence.mjs verify       # capture + diff against the fixture; exit 1 on drift
+ *   node test/parked/equivalence.mjs stability    # capture TWICE and diff the two — proves determinism
+ *   node test/parked/0530-p1-equivalence.mjs      # direct-run the three parked tests, no re-arming
+ *
+ * ⚠ That last one only works because the CLI guard at the foot of this file compares an EXACT
+ *   basename. See the comment there before you touch it.
  */
 import http from 'node:http';
 import { WebSocket } from 'ws';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as srvlog from '../../app/log.mjs';
 import { createServer } from '../../app/server.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const ROOT = join(__dirname, '..', '..');
-export const BASELINE_PATH = join(ROOT, 'test', 'fixtures', '0530-baseline.json');
+/*
+ * ⏸ PARKED. The fixture's name carries the commit it describes — see the parking notice at the
+ * top of this file. When you re-arm under case (A), capture a NEW file named after the new
+ * commit and repoint this constant; do not overwrite the 897aa8f baseline.
+ */
+export const BASELINE_PATH = join(ROOT, 'test', 'parked', '0530-baseline-at-897aa8f.json');
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -1003,7 +1103,14 @@ export function coverage(fp) {
 
 // ── cli ───────────────────────────────────────────────────────────────────────────────────────
 
-if (process.argv[1] && process.argv[1].endsWith('equivalence.mjs')) {
+/*
+ * ⚠ EXACT basename, not `endsWith`. Parking renamed the test file to `0530-p1-equivalence.mjs`,
+ * which ENDS WITH `equivalence.mjs` — so with the old `endsWith` guard, direct-running the test
+ * file ran this CLI's `verify` instead, printed "EQUIVALENT", and `process.exit(0)`-ed before a
+ * single test executed. Found by direct-running the parked file; the suite could not have found
+ * it, because the suite no longer imports either file. Keep this exact.
+ */
+if (process.argv[1] && basename(process.argv[1]) === 'equivalence.mjs') {
   const cmd = process.argv[2] || 'verify';
   const t0 = Date.now();
   if (cmd === 'capture') {

@@ -1,10 +1,31 @@
 /*
- * Plan 0530 P1 — THE EQUIVALENCE GATE.
+ * Plan 0530 P1 — THE EQUIVALENCE GATE. ⏸ PARKED, NOT ABANDONED. NOT RUN BY `npm test`.
  *
- * ⛔ SCAFFOLDING. Deleted by plan 0530 P9 together with `test/harness/equivalence.mjs` and
- *    `test/fixtures/0530-baseline.json`. P9 fails if any of the three survives. This file imports
- *    the harness, so deleting the harness without deleting this file breaks discovery — that is
- *    deliberate: the three go together or not at all.
+ * ── WHY THIS FILE IS NOT NAMED `*.test.mjs` ───────────────────────────────────────────────────
+ * `harness/test.mjs` discovers files named `*.test.mjs`, recursively, anywhere under `test/`.
+ * (Do not write that as a glob here — the star-slash inside one closes this comment.) Dropping `.test` from this
+ * filename is what takes these three tests out of the suite; the runner still lists the file
+ * under "not a suite, not discovered" on every run, so the parking is visible, not silent.
+ *
+ * It is parked because plan 0530 STOPPED AFTER SEAM S-A (Bruce's call, S227) with P3–P9 deferred,
+ * and `t0530-p1-01` below asserts fingerprint EQUALITY against a baseline captured at commit
+ * **897aa8f**. The next plan (0526) changes behaviour deliberately — surface registry,
+ * `peek`/`unpeek`, `scene.facets` — so this test would go red on correct work, and the obvious
+ * "fix" would be re-capturing the baseline. ⛔ An equivalence baseline that is not serving an
+ * active refactor is not a safety net; it is a trap that teaches people to re-capture.
+ * It is NOT deleted because it took three phases, caught four real breaks in four independent
+ * sections, and is stable at 20/20 quiet and 10/10 under concurrent full-suite load.
+ * ⚠ This supersedes the old note "deleted by plan 0530 P9". P9 is not running.
+ *
+ * ── HOW TO RE-ARM ─────────────────────────────────────────────────────────────────────────────
+ * ⛓ THE FULL PROCEDURE, the provenance of the fixture, the three nondeterminism classes already
+ * handled and the ONE unresolved residual (P2b's 131-vs-129 log-line flake) are all in the
+ * parking notice at the top of `test/parked/equivalence.mjs`. READ IT BEFORE RE-ARMING.
+ * In short: capture a fresh baseline from a CLEAN tree at the commit you are about to refactor
+ * (`node test/parked/equivalence.mjs stability`, then `capture --out …-at-<sha>.json`), repoint
+ * `BASELINE_PATH`, then `git mv` this file back to `test/unit/0530-p1-equivalence.test.mjs` and
+ * change its import below from `./equivalence.mjs` to `../parked/equivalence.mjs` (or move the
+ * harness too). Re-arming adds exactly 3 tests to the executed count.
  *
  * Plan 0530 §2: NO PHASE MAY CHANGE BEHAVIOUR. This is the test that says so out loud. It drives
  * a server through the harness's fixed script, normalises the result, and demands it be identical
@@ -21,7 +42,7 @@
  * capture reaching a section, the count falls and this goes red rather than the gate going quiet.
  */
 import { test, expect } from '../../harness/test.mjs';
-import { captureInChildProcess, diff, coverage, readBaseline, BASELINE_PATH } from '../harness/equivalence.mjs';
+import { captureInChildProcess, diff, coverage, readBaseline, BASELINE_PATH } from './equivalence.mjs';
 
 /*
  * One capture, shared: it drives three servers and takes ~15 s.
@@ -34,7 +55,7 @@ async function fingerprint() { if (!_fp) _fp = captureInChildProcess(); return _
 
 test('t0530-p1-01 — the behavioural fingerprint is identical to the 0530 baseline', async () => {
   const base = readBaseline();
-  expect(base != null, 'the baseline fixture exists — capture it with `node test/harness/equivalence.mjs capture`', BASELINE_PATH);
+  expect(base != null, 'the baseline fixture exists — capture it with `node test/parked/equivalence.mjs capture`', BASELINE_PATH);
   const fp = await fingerprint();
   const d = diff(base, fp);
   expect(d.length === 0,
