@@ -766,6 +766,20 @@ export async function runSession(spec, { shotDir = SHOT_DIR, keepOpen = false } 
       note: 'ESC/exit is asserted from page state; the capture timings are the separate screenshot-wedge finding',
     };
 
+    /*
+     * ── THE HEALTH PAYLOAD, TAKEN WHILE THE SESSION IS STILL UP ──────────────────────────────
+     * `server.health()` is verbatim what the `presenter_health` MCP tool returns — its handler is
+     * `need().health({ staleMs })` and nothing else — so this is that tool's answer, observed on a
+     * real multi-browser session rather than on a fixture. It has to be taken HERE: the server is
+     * closed in `finally`, so by the time a caller holds the report there is nothing left to ask.
+     * Every page is still open at this point, so `connections` is the live set.
+     *
+     * Recorded, never asserted (this file observes). Plan 0525 P2 put `sessionLog` into this
+     * payload precisely so an operator can confirm mid-session that the record is being written;
+     * a rig that runs a whole session and cannot answer that question is the gauge P2 replaced.
+     */
+    report.findings.health = server.health({ staleMs: 10000 });
+
     // ── the durable log — the first real session it has ever seen ────────────────────────────
     const logAfter = await readSessionLog(server, CONTROL_TOKEN);
     const logAnon = await readSessionLog(server, null);
