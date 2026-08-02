@@ -29,6 +29,8 @@ and set `presenterPort`. No config file anywhere ⇒ 3000.
 - **control** `/control` — the presenter control panel.
 - **creator** `/creator` — the content-authoring panel.
 
+A **display link addressed to a seat** (one carrying `?stationUID=<int>`, or any `?station=`) **derives** its identity from the link — `<stationCode>-<slug(?n=name)>` — so that a reload returns to the same seat; on such a link any `?userId=` / `?u=` you add is **ignored**. Off a seat link, `?userId=` / `?u=` is honoured exactly as given.
+
 The self-run server is **gated**: becoming the presenter needs a password. The
 default is `password` (override with `PRESENTER_ROLE_PASSWORD`).
 
