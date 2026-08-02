@@ -29,7 +29,10 @@ async function bareMachine(guards = {}) {
 }
 
 test('t0514-00 — the system plugin is installed (every Phase 0 test below needs it)', () => {
-  expect(haveMachine, 'plugins/starship-ops/ship-machine.mjs exists — install the plugin from starship-operations/presenter-plugins/ if this fails', MACHINE_FILE);
+  // 0532 P0: the plugin was mined into the content repo. Install it from
+  // repertory/systems/traveller/plugins/ — the old private source repo is being retired, and
+  // t0532-01 now fails if anything here points back at it.
+  expect(haveMachine, 'plugins/starship-ops/ship-machine.mjs exists — install the plugin from repertory/systems/traveller/plugins/ if this fails', MACHINE_FILE);
 });
 
 test('t0514-23 — orthogonal regions advance INDEPENDENTLY: an alert event does not disturb nav', async () => {
