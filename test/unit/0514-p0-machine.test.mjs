@@ -99,8 +99,101 @@ test('t0514-27 — each region publishes its active state to the store at ship/<
   } finally { await server.close(); }
 });
 
+/*
+ * ── Plan 0531 P1 — the CAMPAIGN-vocabulary guard ──────────────────────────────────────────────
+ *
+ * `argus-presenter` is PUBLIC and holds the presenter SOFTWARE. The admission test is Bruce's:
+ * "nothing checked in that doesn't fly in a corporate training app." Domain content — a specific
+ * campaign, its sessions, its players — lives in the PRIVATE `repertory` repo.
+ *
+ * t0514-28 below was named "CORE carries no machine and no domain vocabulary" and was cited as
+ * proof of exactly that. It never was: its token list is MACHINE vocabulary, and it scanned five
+ * directories. It has never looked for `s17`, `participant-a`, `Waypoint`, `Region` or `s15`, and it has
+ * never looked outside `app harness mcp lib components`.
+ *
+ * This test is the missing half. It is deliberately a SEPARATE test rather than a widening of
+ * t0514-28, because `expect` throws: folding the campaign scan into t0514-28 would abort before
+ * its (b) behaviour check — "a deployment with no plugins at all is a working Presenter" — and
+ * that check would silently stop running for the whole of plan 0531. Coverage must not be traded
+ * for tidiness. G1 should gate on BOTH tests.
+ */
+
+/*
+ * Bare word-boundary tokens, case-insensitive. Anything that names a session, a place, a person
+ * or a setting belongs here. This list is a LOWER BOUND on what P2–P4 must remove, never a
+ * ceiling: if you find campaign vocabulary the list misses, ADD IT, do not work around it.
+ */
+const CAMPAIGN_TOKENS = [
+  // session ids
+  's15', 's17',
+  // places and setting
+  'waypoint', 'region', 'typhon', 'flammarion', 'commander',
+  'traveller', 'imperium', 'subsector', 'deckplan',
+  // ships, kit, factions
+  'astral dawn', "dragon.?s world", 'sandcaster', 'psion', 'vigil',
+  // people: player seat slugs and the characters behind them
+  'james', 'marina', 'asao', 'cassian',
+  'von ?sydo', 'participant-a', 'sydo',
+  'deveillter', 'planck', 'elara', 'holt',
+];
+
+/*
+ * `max` is a player slug AND an ordinary identifier. A bare \bmax\b matches 129 tracked lines,
+ * nearly all of them legitimate — `Math.max`, `max-width`, `maxOccupants`, the slider's `max`
+ * option, `{ name: 'max', type: 'number' }` in the component manifest. Even a QUOTED 'max' is
+ * ambiguous for that last reason. So the slug is matched only in the compound forms the campaign
+ * actually uses. This is narrower than the other tokens by necessity, and it is the one token a
+ * reviewer should re-check by eye rather than trust.
+ */
+const MAX_SLUG_FORMS = ['max planck', 'st-max', 'max-anomaly', 'max only', '[?&]u=max'];
+
+/*
+ * ALLOW-LIST — invented, obviously-fictional fixture names ONLY.
+ *
+ * The one entry that is not a fixture name is this file itself: the guard cannot help containing
+ * the vocabulary it hunts for. Nothing else earns a place here by being inconvenient — a real file
+ * carrying a real session id is a violation to FIX (P2–P4), never to exempt.
+ */
+const GUARD_SELF = 'test/unit/0514-p0-machine.test.mjs';
+const ALLOW_LIST = [
+  GUARD_SELF,   // the guard's own token list
+];
+
+/** Every real player seat slug. The allow-list must never contain one of these. */
+const REAL_PLAYER_SLUGS = ['james', 'marina', 'asao', 'max', 'cassian', 'participant-a'];
+
+test('t0531-01 — NO campaign vocabulary in ANY tracked file (the public repo is domain-free)', () => {
+  // The allow-list is itself under guard: an exemption that smuggles a player slug back in would
+  // defeat the whole test, so assert it before using it.
+  for (const entry of ALLOW_LIST) {
+    const bare = entry.split('/').pop().replace(/\.(mjs|js|md|html|json)$/, '');
+    for (const slug of REAL_PLAYER_SLUGS) {
+      expect(!new RegExp(`(^|[^a-z0-9])${slug}([^a-z0-9]|$)`, 'i').test(bare),
+        `allow-list entry "${entry}" must not contain the real player slug "${slug}"`, entry);
+    }
+  }
+
+  // Scan EVERY TRACKED FILE — `git ls-files`, not a hand-picked set of directories. -I skips
+  // binaries; -w keeps `s15` from matching inside a longer word.
+  const pattern = [...CAMPAIGN_TOKENS, ...MAX_SLUG_FORMS].join('|');
+  let out = '';
+  try {
+    out = execSync(`git ls-files -z | xargs -0 grep -IlnwiE '${pattern}' || true`,
+      { cwd: ROOT, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+  } catch (e) { out = e.stdout || ''; }
+
+  const files = out.split('\n').map((l) => l.trim()).filter(Boolean)
+    .filter((f) => !ALLOW_LIST.includes(f));
+
+  expect(files.length === 0,
+    `${files.length} tracked file(s) carry campaign vocabulary — move or neutralise them (plan 0531 P2–P4)`,
+    '\n  ' + files.join('\n  '));
+});
+
 test('t0514-28 — CORE carries no machine and no domain vocabulary; deleting the plugin leaves a working Presenter', async () => {
   // (a) the source check — scoped exactly as A3 scopes it, so the plugin's own content is untouched.
+  // NOTE (0531 P1): this half covers MACHINE vocabulary in the five core directories only. The
+  // campaign-vocabulary half, over every tracked file, is t0531-01 above.
   const TOKENS = ['statechart', 'ship-chart', 'ship_event', 'ship_state', 'starship',
     'Traveller', 'Waypoint', 'turret', 'Captain', 'Astrogator', 'Gunner', 'Marines', 'Steward'];
   let out = '';
