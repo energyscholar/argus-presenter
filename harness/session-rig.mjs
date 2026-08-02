@@ -137,7 +137,35 @@ export async function allSigs(players) {
   return out;
 }
 
-/** Open the GM control page on a GATED server — a control role MUST present the credential. */
+/**
+ * Open the GM control page on a GATED server — a control role MUST present the credential.
+ *
+ * ── ⚠⚠ FINDING, AND ITS CORRECTION — BOOTED IS NOT CONNECTED (plan 0525 P3b) ──────────────────
+ *
+ * This used to return as soon as `window.__gm` and `window.__control` EXISTED. Both are assigned
+ * at the bottom of the page's own script, so that condition is true the instant the document
+ * finishes evaluating — BEFORE the socket has opened, and long before the server's `welcome` frame
+ * has come back. And `welcome` is where the DECLARED STATION REGISTRY rides (0514 §8): until it
+ * lands the page holds `stations=[]` and the literal default word `'Stations'`.
+ *
+ * So every read of `window.__gm.*` taken straight after this call was sampling a page that had
+ * booted and not yet connected. `stations().length` answered **0** — truthfully, and about the
+ * wrong moment. Under full-suite load it lost that race often enough for t78's
+ * `boot.stations === 6` to fail intermittently, which reads as a flaky test and is not one: the
+ * INSTRUMENT was asking before the answer existed.
+ *
+ * ⇒ The wait belongs HERE, once, rather than at each call site — a caller cannot be expected to
+ *   know which of the panel's getters are welcome-fed. The detector is `__ctlAuth.role()`, which
+ *   is `null` until `onWelcome` runs and is set from `welcome.role`, a field the server sends
+ *   UNCONDITIONALLY (app/server.mjs `send(ws, { t: 'welcome', … role: c.role, … })`). Deliberately
+ *   NOT `stations().length > 0`: a deployment with no station registry is legitimate and would
+ *   hang forever on that one. The registry is assigned in the same synchronous `onWelcome` call,
+ *   so once the role is visible the registry is too.
+ *
+ * ⛓ Proved by forcing it, not by watching it pass: `test/live/0525-p3b-registry-race.test.mjs`
+ *   holds the welcome frame in the page for seconds, shows the un-waited read return 0 and the
+ *   waited read return 6 ON THE SAME PAGE.
+ */
 export async function openControl(browser, server, token) {
   const page = await browser.newPage();
   const errs = [];
@@ -146,6 +174,8 @@ export async function openControl(browser, server, token) {
     { waitUntil: 'domcontentloaded', timeout: PATIENT });
   await until(async () => page.evaluate(() => !!(window.__gm && typeof window.__control === 'function')),
     { label: 'the control panel booted', timeout: PATIENT });
+  await until(async () => page.evaluate(() => !!(window.__ctlAuth && window.__ctlAuth.role() != null)),
+    { label: 'the welcome frame arrived (the station registry rides it)', timeout: PATIENT });
   return { page, errs };
 }
 
@@ -388,9 +418,12 @@ export async function runSession(spec, { shotDir = SHOT_DIR, keepOpen = false } 
     // ── S0 boot — the GM alone ────────────────────────────────────────────────────────────────
     ctl = await openControl(browser, server, CONTROL_TOKEN);
     const logBaseline = await readSessionLog(server, CONTROL_TOKEN);
+    // ⚠ Both of these are WELCOME-FED (P3b). They are safe here only because openControl now waits
+    // for the welcome frame; before it did, this was the scene that sampled an empty registry.
+    // Bounded like every other browser call in this file — a bare page.evaluate has no timeout.
     scene('boot', N['boot'] || '', {
-      stations: await ctl.page.evaluate(() => (window.__gm.stations() || []).length),
-      stationWord: await ctl.page.evaluate(() => window.__gm.stationWord()),
+      stations: await ev(ctl.page, () => (window.__gm.stations() || []).length, undefined, 'boot stations'),
+      stationWord: await ev(ctl.page, () => window.__gm.stationWord(), undefined, 'boot stationWord'),
       presence: server.presence().length,
       logBaselineEntries: logBaseline.entries.length,
       logEnabled: logBaseline.enabled,
