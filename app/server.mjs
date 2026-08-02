@@ -261,10 +261,10 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   let connSeq = 0;             // per-server connection counter -> stable socketId (S5-ready)
   /*
    * ── Plan 0522 P16.2 (R3) — THE DURABLE SESSION LOG ────────────────────────────────────────
-   * The store's op-log is a bounded in-memory ring that dies with the process. S17 (2026-07-28)
-   * is the worked example: its process had exited before anyone came to measure, so Tuesday's
-   * evidence is unrecoverable — and with it every "run one session and measure" criterion in
-   * 0508/0514/0516. This writes the same ops to disk, OUTSIDE any repository.
+   * The store's op-log is a bounded in-memory ring that dies with the process. The worked example
+   * is a real live session whose process had exited before anyone came to measure: its evidence is
+   * unrecoverable — and with it every "run one session and measure" criterion in 0508/0514/0516.
+   * This writes the same ops to disk, OUTSIDE any repository.
    *
    * ⚠ ENABLEMENT IS DELIBERATELY ASYMMETRIC, exactly like the credential rule ~90 lines above.
    * A bare createServer() — every test in this suite — passes no `sessionLogDir` and sets no
@@ -548,9 +548,9 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     } else if (req.url === '/manage' || req.url.startsWith('/manage?')) {
       // Plan 0522 P12 (R12) — Manage Modules. A SEPARATE page, deliberately not a panel on
       // /control: curating the catalogue is between-sessions work and the picker is in-session
-      // work, and the surface that carried 95% of S17 should not grow a control whose whole
-      // purpose is to make modules disappear. Served exactly like /control and /creator; the
-      // credential is entered on the page, never in the served HTML.
+      // work, and the surface that carried ~95% of the clicks in a measured live session should
+      // not grow a control whose whole purpose is to make modules disappear. Served exactly like
+      // /control and /creator; the credential is entered on the page, never in the served HTML.
       res.writeHead(200, htmlHeaders());
       res.end(readFileSync(join(__dirname, 'manage.html'), 'utf8'));
     } else if (req.url === '/creator' || req.url.startsWith('/creator?')) {

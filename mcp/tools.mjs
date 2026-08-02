@@ -118,7 +118,8 @@ export const coreTools = [
       if (mintedToken) opts.controlToken = mintedToken;
       /*
        * ── Plan 0522 P16.2 (R3) — THE AGENT-RAISED SESSION LOGS TO DISK, AND THE AGENT DOES NOT
-       * GET TO SAY WHERE. This is the path that raised S17, whose op-log died with its process.
+       * GET TO SAY WHERE. This is the path that raises real live sessions — the ones whose op-log
+       * used to die with the process, taking the only copy of the evidence with it.
        * The directory is DEPLOYMENT config (lib/deployment-config.mjs / $PRESENTER_SESSION_LOG_DIR,
        * default ${XDG_STATE_HOME:-~/.local/state}/argus-presenter/logs) and is deliberately NOT a
        * property on this tool's input schema: the log carries participants' own words, so a
@@ -349,7 +350,7 @@ export const coreTools = [
   {
     name: 'present_module',
     description: 'Load a content module (deck of beats) and show the first beat. Pass moduleId to load a module BY NAME from the modules directory (preferred — art-heavy decks never touch the agent context; use presenter_modules to list ids), or beats = [{component, opts, requires?}] to supply them inline. ⏹ To wipe the stage back to the default branding image: presenter_default_branding.',
-    input: { type: 'object', properties: { moduleId: { type: 'string', description: 'Module id (filename without .json) in MODULES_DIR — e.g. "s15-live". Takes precedence over beats.' }, title: { type: 'string' }, beats: { type: 'array', items: { type: 'object' } } } },
+    input: { type: 'object', properties: { moduleId: { type: 'string', description: 'Module id (filename without .json) in MODULES_DIR — e.g. "demo-welcome". Takes precedence over beats.' }, title: { type: 'string' }, beats: { type: 'array', items: { type: 'object' } } } },
     handler: async ({ moduleId, title, beats }) => {
       const s = need();
       let loadedFrom = null;
@@ -502,7 +503,7 @@ export const coreTools = [
   {
     name: 'presenter_spotlight',
     description: 'Plan 0508 (SPOTLIGHT — give the players the stage): grant or revoke a SEAT\'s right to promote its own station screen to every display. Default-DENY: nothing is shareable until granted. The granted seat gets a "◉ Share my screen with everyone" button in its Config panel; pressing it re-pushes THAT SEAT\'s current per-user display to all (throttled to one share per 3 s, re-rendered per viewer so OPSEC stripping still applies — never a verbatim copy of their HTML). Use this so a player (e.g. the Sensor Operator) can talk the table through their own readout instead of the GM narrating it. Pair with push_component{target:<userId>} to stock that seat\'s station first.',
-    input: { type: 'object', properties: { userId: { type: 'string', description: 'Seat slug, e.g. "participant-a"' }, granted: { type: 'boolean', default: true, description: 'false revokes' } }, required: ['userId'] },
+    input: { type: 'object', properties: { userId: { type: 'string', description: 'Seat slug, e.g. "seat-one"' }, granted: { type: 'boolean', default: true, description: 'false revokes' } }, required: ['userId'] },
     handler: async ({ userId, granted = true }) => need().spotlight(userId, granted)
   },
   {

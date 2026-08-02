@@ -1,6 +1,6 @@
 /*
  * branch.mjs — pure branch resolution shared by the panel's branch navigation
- * and the Region runner. Dependency-free; never throws.
+ * and the server-side module runner. Dependency-free; never throws.
  *
  * Branch-table shapes on a beat (neutral schema, plans 0439/0440):
  *   choice beat:  branch: { "<choiceValue>": "<beatId>", ... }

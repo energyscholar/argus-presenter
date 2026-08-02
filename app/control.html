@@ -890,7 +890,8 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   // `send_beat` with an explicit id is a PUBLISH, exactly like `show_beat` (P4) — so this is not
   // the stage/publish switch, and no silent-non-delivery window is opened here. At the default
   // target the server maps a lone 'all' to "do not narrow", making this byte-identical to the
-  // click path that ran S17, layers and per-beat `target:` included. Picking a target narrows it.
+  // click path every live session has run on to date, layers and per-beat `target:` included.
+  // Picking a target narrows it.
   //
   // ⚠ AUTO-FOLLOW IS DELIBERATELY NOT ROUTED THROUGH HERE (R4). It is not a target the GM chose.
   function sendBeatAt(i){ recBeat=-1; clearStaged(DISCARD_NOTE); control('send_beat', Object.assign({targets:targetArray()}, beatRef(i))); }

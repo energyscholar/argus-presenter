@@ -169,7 +169,7 @@
     //             16:9 screen wastes ~47% of its height under 'contain'. 'cover'
     //             fills it and crops only the empty margin the panel never uses.
     // Cropping is the whole point of 'cover', so only set it on art whose content
-    // sits inside the safe band (S17 station panels: 744x424 of an 800x800 box).
+    // sits inside the safe band (the panel art this ships with: 744x424 of an 800x800 box).
     var fitCover = opts.fit === 'cover';
     function zoomToFit() {
       // clientWidth/Height = the padding box content coords are relative to
