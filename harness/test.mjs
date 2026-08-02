@@ -82,11 +82,12 @@ function tierOf(file) {
  * Discovery is restricted to `*.test.mjs`.
  *
  * WHY (Plan 0522 P1): discovery used to take EVERY `*.mjs` under test/, and the runner
- * imports all discovered files BEFORE running anything. `test/plan-0508-station-spotlight.mjs`
- * is a standalone acceptance SCRIPT: it executes at import time (top-level await) and ends in
- * `process.exit()`. Sorted, it lands between `test/live/` and `test/unit/`, so importing it
+ * imports all discovered files BEFORE running anything. One deployment's standalone acceptance
+ * SCRIPT sat under test/: it executed at import time (top-level await) and ended in
+ * `process.exit()`. Sorted, it landed between `test/live/` and `test/unit/`, so importing it
  * terminated the process — every registered test was discarded unrun and the harness exited 0
- * with the script's own "ALL PASS". `test/unit/` had never executed.
+ * with the script's own "ALL PASS". `test/unit/` had never executed. (That script left for the
+ * private content repo in plan 0531 P2; the restriction is what keeps the next one harmless.)
  *
  * A file that is not named `*.test.mjs` is not a suite: it is a helper (`test/unit/_*.mjs`) or a
  * standalone script. Both are reported by `skippedFiles()` rather than silently dropped.

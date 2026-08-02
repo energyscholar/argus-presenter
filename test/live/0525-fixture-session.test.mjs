@@ -37,19 +37,16 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join, dirname, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test, check as expect } from '../../harness/test.mjs';
-import { runSession, writeReport } from '../../harness/session-rig.mjs';
 import { toolMap } from '../../mcp/tools.mjs';
 import SPEC, { SOURCES, MODULE_DIR, MODULE_ID, STATION_WORD } from './0525-fixture-spec.mjs';
+// 0531 P2: the session itself moved to a shared, memoised helper — a second test file now asserts
+// over the SAME walk, and booting five browsers twice would cost a minute and prove nothing extra.
+import { fixtureRun } from './_0531-fixture-run.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const SHOT_DIR = join(ROOT, 'test', 'screenshots', '0525-fixture');
 const MARKED = ['b-door-outer', 'b-door-inner'];   // the run of two, in beats order
 
-let _run = null;
-function session() {
-  if (!_run) _run = runSession(SPEC, { shotDir: SHOT_DIR }).then((r) => { try { writeReport(r, SHOT_DIR); } catch (e) {} return r; });
-  return _run;
-}
+const session = fixtureRun;
 
 /** true iff `p` is inside `base` — the "is this path where it claims to be" primitive. */
 const inside = (base, p) => { const r = relative(base, p); return !!r && !r.startsWith('..') && !isAbsolute(r); };
