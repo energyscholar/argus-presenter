@@ -6,7 +6,8 @@
  *
  *   t32c — the panel is a SEPARATE surface (/manage), not a control on /control. R12: curating
  *          is between-sessions work and the picker is in-session work, and the surface that ran
- *          95% of S17 must not grow a control whose whole purpose is making modules disappear.
+ *          95% of a live session must not grow a control whose whole purpose is making modules
+ *          disappear.
  *          Retiring from the panel MOVES the file, proved on disk rather than by the UI's report.
  *   t33b — a symlinked module REFUSES VISIBLY. Not "the click does nothing": the row states the
  *          reason on screen and its controls are disabled. A silent no-op leaves an operator

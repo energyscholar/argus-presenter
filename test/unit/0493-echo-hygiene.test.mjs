@@ -59,7 +59,7 @@ test('0493 E1: unrelated speech is never mistaken for an echo', async () => {
   const s = await createServer({ port: 0 });
   try {
     s.pvsStart({ consumer: 'argusmon' });
-    s.speak('plotting a jump to Waypoint');
+    s.speak('drafting the agenda for tomorrow');
     const turn = hear(s, 'what is the fuel situation');
     expect(turn.echo !== true, 'a clearly different turn is not flagged echo', JSON.stringify(turn.echo));
     const d = (await s.situation({ consumerId: 'pvs:argusmon' })).newSinceLastRead;

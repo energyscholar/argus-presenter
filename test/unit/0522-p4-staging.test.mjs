@@ -71,8 +71,8 @@ test('0522 t07 — staging mutates NO durable state (I3)', async () => {
   try {
     gm = await open(server, { userId: 'gm1', userName: 'GM', role: 'presenter' });
     // Seat-linked participants, so every seat really carries a stationUid to compare.
-    p1 = await open(server, { stationUID: 1, userName: 'James' });
-    p2 = await open(server, { stationUID: 4, userName: 'Von' });
+    p1 = await open(server, { stationUID: 1, userName: 'Wren' });
+    p2 = await open(server, { stationUID: 4, userName: 'Bex' });
     await until(() => server.presence().length === 3, { label: 'three people connected' });
     const seated = server.presence().filter((u) => u.stationUid != null);
     expect('precondition: the seats carry station uids, so the comparison can fail',

@@ -48,21 +48,21 @@ async function open(server, frame) {
 // The shape a seat link mints: <stationCode>-<slug(userName)>. Two clients reaching this same
 // string is the whole point of the derivation — a reload, or two people, cannot be told apart
 // by the id alone.
-const SEAT = 'ops-participant-b';
+const SEAT = 'ops-tamsin';
 
 test('0522 t04 — two sockets on one derived userId collapse to ONE roster row', async () => {
   const server = await createServer({ port: 0 });
   let a, b;
   try {
-    a = await open(server, { userId: SEAT, userName: 'Participant B' });
-    b = await open(server, { userId: SEAT, userName: 'Participant B' });   // reload before the old socket is reaped
+    a = await open(server, { userId: SEAT, userName: 'Tamsin' });
+    b = await open(server, { userId: SEAT, userName: 'Tamsin' });   // reload before the old socket is reaped
     await until(() => server.presence().length === 1, { label: 'presence collapses to one row' })
       .catch(() => {});
     const rows = server.presence();
     const mine = rows.filter((u) => u.userId === SEAT);
     expect('one row for one userId, not one per socket', mine.length === 1, 'rows=' + JSON.stringify(rows));
     expect('the row is that person (identity preserved through the collapse)',
-      mine.length === 1 && mine[0].userName === 'Participant B' && mine[0].role === 'participant',
+      mine.length === 1 && mine[0].userName === 'Tamsin' && mine[0].role === 'participant',
       JSON.stringify(mine[0]));
     // The per-socket view is NOT destroyed — it moves to the debug surface, one entry per socket.
     const conns = server.debugDump('presenter').connections.filter((c) => c.userId === SEAT);
@@ -76,8 +76,8 @@ test('0522 t05 — two LIVE sockets on one userId → one row, contested, count 
   let gm, a, b;
   try {
     gm = await open(server, { userId: 'gm1', userName: 'GM', role: 'presenter' });
-    a = await open(server, { userId: SEAT, userName: 'Participant B' });
-    b = await open(server, { userId: SEAT, userName: 'Participant B' });
+    a = await open(server, { userId: SEAT, userName: 'Tamsin' });
+    b = await open(server, { userId: SEAT, userName: 'Tamsin' });
     await until(() => (server.presence().find((u) => u.userId === SEAT) || {}).conns === 2,
       { label: 'presence reports both live sockets' }).catch(() => {});
 
@@ -112,8 +112,8 @@ test('0522 t06 — the stale socket is reaped → the contested marker clears', 
   let gm, a, b;
   try {
     gm = await open(server, { userId: 'gm1', userName: 'GM', role: 'presenter' });
-    a = await open(server, { userId: SEAT, userName: 'Participant B' });
-    b = await open(server, { userId: SEAT, userName: 'Participant B' });
+    a = await open(server, { userId: SEAT, userName: 'Tamsin' });
+    b = await open(server, { userId: SEAT, userName: 'Tamsin' });
     await until(() => (server.presence().find((u) => u.userId === SEAT) || {}).conns === 2,
       { label: 'contested first' }).catch(() => {});
     expect('precondition: the seat is contested by 2 sockets',

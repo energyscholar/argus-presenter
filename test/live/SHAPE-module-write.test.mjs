@@ -1,8 +1,8 @@
 /*
- * SHAPE-A7 — module write-back cannot destroy the campaign file. DATA-LOSS PREVENTION.
+ * SHAPE-A7 — module write-back cannot destroy the authoring source file. DATA-LOSS PREVENTION.
  * RED TODAY: POST /api/modules/:id (app/server.mjs:346-378) is gated ONLY if CONTROL_TOKEN
- * is set, and writeFileSync FOLLOWS SYMLINKS - and modules/region.json symlinks to the live
- * campaign source. The fs watcher then hot-reloads the wreckage.
+ * is set, and writeFileSync FOLLOWS SYMLINKS - and a deployment's modules/ commonly holds symlinks
+ * pointing at the live authoring source. The fs watcher then hot-reloads the wreckage.
  * END STATE: write-back requires the control credential unconditionally (deny when none is
  * configured), and never writes through a symlink.
  */

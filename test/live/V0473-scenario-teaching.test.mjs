@@ -57,7 +57,7 @@ test('T-SCENARIO-TEACHING (MILESTONE): many students + teacher → similar quest
     // teacher = a gated control role (presenter) ⇒ trust 'self'. Students = participants (untrusted/fenced).
     const teacher = await wsClient(s.url(), { userId: 'teacher', userName: 'Teacher', role: 'presenter' });
     const STUDENTS = [];
-    for (let i = 1; i <= 20; i++) STUDENTS.push('s' + i);
+    for (let i = 1; i <= 20; i++) STUDENTS.push('stu' + i);
     const students = {};
     for (const id of STUDENTS) students[id] = await wsClient(s.url(), { userId: id, userName: id.toUpperCase(), role: 'participant' });
     const sm = await wsClient(s.url(), { userId: 'sm', userName: 'SM', role: 'participant' });   // the muted student
@@ -81,41 +81,41 @@ test('T-SCENARIO-TEACHING (MILESTONE): many students + teacher → similar quest
     const mm = s.muteParticipant('sm');
     expect('teacher can mute a student (moderation permitted)', mm.ok === true && s.isMuted('sm'), JSON.stringify(mm));
     chat(sm, 'What is the deadline for the makeup exam?', 'muted-q');
-    chat(students.s1, 'x', 'nudge-mute');   // distinct speaker closes the muted turn; non-question ⇒ not enqueued
+    chat(students.stu1, 'x', 'nudge-mute');   // distinct speaker closes the muted turn; non-question ⇒ not enqueued
     await wait(80);
     expect('a MUTED student produces NO work item (input gated by explicit moderation)',
       !s.workItems().some((w) => w.userId === 'sm'), JSON.stringify(s.workItems().map((w) => w.userId)));
     // Un-mute (teacher can allow again) → the student's next question DOES reach the queue.
     s.unmuteParticipant('sm');
     chat(sm, 'How are late penalties calculated for projects?', 'unmuted-q');
-    chat(students.s1, 'x2', 'nudge-unmute');
+    chat(students.stu1, 'x2', 'nudge-unmute');
     await poll(() => s.workItems().some((w) => w.userId === 'sm'), 'un-muted student question reaches the queue');
     expect('after un-mute the student reaches the queue (teacher can allow)',
       s.workItems().some((w) => w.userId === 'sm'), JSON.stringify(s.workItems().map((w) => w.userId)));
 
     // ============================================================================================
     // (a) 20 NEAR-SIMULTANEOUS QUESTIONS, several ASKING THE SAME THING → DEDUPE/CLUSTER.
-    //   s1..s10  = topic CLOSURES (mostly identical, 2 near-duplicate phrasings) → ONE cluster of 10
-    //   s11..s16 = topic RECURSION (identical)                                    → ONE cluster of 6
-    //   s17..s20 = four DISTINCT questions                                        → 4 separate items
+    //   stu1..stu10  = topic CLOSURES (mostly identical, 2 near-duplicate phrasings) → ONE cluster of 10
+    //   stu11..stu16 = topic RECURSION (identical)                                   → ONE cluster of 6
+    //   stu17..stu20 = four DISTINCT questions                                       → 4 separate items
     // ============================================================================================
     const CLOSURE = 'What is a closure in JavaScript?';
     const closureTexts = {
-      s1: CLOSURE, s2: CLOSURE, s3: CLOSURE, s4: CLOSURE, s5: CLOSURE, s6: CLOSURE, s7: CLOSURE, s8: CLOSURE,
-      s9: 'How do closures work in JavaScript?',           // near-duplicate (heuristic, not exact match)
-      s10: 'Can someone explain closures in JavaScript?',  // near-duplicate
+      stu1: CLOSURE, stu2: CLOSURE, stu3: CLOSURE, stu4: CLOSURE, stu5: CLOSURE, stu6: CLOSURE, stu7: CLOSURE, stu8: CLOSURE,
+      stu9: 'How do closures work in JavaScript?',           // near-duplicate (heuristic, not exact match)
+      stu10: 'Can someone explain closures in JavaScript?',  // near-duplicate
     };
     const RECURSION = 'How does recursion work in code?';
     const distinctTexts = {
-      s17: 'When is the midterm exam scheduled?',
-      s18: 'Where do I submit homework assignments?',
-      s19: 'Why did my program crash yesterday?',
-      s20: 'What database should we use for the project?',
+      stu17: 'When is the midterm exam scheduled?',
+      stu18: 'Where do I submit homework assignments?',
+      stu19: 'Why did my program crash yesterday?',
+      stu20: 'What database should we use for the project?',
     };
     // Interleave the sends across students (round-robin-ish) so clustering is order-robust, not just
     // "all identical arrive together". A distinct speaker per send closes the prior turn immediately.
-    const order = ['s1', 's11', 's17', 's2', 's12', 's18', 's3', 's13', 's19', 's4', 's14', 's20',
-      's5', 's15', 's6', 's16', 's7', 's8', 's9', 's10'];
+    const order = ['stu1', 'stu11', 'stu17', 'stu2', 'stu12', 'stu18', 'stu3', 'stu13', 'stu19', 'stu4', 'stu14', 'stu20',
+      'stu5', 'stu15', 'stu6', 'stu16', 'stu7', 'stu8', 'stu9', 'stu10'];
     let n = 0;
     for (const id of order) {
       const text = closureTexts[id] || distinctTexts[id] || RECURSION;
@@ -145,9 +145,9 @@ test('T-SCENARIO-TEACHING (MILESTONE): many students + teacher → similar quest
     expect('the CLOSURES questions collapsed into ONE clustered item', closureItem && closureItem.cluster === true, JSON.stringify(closureItem && { cluster: closureItem.cluster }));
     expect('the closures cluster carries a COUNT of all 10 askers', closureItem && closureItem.count === 10, JSON.stringify(closureItem && { count: closureItem.count }));
     expect('the closures cluster lists its contributing askers (count + askers)', closureItem && Array.isArray(closureItem.askers) && closureItem.askers.length === 10, JSON.stringify(closureItem && { askers: (closureItem.askers || []).length }));
-    // near-duplicate phrasings (s9/s10) were caught by the CHEAP heuristic, not just exact matches.
+    // near-duplicate phrasings (stu9/stu10) were caught by the CHEAP heuristic, not just exact matches.
     const closureAskers = new Set((closureItem.askers || []).map((a) => a.userId));
-    expect('near-duplicate phrasings were clustered too (heuristic, not exact-match)', closureAskers.has('s9') && closureAskers.has('s10'), JSON.stringify([...closureAskers]));
+    expect('near-duplicate phrasings were clustered too (heuristic, not exact-match)', closureAskers.has('stu9') && closureAskers.has('stu10'), JSON.stringify([...closureAskers]));
 
     // ----- RECURSION clustered into ONE item of count 6 -----
     const recursionItem = questions.find((w) => w.text.toLowerCase().indexOf('recursion') >= 0);
@@ -165,7 +165,7 @@ test('T-SCENARIO-TEACHING (MILESTONE): many students + teacher → similar quest
       if (w.cluster) for (const a of (w.askers || [])) represented.add(a.userId);
       else represented.add(w.userId);
     }
-    const floodAskers = order.slice();   // s1..s20 all asked a question
+    const floodAskers = order.slice();   // stu1..stu20 all asked a question
     expect('every one of the ~20 flooding askers is represented (nothing silently lost to clustering)',
       floodAskers.every((id) => represented.has(id)), JSON.stringify(floodAskers.filter((id) => !represented.has(id))));
     expect('no reactive queue-overflow shed occurred (clustering kept it bounded)', s.backpressure().sheddedCount === 0, JSON.stringify(s.backpressure()));

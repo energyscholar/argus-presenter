@@ -4,7 +4,7 @@
  * §13 is the reason this plan exists. The defect, reproduced live before it was written:
  *
  *     present_text   → target 'user'   ⇒ roster: user = "prose",   others = "p6-coherent"   ✅
- *     present_module s17-sensors       ⇒ roster: user = "p1-sweep", others = "p1-sweep"     ❌
+ *     present_module survey-deck       ⇒ roster: user = "p1-sweep", others = "p1-sweep"     ❌
  *
  * Two different LIFETIMES were stored in the same map. A per-seat push is transient and a module
  * load SHOULD replace it; a station is durable and belongs to the system. The fix is not to make
@@ -331,7 +331,7 @@ test('t0514-37 — no station LABEL or CODE appears anywhere under ship/ (occupa
   const server = await createServer({ port: 0 });
   const url = server.url().replace('http', 'ws');
   try {
-    const a = await connect(WebSocket, url, { stationUID: 5, userName: 'Participant B' });
+    const a = await connect(WebSocket, url, { stationUID: 5, userName: 'Tamsin' });
     const b = await connect(WebSocket, url, { userId: 'plain-seat', userName: 'Plain' });
     b.send({ t: 'station-select', stationUid: 3 }); await wait(200);
 

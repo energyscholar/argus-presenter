@@ -41,7 +41,7 @@ export const CONSTRUCTOR_COVERAGE = {
   // Plan 0522 P16.2 — DELIBERATELY NOT ON THE TOOL SCHEMA, and that is the security decision, not
   // an oversight. presenter_start DOES enable the durable log (it resolves the directory from
   // lib/deployment-config.mjs / $PRESENTER_SESSION_LOG_DIR and passes it in), so the agent-raised
-  // session — the one that raised S17, whose op-log died with its process — is now recorded. What
+  // session — the kind whose op-log used to die with its process — is now recorded. What
   // the agent may not do is CHOOSE THE DESTINATION: the log carries the session transcript, i.e.
   // participants' own words, so a caller-settable path is a redirect primitive for other people's
   // speech. Where it lands is the deployment's declaration; reading it is role-gated (R6) at

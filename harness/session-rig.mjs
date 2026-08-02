@@ -439,7 +439,7 @@ export async function runSession(spec, { shotDir = SHOT_DIR, keepOpen = false } 
     const seatedNow = server.stations().seats.map((s) => ({ userId: s.userId, stationUid: s.stationUid }));
     /*
      * ⚠ FOUND ON THE FIRST RUN — A SEAT LINK REWRITES THE USER ID.
-     * We ask for `?userId=participant-a`; the server reports `sensors-participant-a`. That is 0514 §5.1
+     * We ask for `?userId=bexorrow`; the server reports `<stationCode>-bex-orrow`. That is 0514 §5.1
      * working as designed (a seat link RE-DERIVES identity from the seat on hello), but it means
      * a caller-supplied userId is NOT the id the server holds, and anything keyed on it silently
      * addresses nobody. Recorded per-seat so every server-side lookup uses the DERIVED id.

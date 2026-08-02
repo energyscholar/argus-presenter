@@ -30,8 +30,8 @@ import { makePluginsDir, withPlugins, stationManifest, connect, last } from './_
 //   stationUID = seatLinked ? <int|null> : undefined     ← the key is ABSENT off a seat link
 //   userId     = q.get('userId') || q.get('u') || 'anon-<random>'   ← ALWAYS sent, seat link or not
 const SEAT_LINK_UID = 1;            // ?stationUID=1  → stationCode 'alpha' in the fixture registry
-const LINK_NAME = 'Participant A';       // ?n=Von%20Sydo
-const ASKED_ID = 'participant-a';         // ?userId=participant-a — what the caller asks to be called
+const LINK_NAME = 'Bex Orrow';      // ?n=Bex%20Orrow
+const ASKED_ID = 'bexorrow';        // ?userId=bexorrow — what the caller asks to be called
 
 test('0525 t79 — a seat link DERIVES its userId and discards the one asked for; a reload derives the SAME one; a non-seat link still honours it', async () => {
   const dir = makePluginsDir({ fixture: { 'plugin.json': stationManifest() } });

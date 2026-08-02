@@ -31,14 +31,14 @@ function seatLink({ stationUID = null, name = undefined, role = undefined } = {}
   return hello;
 }
 
-test('t0514-07 — ?stationUID=1&name=James ⇒ userId captain-james, userName James', async () => {
+test('t0514-07 — ?stationUID=1&name=Wren ⇒ userId captain-wren, userName Wren', async () => {
   const server = await createServer({ port: 0 });
   const url = server.url().replace('http', 'ws');
   try {
-    const c = await connect(WebSocket, url, seatLink({ stationUID: 1, name: 'James' }));
+    const c = await connect(WebSocket, url, seatLink({ stationUID: 1, name: 'Wren' }));
     const w = last(c, 'welcome');
-    expect(w.userId === 'captain-james', 'userId derives from the link', w.userId);
-    expect(w.userName === 'James', 'userName is the link name', w.userName);
+    expect(w.userId === 'captain-wren', 'userId derives from the link', w.userId);
+    expect(w.userName === 'Wren', 'userName is the link name', w.userName);
     expect(w.stationUid === 1, 'and the seat is at the Captain uid', String(w.stationUid));
     c.ws.close();
   } finally { await server.close(); }
@@ -53,9 +53,9 @@ test('t0514-08 — ?stationUID=4 seats Sensors; empty / non-numeric / unknown / 
   const url = server.url().replace('http', 'ws');
   const DEFAULT = server.stations().stationDefaultUid;
   try {
-    const good = await connect(WebSocket, url, seatLink({ stationUID: 4, name: 'Von' }));
+    const good = await connect(WebSocket, url, seatLink({ stationUID: 4, name: 'Bex' }));
     expect(last(good, 'welcome').stationUid === 4, 'a valid uid resolves', String(last(good, 'welcome').stationUid));
-    expect(last(good, 'welcome').userId === 'sensors-von', 'and the userId uses the RESOLVED code', last(good, 'welcome').userId);
+    expect(last(good, 'welcome').userId === 'sensors-bex', 'and the userId uses the RESOLVED code', last(good, 'welcome').userId);
 
     // Everything the client can hand the server when the link is wrong. The client normalises an
     // empty or non-numeric `?stationUID=` to null before the hello, so `null` is what arrives.
@@ -111,8 +111,8 @@ test('t0514-09 — a missing name ⇒ NAME UNKNOWN, displayed literally, and a s
   } finally { await server.close(); }
   // The slug rule itself, in isolation.
   expect(slugForSeat('') === 'anon' && slugForSeat('   ') === 'anon', 'empty ⇒ anon');
-  expect(slugForSeat('Participant A') === 'participant-a', 'spaces collapse to one dash', slugForSeat('Participant A'));
-  expect(slugForSeat('!!! Participant B !!!') === 'marina', 'leading/trailing punctuation is trimmed', slugForSeat('!!! Participant B !!!'));
+  expect(slugForSeat('Bex Orrow') === 'bex-orrow', 'spaces collapse to one dash', slugForSeat('Bex Orrow'));
+  expect(slugForSeat('!!! Tamsin !!!') === 'tamsin', 'leading/trailing punctuation is trimmed', slugForSeat('!!! Tamsin !!!'));
   expect(slugForSeat('a'.repeat(40)).length === 24, 'capped at 24 chars', String(slugForSeat('a'.repeat(40)).length));
 });
 
@@ -120,7 +120,7 @@ test('t0514-10 — reconnecting on the SAME LINK returns the same userId; statio
   const server = await createServer({ port: 0 });
   const url = server.url().replace('http', 'ws');
   try {
-    const link = seatLink({ stationUID: 4, name: 'Participant A' });
+    const link = seatLink({ stationUID: 4, name: 'Bex Orrow' });
     const first = await connect(WebSocket, url, link);
     const id = last(first, 'welcome').userId;
     server.spotlight(id, true); await wait(120);
@@ -164,14 +164,14 @@ test('t0514-19 — two Gunner links with different names get DISTINCT userIds an
   const server = await createServer({ port: 0 });
   const url = server.url().replace('http', 'ws');
   try {
-    const m = await connect(WebSocket, url, seatLink({ stationUID: 5, name: 'Participant B' }));
+    const m = await connect(WebSocket, url, seatLink({ stationUID: 5, name: 'Tamsin' }));
     const a = await connect(WebSocket, url, seatLink({ stationUID: 5, name: 'Anemone' }));
-    expect(last(m, 'welcome').userId === 'gunner-marina', 'first gunner', last(m, 'welcome').userId);
+    expect(last(m, 'welcome').userId === 'gunner-tamsin', 'first gunner', last(m, 'welcome').userId);
     expect(last(a, 'welcome').userId === 'gunner-anemone', 'second gunner', last(a, 'welcome').userId);
     // t0514-40 — and BOTH are in the same occupants list. Multiplicity works because occupancy is
     // extended state keyed by uid, not a vacant|occupied region per station.
     const occ = server.store.get('ship/stations/5/occupants') || [];
-    expect(occ.includes('gunner-marina') && occ.includes('gunner-anemone'), 't0514-40 — both appear in the SAME occupants list', JSON.stringify(occ));
+    expect(occ.includes('gunner-tamsin') && occ.includes('gunner-anemone'), 't0514-40 — both appear in the SAME occupants list', JSON.stringify(occ));
     m.ws.close(); a.ws.close();
   } finally { await server.close(); }
 });
@@ -180,9 +180,9 @@ test('t0514-19b — two CAPTAIN links with different names likewise (the single-
   const server = await createServer({ port: 0 });
   const url = server.url().replace('http', 'ws');
   try {
-    const j = await connect(WebSocket, url, seatLink({ stationUID: 1, name: 'James' }));
+    const j = await connect(WebSocket, url, seatLink({ stationUID: 1, name: 'Wren' }));
     const k = await connect(WebSocket, url, seatLink({ stationUID: 1, name: 'Kira' }));
-    expect(last(j, 'welcome').userId === 'captain-james' && last(k, 'welcome').userId === 'captain-kira',
+    expect(last(j, 'welcome').userId === 'captain-wren' && last(k, 'welcome').userId === 'captain-kira',
       'distinct seats at a maxOccupants:1 station', last(j, 'welcome').userId + ' / ' + last(k, 'welcome').userId);
     // Under the killed branch BOTH would have been the bare code `captain` and would have silently
     // displaced each other. That is why this test is written for Captain specifically.

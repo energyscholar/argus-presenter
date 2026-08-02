@@ -1,9 +1,9 @@
 /*
  * Plan 0525 P2 (I1) — t76/t77: CAN THE AGENT TELL WHETHER THE SESSION IS BEING RECORDED?
  *
- * Plan 0522 P16.2 added the durable session log because S17's evidence died with its process and
- * every "run one session and then measure" criterion in three earlier plans had been unfalsifiable
- * in practice. The CLI has printed whether it is recording ever since — `session log: <dir>/<id>`
+ * Plan 0522 P16.2 added the durable session log because a live session's evidence died with its
+ * process, and every "run one session and then measure" criterion in three earlier plans had been
+ * unfalsifiable in practice. The CLI has printed whether it is recording ever since — `session log: <dir>/<id>`
  * or `DISABLED — <reason>` — but only the CLI. `presenter_start` is the path that raises the
  * PUBLIC ingress, i.e. the path the real sessions come up on, and an agent that started a session
  * that way had no way to ask. A recorder nobody can confirm is running is the original failure

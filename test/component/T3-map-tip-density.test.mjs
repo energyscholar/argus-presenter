@@ -3,7 +3,7 @@
 // the second test exercises the LOCAL gitignored dev module beat when present.
 import { test, check as expect } from '../../harness/test.mjs';
 import { drive } from '../../harness/drive.mjs';
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, readdirSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
@@ -46,14 +46,31 @@ test('T3 — dense data-tip overlay wires every node (neutral fixture)', async (
   expect('fixture: sampled tooltip first line matches', p.s0 && p.s0.first === 'Waypoint 0', p.s0 && String(p.s0.first));
 });
 
+/*
+ * The second test reaches whatever the OPERATOR has installed in the gitignored `modules/` tree.
+ * It names no module: it looks for the first local module carrying a `dev-parsec-map` beat with an
+ * inline svg, and skips when there is none. Naming one would put a deployment's own content id in
+ * a public repo, and would break the moment that deployment renamed its file.
+ */
+const DEV_BEAT_ID = 'dev-parsec-map';
+
+/** The first local module (if any) carrying DEV_BEAT_ID with an inline svg. */
+function findDevBeat() {
+  const dir = join(ROOT, 'modules');
+  if (!existsSync(dir)) return null;
+  for (const name of readdirSync(dir).sort()) {
+    if (!name.endsWith('.json')) continue;
+    let mod = null;
+    try { mod = JSON.parse(readFileSync(join(dir, name), 'utf8')); }
+    catch { continue; }                                  // unreadable/at-symlink-end -> try the next
+    const beat = ((mod && mod.beats) || []).find((b) => b.id === DEV_BEAT_ID);
+    if (beat && beat.opts && beat.opts.svg) return beat;
+  }
+  return null;
+}
+
 test('T3 — local dev module beat wires its overlay (skips when absent)', async () => {
-  const path = join(ROOT, 'modules', 'region.json');
-  if (!existsSync(path)) { console.log('  ok   (skip) no local modules/region.json'); return; }
-  let beat = null;
-  try {
-    const mod = JSON.parse(readFileSync(path, 'utf8'));
-    beat = (mod.beats || []).find((b) => b.id === 'dev-parsec-map') || null;
-  } catch { /* unreadable local module -> skip */ }
-  if (!beat || !beat.opts || !beat.opts.svg) { console.log('  ok   (skip) no dev-parsec-map beat with an inline svg'); return; }
+  const beat = findDevBeat();
+  if (!beat) { console.log(`  ok   (skip) no local module carries a ${DEV_BEAT_ID} beat with an inline svg`); return; }
   await assertWiring(beat.opts.svg, 'dev beat');
 });

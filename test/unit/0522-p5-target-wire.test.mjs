@@ -142,7 +142,7 @@ test('0522 t10 — a single target travels as an ARRAY and narrows delivery to e
       JSON.parse(server._displayStateForTest()).byUser[EMPTY] === undefined, server._displayStateForTest().slice(0, 200));
 
     // ── ['all'] means DO NOT NARROW — the beat's own declared routing still applies. This is what
-    //    makes picking the default target byte-identical to the click path that ran S17.
+    //    makes picking the default target byte-identical to the click path a live session runs.
     gm.frames.length = 0; alice.frames.length = 0; bob.frames.length = 0;
     gm.control('send_beat', { id: 'bp', targets: ['all'] });
     await until(() => !!gm.last('sent'), { label: 'the ALL send is acknowledged' });

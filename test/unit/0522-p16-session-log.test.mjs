@@ -14,8 +14,8 @@
  * WHY THIS PHASE EXISTS. app/state.mjs keeps the op-log in a 1000-entry in-memory ring and nothing
  * in this repo has ever written it anywhere. Every "run one session and then measure" criterion in
  * plans 0508/0514/0516 has been unfalsifiable in practice — including 0516's own claim that no
- * instrumentation was needed — because the evidence was freed with the process. S17 (2026-07-28)
- * is the worked example: its process had exited before planning began.
+ * instrumentation was needed — because the evidence was freed with the process. The worked example
+ * is a session whose process had exited before the planning that wanted to measure it began.
  *
  * ⚠⚠ THE BASELINE TRAP, and it is why t51 is written the way it is. THE OPLOG IS NOT EMPTY AT
  * BOOT: the 0514 ship-machine plugin applies durable ops during createServer(), so store.version()

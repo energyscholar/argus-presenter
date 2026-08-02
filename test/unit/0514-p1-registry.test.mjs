@@ -132,15 +132,15 @@ test('t0514-38 — joining a station WRITES OCCUPANCY TO THE MACHINE, both index
   const server = await createServer({ port: 0 });
   const url = server.url().replace('http', 'ws');
   try {
-    const a = await connect(WebSocket, url, { userId: 'crewman', userName: 'Crewman' });
+    const a = await connect(WebSocket, url, { userId: 'seat-one', userName: 'Seat One' });
     a.send({ t: 'station-select', stationUid: 6 }); await wait(160);
     const occupants = server.store.get('ship/stations/6/occupants');
-    expect(Array.isArray(occupants) && occupants.includes('crewman'), 'the forward index holds the seat', JSON.stringify(occupants));
-    expect(server.store.get('ship/seats/crewman/stationUid') === 6, 'the reverse index agrees', String(server.store.get('ship/seats/crewman/stationUid')));
+    expect(Array.isArray(occupants) && occupants.includes('seat-one'), 'the forward index holds the seat', JSON.stringify(occupants));
+    expect(server.store.get('ship/seats/seat-one/stationUid') === 6, 'the reverse index agrees', String(server.store.get('ship/seats/seat-one/stationUid')));
     // Moving station must leave no ghost behind in the previous one.
     a.send({ t: 'station-select', stationUid: 7 }); await wait(160);
-    expect(!(server.store.get('ship/stations/6/occupants') || []).includes('crewman'), 'the old station released the seat', JSON.stringify(server.store.get('ship/stations/6/occupants')));
-    expect((server.store.get('ship/stations/7/occupants') || []).includes('crewman'), 'the new station holds it');
+    expect(!(server.store.get('ship/stations/6/occupants') || []).includes('seat-one'), 'the old station released the seat', JSON.stringify(server.store.get('ship/stations/6/occupants')));
+    expect((server.store.get('ship/stations/7/occupants') || []).includes('seat-one'), 'the new station holds it');
     a.ws.close();
   } finally { await server.close(); }
 });
