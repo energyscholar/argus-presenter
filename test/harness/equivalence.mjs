@@ -37,12 +37,23 @@
  * and never deletes the key. A dropped field hides a change; a tokenised one still proves the
  * field was there, still proves its type, and still goes red if it disappears.
  *
- * ⚠ EXACTLY ONE FIELD IS EXCLUDED FROM COMPARISON RATHER THAN MERELY TOKENISED: `sawPing`, and only
- * outside the hello-reply window. A 5 s heartbeat on a clock the capture does not control made this
- * gate report DIFFERENT ON AN UNCHANGED TREE — measured at 2 of 10 sequential runs before plan 0530
- * P2b. Nothing else is excluded, and the exclusion is fenced by a floor and a ceiling in
- * t0530-p1-03 so it cannot grow quietly. The reasoning, the two ping emitters, and the arithmetic
- * are all in the `splitPings` block below.
+ * ⚠ TWO FIELD FAMILIES ARE EXCLUDED FROM COMPARISON RATHER THAN MERELY TOKENISED. Both were
+ * measured making this gate report DIFFERENT ON AN UNCHANGED TREE; nothing else is excluded, and
+ * BOTH are fenced by a floor and an exact-equality ceiling in t0530-p1-03 so neither can grow
+ * quietly:
+ *   1. `sawPing`, outside the hello-reply window — a 5 s heartbeat on a clock the capture does not
+ *      control. 2 of 10 sequential runs before plan 0530 P2b. See the `splitPings` block.
+ *   2. `bytes`, wherever the number counts SESSION-LOG BYTES — the log's header line carries `pid`,
+ *      a variable-width decimal, so the same behaviour writes 177 or 178 bytes depending on the
+ *      process table. See the `SESSION_LOG_BYTES` block.
+ *
+ * ── ⛓ AND THE CLASS BOTH OF THOSE BELONG TO (plan 0530 P2c) ──────────────────────────────────
+ * A field whose value depends on WHEN you look rather than on what the code does cannot gate a
+ * refactor. The sweep that found the two above also found, and left in place, several that are
+ * structurally in the class but have margins measured in seconds — each is named at its site with
+ * the margin that protects it, so a future phase that shrinks a margin knows what it is spending.
+ * The list, all in this file: `TIME-DEPENDENT, LEFT IN PLACE` comments. Read them before adding a
+ * probe, a wait, or a request.
  *
  * ── ⛓ WHY THE ENVIRONMENT IS SYNTHETIC ────────────────────────────────────────────────────────
  * The capture points `PRESENTER_PLUGINS_DIR` and `PRESENTER_MODULES_DIR` at throwaway temp trees
@@ -130,6 +141,11 @@ const ASYNC_LOG_TAGS = new Set(['asr', 'queue']);
 const DURATION_KEYS = new Set([
   'ageMs', 'avgApplyMs', 'maxApplyMs', 'lastSeenAgoSec', 'idleMs', 'uptimeMs',
   'elapsedMs', 'sinceMs', 'openMs', 'durationMs', 'ageSec', 'agoMs', 'lastOpAgoMs',
+  // Plan 0530 P2c. `connectedSec` and `eyesOnAgoSec` are `Math.floor((now - <stamp>)/1000)` at
+  // app/server.mjs:3226/3229 — stopwatch readings, and the SIBLINGS of `lastSeenAgoSec`, which was
+  // already here. They read 0/null today only because a probe socket lives ~240 ms; one slow
+  // second and the attendance roster reports 1 with no code change. Blanked by NAME, key kept.
+  'connectedSec', 'eyesOnAgoSec',
 ]);
 
 // ── redaction ─────────────────────────────────────────────────────────────────────────────────
@@ -152,7 +168,12 @@ export function makeRedactor({ paths = [], secrets = [], ports = [] } = {}) {
     out = out.replace(/\b1[6-9]\d{11}\b/g, '<TS>');
     out = out.replace(/W\/"[^"]*"/g, '<ETAG>');
     out = out.replace(/\banon-[a-z0-9]{1,8}\b/g, '<ANON>');
-    out = out.replace(/\bsession-\d{8}T?\d{0,6}-[a-z0-9]{4,8}\b/gi, '<SESSIONLOGID>');
+    // ⚠ `{1,8}`, not `{4,8}` (plan 0530 P2c). The suffix is `Math.random().toString(36).slice(2,8)`
+    // (lib/session-log.mjs:243) — SIX chars almost always, but base-36 of a double that ends in
+    // zeros prints shorter, and a suffix the pattern misses leaks a raw random id straight into the
+    // fingerprint. The `session-<8 digits>T?<digits>-` prefix is what anchors this; the suffix
+    // length never was.
+    out = out.replace(/\bsession-\d{8}T?\d{0,6}-[a-z0-9]{1,8}\b/gi, '<SESSIONLOGID>');
     out = out.replace(/\bsess-[a-z0-9]{5,12}-[a-z0-9]{4,10}\b/gi, '<SESSIONID>');   // api.situation's session id
     out = out.replace(/\bc\d+:[a-z0-9]{4,10}\b/g, '<OPID>');                        // client-minted opId
     out = out.replace(/\b[0-9a-f]{16,}\b/gi, '<HEX>');
@@ -164,7 +185,11 @@ export function makeRedactor({ paths = [], secrets = [], ports = [] } = {}) {
     if (v === null || v === undefined) return v === undefined ? '<UNDEFINED>' : null;
     if (typeof v === 'number') {
       if (portSet.has(v)) return '<PORT>';
-      if (Number.isInteger(v) && v >= 1_600_000_000_000 && v <= 4_000_000_000_000) return '<TS>';
+      // ⚠ `isFinite`, not `isInteger` (plan 0530 P2c). `statSync().mtimeMs` is a FRACTIONAL epoch
+      // (1785708555692.2302), and it reaches the fingerprint through /api/session-log's `sessions`
+      // listing. Under the old integer-only test it was a raw wall clock that would differ on every
+      // single run. Nothing in this fingerprint is a configured number in the 2020–2096 ms band.
+      if (Number.isFinite(v) && v >= 1_600_000_000_000 && v <= 4_000_000_000_000) return '<TS>';
       return v;
     }
     if (typeof v === 'boolean') return v;
@@ -195,14 +220,32 @@ export function makeRedactor({ paths = [], secrets = [], ports = [] } = {}) {
   return { text, value };
 }
 
+/*
+ * ⛓ SESSION-LOG BYTE COUNTS — THE SECOND DELIBERATE EXCLUSION (plan 0530 P2b/P2c).
+ *
+ * The durable log's FIRST line is its provenance header, and it carries `pid` (lib/session-log.mjs
+ * :394) — a variable-width decimal. The same code writes 177 bytes under a five-digit pid and 178
+ * under a six-digit one. That number is the process table talking, not the server, and it is
+ * reached from FOUR directions: `health().sessionLog.stats.bytes`, `sessionLog.read().bytes` and
+ * its `parts[].bytes`, and — once the log has flushed — every byte total in the /api/session-log
+ * response, including the HTTP body's own length.
+ *
+ * ⚖ WHAT IS SURRENDERED, AND WHY IT IS CHEAP: only the SIZE. The log's ENTRIES are compared
+ * verbatim, and /api/session-log is a JSON route whose whole body is compared as parsed `json`, so
+ * `response.bytes` there is the one field that adds nothing except the pid's decimal width. A
+ * change to WHAT is written still goes red; a change to HOW MANY DIGITS the kernel gave this
+ * process does not.
+ *
+ * ⛔ Do NOT reach for this token anywhere else. `response.bytes` is real evidence on the other 103
+ *    routes — it is how a truncated or padded body is caught on the ones served as text. The
+ *    `bytesCompared` FLOOR and the exact `bytesExcluded` CEILING in t0530-p1-03 exist to make a
+ *    quiet widening impossible.
+ */
+export const BYTES_EXCLUDED = '<BYTES:SESSION-LOG-PID-WIDTH>';
+
 /**
  * Replace every `key` found anywhere under `node` with `token`, in place.
- *
- * ⚠ Used for ONE thing: the durable session log's byte totals. Its header line carries `pid`, a
- * variable-width decimal, so the file is 2974 bytes under a four-digit pid and 2975 under a
- * five-digit one — a difference that is the process table talking, not the server. The log's
- * ENTRIES are still compared verbatim, so a change to what is written is still caught; only the
- * size of the file is surrendered.
+ * Used for exactly one key — `bytes`, under the session-log surfaces named in the block above.
  */
 function blankKey(node, key, token) {
   if (Array.isArray(node)) { for (const v of node) blankKey(v, key, token); return node; }
@@ -261,12 +304,22 @@ const FIXTURE_BROKEN_MODULE = { manifest: { title: 'Broken fixture' }, beats: [{
 
 const FIXTURE_SERIES = { manifest: { title: 'Equivalence series' }, moduleIds: ['fixture-a', 'nope'] };
 
-/** Build the throwaway plugin + modules trees. Returns absolute dirs (caller removes them). */
+/**
+ * Build the throwaway plugin + modules trees. Returns absolute dirs (caller removes them).
+ *
+ * ⛓ TWO SESSION-LOG DIRECTORIES, NOT ONE (plan 0530 P2c). The HTTP section PROBES a directory
+ * (`GET /api/session-log` lists everything in it); the session section WRITES one. Sharing a
+ * directory made what the probe saw depend on which section had run — the exact shape of defect
+ * this phase exists to remove, and one that would have come back silently the first time somebody
+ * reordered the sections in `capture()`. They are now isolated by construction rather than by the
+ * order of a literal array.
+ */
 function makeDeployment() {
   const base = mkdtempSync(join(tmpdir(), 'ap-0530-'));
   const pluginsDir = join(base, 'plugins');
   const modulesDir = join(base, 'modules');
   const logDir = join(base, 'session-log');
+  const logDirHttp = join(base, 'session-log-http');
   mkdirSync(join(pluginsDir, 'equivalence-fixture'), { recursive: true });
   writeFileSync(join(pluginsDir, 'equivalence-fixture', 'plugin.json'), JSON.stringify(FIXTURE_PLUGIN, null, 2));
   mkdirSync(modulesDir, { recursive: true });
@@ -274,7 +327,8 @@ function makeDeployment() {
   writeFileSync(join(modulesDir, 'fixture-broken.json'), JSON.stringify(FIXTURE_BROKEN_MODULE, null, 2));
   writeFileSync(join(modulesDir, 'fixture.series.json'), JSON.stringify(FIXTURE_SERIES, null, 2));
   mkdirSync(logDir, { recursive: true });
-  return { base, pluginsDir, modulesDir, logDir };
+  mkdirSync(logDirHttp, { recursive: true });
+  return { base, pluginsDir, modulesDir, logDir, logDirHttp };
 }
 
 // ── http probes ───────────────────────────────────────────────────────────────────────────────
@@ -296,6 +350,14 @@ function request(port, { method = 'GET', path = '/', headers = {}, body = null }
  * The request table. A LOWER BOUND on the routes that exist (brief §4.1) — every arm of the
  * if/else chain at app/server.mjs:540–802 is here, plus the traversal/method/credential edges
  * that the arms themselves branch on.
+ *
+ * ⛔ TIME-DEPENDENT, LEFT IN PLACE — AND A TRAP FOR WHOEVER ADDS THE NEXT ROW. No request here
+ * WRITES a file into MODULES_DIR: `api-module-admin-post` carries no `op` (400 'bad op') and
+ * `api-modules-post-badjson` is rejected before the write. That is load-bearing. A row that DID
+ * write one would trip `fs.watch(MODULES_DIR)` at app/server.mjs:537, whose 150 ms debounce timer
+ * then emits `module changed` into `logs.http` — or does NOT, if the remaining requests finish and
+ * `close()` clears the timer first. Whichever side of 150 ms this box lands on becomes a phantom
+ * difference. If you need such a row, follow it with an explicit settle longer than the debounce.
  */
 const REQUESTS = [
   { name: 'root', path: '/' },
@@ -492,13 +554,65 @@ const MESSAGES = [
   { name: 'no-type', msg: { payload: 1 } },
 ];
 
+/*
+ * ⛓ TIME-DEPENDENT, LEFT IN PLACE — the rest of the plan 0530 P2c sweep, with the margin that
+ * protects each one. None of these has ever flaked; every one of them CAN. They are listed because
+ * "it has not happened yet" is not a property of the code, and because the cheapest way for a later
+ * phase to reintroduce a phantom difference is to shorten a wait without knowing what it was buying.
+ *
+ *  1. `health().connections[].stale` and `attendance().roster[].connected` — both are
+ *     `(now - lastSeen) > STALE_MS`, and STALE_MS is 15 000 ms (app/server.mjs:59). The scripted
+ *     session runs ~2.3 s and a probe socket lives ~240 ms. MARGIN ~6×. Compared.
+ *  2. `raf()` — `peerResponseEdges` and `interactionDensity` pair participant ops that fall within
+ *     a 5 000 ms window (app/server.mjs `raf: ({ windowMs = 5000 })`). The two chat ops it pairs are
+ *     ~1 ms apart. MARGIN ~5 000×. Compared.
+ *  3. `queueEphemeral` — a 66 ms coalescing timer (app/server.mjs:1428) that would reorder a
+ *     broadcast against the next scripted step. It CANNOT fire here: it is reached only for paths
+ *     matching `pointer|laser` (app/state.mjs:32) and no probe writes one. MARGIN: total. If you
+ *     add a pointer op, the 60 ms waits in captureSession are SHORTER than the coalescer.
+ *  4. `voice seg-timeout` — a 3 000 ms open-segment watchdog (app/server.mjs:2272). It never fires
+ *     because a socket close clears it (app/server.mjs:1203) and every probe closes at ~240 ms.
+ *  5. `srvlog.tail(500)` — the log ring is read 500 lines at a time and the busiest section emits
+ *     ~99. A section that ever exceeded 500 would silently lose its OLDEST lines and the loss would
+ *     look like a behaviour change. MARGIN ~5×.
+ *  6. `socketId` (`c1`…`c62`) is a per-server counter, so ONE extra connection renumbers every line
+ *     after it. P2b recorded exactly that shape once in ~24 runs — an unexplained extra `auth`
+ *     entry shifting the arrays after it. NOT reproduced in the 10 runs measured for P2c, so it is
+ *     recorded and not acted on: excluding a socket id would blind the gate to a real change in
+ *     which socket did what.
+ */
+
 // ── the three sections ────────────────────────────────────────────────────────────────────────
+
+/*
+ * ⛓ THE ROUTE THAT READS A DIRECTORY — plan 0530 P2c's founding defect, and the arithmetic.
+ *
+ * `GET /api/session-log` does not report server state; it STATS A DIRECTORY and reads the files in
+ * it. What is in that directory when the probe fires is decided by `lib/session-log.mjs:292` — an
+ * unref'd `setTimeout(flushNow, flushMs = 250)` scheduled when the log's own provenance header is
+ * buffered at construction. The gated server is built, ~22 requests later the probe fires, and
+ * whether 250 ms have passed by then is a property of the box, not of the code.
+ *
+ * ⚠ MEASURED, NOT REASONED: 10 sequential captures on an untouched checkout gave 9 EQUIVALENT and
+ * 1 DIFFERENT, the DIFFERENT run reporting 20 differences and NOTHING ELSE — `sessions` 0 -> 1,
+ * `stats.written` 0 -> 1, `stats.bytes` 0 -> 178, `entries` 0 -> 1, and both response lengths. The
+ * Auditor independently hit the same field at 7/8. It is one defect wearing twenty names.
+ *
+ * ⚖ THE FIX IS DETERMINISM, NOT EXCLUSION, and it BUYS coverage rather than spending it. Flushing
+ * immediately before the probe replaces "whatever the timer did" with "everything appended so far
+ * is on disk" — the header entry is now COMPARED VERBATIM (kind, profile, gated, voiceEnabled),
+ * where the baseline previously froze an empty array. Nothing about the server changes: `flush()`
+ * is the same call the session section already makes, and 0530 §2 forbids touching `app/`.
+ * The only residue is the byte totals, which follow the pid's decimal width — see BYTES_EXCLUDED.
+ */
+const READS_THE_LOG_DIRECTORY = (name) => name.startsWith('api-session-log');
 
 async function captureHttp(dep) {
   const out = {};
   for (const flavour of ['bare', 'gated']) {
     const opts = { port: 0 };
-    if (flavour === 'gated') Object.assign(opts, { controlToken: CONTROL_TOKEN, roleSeed: ROLE_SEED, rolePassword: ROLE_PASSWORD, capSecret: CAP_SECRET, sessionLogDir: dep.logDir });
+    // ⛓ ITS OWN log directory, not the session section's — see makeDeployment.
+    if (flavour === 'gated') Object.assign(opts, { controlToken: CONTROL_TOKEN, roleSeed: ROLE_SEED, rolePassword: ROLE_PASSWORD, capSecret: CAP_SECRET, sessionLogDir: dep.logDirHttp });
     const server = await createServer(opts);
     const port = server.port();
     const redactor = makeRedactor({
@@ -509,11 +623,26 @@ async function captureHttp(dep) {
     try {
       const table = {};
       for (const r of REQUESTS) {
+        // Settle the log's own writes BEFORE any probe that lists the directory. A no-op for the
+        // bare flavour, where the log is disabled and `flush()` returns its status untouched.
+        if (READS_THE_LOG_DIRECTORY(r.name)) await server.sessionLog.flush();
         const bare = await request(port, r);
         table[r.name] = { request: { method: r.method || 'GET', path: r.path, credentialled: false }, response: describeResponse(bare, redactor) };
         if (flavour === 'gated') {
+          if (READS_THE_LOG_DIRECTORY(r.name)) await server.sessionLog.flush();
           const authed = await request(port, { ...r, headers: { ...(r.headers || {}), 'x-control-token': CONTROL_TOKEN } });
           table[r.name + '+token'] = { request: { method: r.method || 'GET', path: r.path, credentialled: true }, response: describeResponse(authed, redactor) };
+        }
+        /*
+         * Byte totals only, and only on the responses that actually CARRY them — the credentialled
+         * 200s, identified by the `stats` block the log payload always has. The ungated 403s on the
+         * same route are `{"error":"forbidden"}` and stay fully compared, byte length included:
+         * their size has nothing to do with a pid, and an exclusion that swallowed them would be
+         * wider than its own justification.
+         */
+        for (const key of [r.name, r.name + '+token']) {
+          const resp = table[key] && table[key].response;
+          if (resp && resp.json && resp.json.stats) blankKey(resp, 'bytes', BYTES_EXCLUDED);
         }
       }
       out[flavour] = table;
@@ -607,7 +736,20 @@ async function captureSession(dep) {
     await wait(60);
     a.send({ t: 'chat', text: 'first line' });
     b.send({ t: 'chat', text: 'second line' });
-    await wait(80);
+    /*
+     * ⛓ 520 ms, NOT 80 (plan 0530 P2c). A chat op enters the turn engine, and the LAST open turn is
+     * closed by `openTurn.timer = setTimeout(closeTurn('settle'), settlingMs)` — 400 ms on the
+     * `wearable` profile (app/profiles.mjs:45). That timer emits `voice turn-complete`
+     * (app/server.mjs:2119), which is the ONE line in the ordered `voice` group that is not
+     * request-driven. At 80 ms the line landed ~460 ms before `close()` cleared the timer; a box
+     * that stalled for half a second anywhere in the remaining script would have DELETED a log line
+     * from the fingerprint. Waiting the settling window out here makes its emission a fact of the
+     * script rather than a race against shutdown, and costs 440 ms of a ~17 s capture.
+     * ⚠ Note the asymmetry with `queue shed`, which rides the SAME timer and is excluded by tag in
+     * ASYNC_LOG_TAGS. `voice` could not be excluded the same way — `seg-start` and `inbox` in that
+     * group ARE behaviour — so this one is bought with a wait instead.
+     */
+    await wait(520);
     server.spotlight('p-a', true);
     server.stationSet('p-b', 1);
     await wait(60);
@@ -624,6 +766,15 @@ async function captureSession(dep) {
     server.clear('all');
     await wait(80);
 
+    /*
+     * ⛓ FLUSH BEFORE MEASURING (plan 0530 P2c). `health().sessionLog.stats.written` counts lines
+     * the flush timer has actually put on disk, so without this it reports "appended minus whatever
+     * was still buffered when the 250 ms timer last fired" — a stopwatch reading wearing a
+     * counter's name. It reads 15 of 15 on this box and would read 13 or 14 on a slower one, with
+     * no code change anywhere. After the flush, `written === appended` is a property of the script.
+     */
+    await server.sessionLog.flush();
+
     // ── section 3 proper: the oplog, verbatim, then the state that produced it.
     out.oplog = redactor.value(plain(server.store.oplogSince(0)));
     out.version = server.store.version();
@@ -632,7 +783,7 @@ async function captureSession(dep) {
     out.presence = redactor.value(plain(server.presence()));
     out.stations = redactor.value(plain(server.stations()));
     out.attendance = redactor.value(plain(server.attendance()));
-    out.health = blankKey(redactor.value(plain(server.health())), 'bytes', '<BYTES>');   // see blankKey: the session log's size follows the pid's width
+    out.health = blankKey(redactor.value(plain(server.health())), 'bytes', BYTES_EXCLUDED);   // the session log's size follows the pid's width — see the BYTES_EXCLUDED block
     out.raf = redactor.value(plain(server.raf()));
     out.telemetry = redactor.value(plain(server.telemetry()));
     // `debugDump.opLog` is `log.view()` — the SAME process-global ring the logs section reads, in
@@ -656,7 +807,7 @@ async function captureSession(dep) {
     await wait(40);
 
     await server.sessionLog.flush();
-    out.sessionLog = blankKey(redactor.value(plain(server.sessionLog.read({ limit: 2000 }))), 'bytes', '<BYTES>');
+    out.sessionLog = blankKey(redactor.value(plain(server.sessionLog.read({ limit: 2000 }))), 'bytes', BYTES_EXCLUDED);
   } finally { await server.close(); }
   return out;
 }
@@ -811,13 +962,34 @@ function countPings(node, acc = { compared: 0, excluded: 0 }) {
   return acc;
 }
 
+/**
+ * Every `bytes` in the fingerprint, split the same way `countPings` splits pings: the population
+ * still COMPARED (a real number — 100+ HTTP body lengths) and the one EXCLUDED because it counts
+ * session-log bytes and therefore the pid's decimal width. Both are asserted in t0530-p1-03: a
+ * floor on the first, an exact equality on the second. See the BYTES_EXCLUDED block.
+ */
+function countBytes(node, acc = { compared: 0, excluded: 0 }) {
+  if (Array.isArray(node)) { for (const v of node) countBytes(v, acc); return acc; }
+  if (node && typeof node === 'object') {
+    for (const [k, v] of Object.entries(node)) {
+      if (k !== 'bytes') { countBytes(v, acc); continue; }
+      if (v === BYTES_EXCLUDED) acc.excluded++;
+      else if (typeof v === 'number') acc.compared++;
+    }
+  }
+  return acc;
+}
+
 /** Rough size of the instrument, so "the harness captured nothing" cannot pass as "no difference". */
 export function coverage(fp) {
   const s = fp && fp.sections ? fp.sections : {};
   const pings = countPings(s);
+  const bytes = countBytes(s);
   return {
     pingsCompared: pings.compared,
     pingsExcluded: pings.excluded,
+    bytesCompared: bytes.compared,
+    bytesExcluded: bytes.excluded,
     httpBare: Object.keys((s.http && s.http.bare) || {}).length,
     httpGated: Object.keys((s.http && s.http.gated) || {}).length,
     welcomes: Object.keys((s.sockets && s.sockets.welcome) || {}).length,

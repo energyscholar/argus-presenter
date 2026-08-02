@@ -1911,9 +1911,9 @@
               "cache-control": "no-store",
               "etag": null
             },
-            "bytes": 525,
+            "bytes": "<BYTES:SESSION-LOG-PID-WIDTH>",
             "json": {
-              "bytes": 0,
+              "bytes": "<BYTES:SESSION-LOG-PID-WIDTH>",
               "caps": {
                 "bufferMaxBytes": 1048576,
                 "flushMs": 250,
@@ -1923,22 +1923,51 @@
               },
               "currentSessionLogId": "<SESSIONLOGID>",
               "enabled": true,
-              "entries": [],
-              "entryParts": [],
+              "entries": [
+                {
+                  "gated": true,
+                  "kind": "session-open",
+                  "pid": "<PID>",
+                  "profile": "wearable",
+                  "sessionLogId": "<SESSIONLOGID>",
+                  "startedAt": "<ISO>",
+                  "voiceEnabled": false
+                }
+              ],
+              "entryParts": [
+                {
+                  "bytes": "<BYTES:SESSION-LOG-PID-WIDTH>",
+                  "partIndex": 0,
+                  "partName": "<SESSIONLOGID>.p0.jsonl"
+                }
+              ],
               "limit": 200,
-              "sessionLogDir": "<PATH:tmp>/session-log",
+              "sessionLogDir": "<PATH:tmp>/session-log-http",
               "sessionLogDirError": null,
               "sessionLogDirSource": "option",
               "sessionLogId": "<SESSIONLOGID>",
-              "sessions": [],
+              "sessions": [
+                {
+                  "bytes": "<BYTES:SESSION-LOG-PID-WIDTH>",
+                  "mtimeMs": "<TS>",
+                  "parts": [
+                    {
+                      "bytes": "<BYTES:SESSION-LOG-PID-WIDTH>",
+                      "partIndex": 0,
+                      "partName": "<SESSIONLOGID>.p0.jsonl"
+                    }
+                  ],
+                  "sessionLogId": "<SESSIONLOGID>"
+                }
+              ],
               "stats": {
                 "appended": 1,
-                "bytes": 0,
+                "bytes": "<BYTES:SESSION-LOG-PID-WIDTH>",
                 "dropped": 0,
                 "failures": 0,
                 "prunedSessions": 0,
                 "rotated": 0,
-                "written": 0
+                "written": 1
               },
               "truncated": false,
               "unparsedLines": 0
@@ -1977,9 +2006,9 @@
               "cache-control": "no-store",
               "etag": null
             },
-            "bytes": 523,
+            "bytes": "<BYTES:SESSION-LOG-PID-WIDTH>",
             "json": {
-              "bytes": 0,
+              "bytes": "<BYTES:SESSION-LOG-PID-WIDTH>",
               "caps": {
                 "bufferMaxBytes": 1048576,
                 "flushMs": 250,
@@ -1989,22 +2018,51 @@
               },
               "currentSessionLogId": "<SESSIONLOGID>",
               "enabled": true,
-              "entries": [],
-              "entryParts": [],
+              "entries": [
+                {
+                  "gated": true,
+                  "kind": "session-open",
+                  "pid": "<PID>",
+                  "profile": "wearable",
+                  "sessionLogId": "<SESSIONLOGID>",
+                  "startedAt": "<ISO>",
+                  "voiceEnabled": false
+                }
+              ],
+              "entryParts": [
+                {
+                  "bytes": "<BYTES:SESSION-LOG-PID-WIDTH>",
+                  "partIndex": 0,
+                  "partName": "<SESSIONLOGID>.p0.jsonl"
+                }
+              ],
               "limit": 5,
-              "sessionLogDir": "<PATH:tmp>/session-log",
+              "sessionLogDir": "<PATH:tmp>/session-log-http",
               "sessionLogDirError": null,
               "sessionLogDirSource": "option",
               "sessionLogId": "<SESSIONLOGID>",
-              "sessions": [],
+              "sessions": [
+                {
+                  "bytes": "<BYTES:SESSION-LOG-PID-WIDTH>",
+                  "mtimeMs": "<TS>",
+                  "parts": [
+                    {
+                      "bytes": "<BYTES:SESSION-LOG-PID-WIDTH>",
+                      "partIndex": 0,
+                      "partName": "<SESSIONLOGID>.p0.jsonl"
+                    }
+                  ],
+                  "sessionLogId": "<SESSIONLOGID>"
+                }
+              ],
               "stats": {
                 "appended": 1,
-                "bytes": 0,
+                "bytes": "<BYTES:SESSION-LOG-PID-WIDTH>",
                 "dropped": 0,
                 "failures": 0,
                 "prunedSessions": 0,
                 "rotated": 0,
-                "written": 0
+                "written": 1
               },
               "truncated": false,
               "unparsedLines": 0
@@ -3169,7 +3227,7 @@
               "roster": [
                 {
                   "connected": true,
-                  "connectedSec": 0,
+                  "connectedSec": "<DURATION>",
                   "display": "idle",
                   "eyesOn": false,
                   "eyesOnAgoSec": null,
@@ -3717,7 +3775,7 @@
           "sessionLogId": "<SESSIONLOGID>",
           "stats": {
             "appended": 15,
-            "bytes": "<BYTES>",
+            "bytes": "<BYTES:SESSION-LOG-PID-WIDTH>",
             "dropped": 0,
             "failures": 0,
             "prunedSessions": 0,
@@ -5269,7 +5327,7 @@
         }
       },
       "sessionLog": {
-        "bytes": "<BYTES>",
+        "bytes": "<BYTES:SESSION-LOG-PID-WIDTH>",
         "entries": [
           {
             "gated": true,
@@ -5518,7 +5576,7 @@
         ],
         "parts": [
           {
-            "bytes": "<BYTES>",
+            "bytes": "<BYTES:SESSION-LOG-PID-WIDTH>",
             "partIndex": 0,
             "partName": "<SESSIONLOGID>.p0.jsonl"
           }
@@ -5690,7 +5748,7 @@
           },
           {
             "fields": {
-              "dir": "<PATH:tmp>/session-log",
+              "dir": "<PATH:tmp>/session-log-http",
               "sessionLogId": "<SESSIONLOGID>",
               "source": "option"
             },

@@ -93,7 +93,7 @@ test('t0530-p1-02 — the comparator DETECTS a difference in every section, and 
 test('t0530-p1-03 — the instrument is not empty: the fingerprint covers every section', async () => {
   const fp = await fingerprint();
   const c = coverage(fp);
-  const floors = { httpBare: 30, httpGated: 60, welcomes: 10, messageProbes: 50, oplogEntries: 10, logLines: 100, logTags: 10, pingsCompared: 10 };
+  const floors = { httpBare: 30, httpGated: 60, welcomes: 10, messageProbes: 50, oplogEntries: 10, logLines: 100, logTags: 10, pingsCompared: 10, bytesCompared: 100 };
   for (const [k, floor] of Object.entries(floors)) {
     expect(c[k] >= floor, `the fingerprint still covers ${k} (>= ${floor})`, `${k}=${c[k]}`);
   }
@@ -115,6 +115,25 @@ test('t0530-p1-03 — the instrument is not empty: the fingerprint covers every 
   expect(c.pingsExcluded === 55,
     'the heartbeat exclusion still covers exactly the 55 post-welcome windows — no more, no fewer',
     `pingsExcluded=${c.pingsExcluded}`);
+
+  /*
+   * ⛓ P2c — THE SESSION-LOG BYTE EXCLUSION MAY NOT GROW EITHER, IN EITHER DIRECTION.
+   *
+   * `/api/session-log` STATS A DIRECTORY, so what it reported depended on whether the log's 250 ms
+   * flush timer had fired yet: 10 sequential captures on an UNCHANGED tree gave 9 EQUIVALENT and 1
+   * DIFFERENT, the odd one reporting 20 differences in that one route and nothing else. The probe is
+   * now flushed before it fires and reads its OWN directory, so the CONTENT is deterministic and
+   * fully compared — including the provenance entry the old baseline froze as an empty array.
+   *
+   * What is left is the arithmetic the harness cannot own: the log's header carries `pid`, so its
+   * byte totals follow the process table's decimal width. Fifteen `bytes` fields count session-log
+   * bytes (12 across the two credentialled /api/session-log reads, 3 in the session section) and
+   * carry the token; the other 100+ are HTTP body lengths and are REAL EVIDENCE. The floor above
+   * stops the exclusion eating them; this ceiling stops it spreading by even one field.
+   */
+  expect(c.bytesExcluded === 15,
+    'the session-log byte exclusion still covers exactly 15 fields — no more, no fewer',
+    `bytesExcluded=${c.bytesExcluded}`);
   expect(!JSON.stringify(fp.sections).includes('<CAPTURE-FAILED>'),
     'no section threw during capture — a thrown section would compare equal to a thrown baseline',
     JSON.stringify(fp.sections).slice(0, 300));
