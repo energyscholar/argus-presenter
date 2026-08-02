@@ -32,6 +32,11 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { WebSocket } from 'ws';
 
+// Plan 0529 P2: the content catalogue is control-credentialed and FAILS CLOSED, so a test
+// that drives the GM panel must run a gated server and hand the page a token — exactly as a
+// real deployment does. Nothing else about these tests changed.
+const CTL_TOKEN = 'ap-test-control-token';
+
 const ID = 'odmod';
 const MARKED = 'behind-the-door';
 
@@ -54,7 +59,7 @@ async function boot() {
   const prev = process.env.PRESENTER_MODULES_DIR;
   process.env.PRESENTER_MODULES_DIR = dir;                       // read once, inside createServer
   let server;
-  try { server = await createServer({ port: 0 }); }
+  try { server = await createServer({ port: 0, controlToken: CTL_TOKEN }); }
   finally { if (prev === undefined) delete process.env.PRESENTER_MODULES_DIR; else process.env.PRESENTER_MODULES_DIR = prev; }
   return { dir, server };
 }
@@ -92,7 +97,7 @@ test('0525 t74 — the GM outline MARKS an on-demand beat, marks nothing else, a
   try {
     const ctl = await browser.newPage();
     ctl.on('pageerror', (e) => console.log('CTRL PAGEERR', e.message));
-    await ctl.goto(`${server.url()}/control?userId=op&role=presenter`, { waitUntil: 'domcontentloaded' });
+    await ctl.goto(`${server.url()}/control?userId=op&role=presenter&token=${CTL_TOKEN}`, { waitUntil: 'domcontentloaded' });
     await until(async () => ctl.evaluate(() => !!(window.__gm && typeof window.__control === 'function')
       && document.getElementById('mod-select').options.length > 1), { label: 'control page ready' });
 

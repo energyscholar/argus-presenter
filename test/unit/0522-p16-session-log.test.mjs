@@ -197,7 +197,11 @@ test('0522 t44 — an UNWRITABLE log directory does not take down the session', 
     const rootish = (typeof process.getuid === 'function' && process.getuid() === 0);
     check('the scratch directory really is unwritable (skip this file as root)', !rootish, rootish ? 'running as root — mode bits do not apply' : '');
 
-    server = await createServer({ port: 0, sessionLogDir: target, rolePassword: 'pw' });
+    // Plan 0529 P2 added `controlToken` here: the liveness probe below reads /api/modules, which is
+    // now control-credentialed. A second credential is not a second scheme — controlToken and the
+    // rolePassword hash are the two carriers of the one control credential — and it keeps the probe
+    // pointed at a route that actually exercises the module registry rather than a trivial one.
+    server = await createServer({ port: 0, sessionLogDir: target, rolePassword: 'pw', controlToken: 'p16-live-probe' });
     const st = server.sessionLog.status();
     check('the server STARTED anyway', typeof server.url() === 'string' && /^http:\/\/127\.0\.0\.1:\d+$/.test(server.url()), server.url());
     if (!rootish) {
@@ -217,7 +221,7 @@ test('0522 t44 — an UNWRITABLE log directory does not take down the session', 
     check('the log counts what it dropped rather than pretending', server.sessionLog.status().stats.dropped >= 51 || rootish, JSON.stringify(server.sessionLog.status().stats));
 
     // The HTTP surface is still alive after the log failure — this is the "server still serves" leg.
-    const r = await get(server.url() + '/api/modules');
+    const r = await get(server.url() + '/api/modules', { 'x-control-token': 'p16-live-probe' });
     check('the http surface still answers', r.status === 200, String(r.status));
     // And close() does not throw on a dead log.
     await server.close(); server = null;

@@ -28,6 +28,11 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { WebSocket } from 'ws';
 
+// Plan 0529 P2: the content catalogue is control-credentialed and FAILS CLOSED, so a test
+// that drives the GM panel must run a gated server and hand the page a token — exactly as a
+// real deployment does. Nothing else about these tests changed.
+const CTL_TOKEN = 'ap-test-control-token';
+
 const A = 'p9a';          // the module that is LIVE in the room
 const B = 'p9b';          // the module the GM last had selected — the sticky default
 const GHOST = 'p9-gone';  // a persisted id with no file behind it
@@ -54,7 +59,7 @@ async function boot() {
   const prev = process.env.PRESENTER_MODULES_DIR;
   process.env.PRESENTER_MODULES_DIR = dir;                       // read once, inside createServer
   let server;
-  try { server = await createServer({ port: 0 }); }
+  try { server = await createServer({ port: 0, controlToken: CTL_TOKEN }); }
   finally { if (prev === undefined) delete process.env.PRESENTER_MODULES_DIR; else process.env.PRESENTER_MODULES_DIR = prev; }
   return { dir, server };
 }
@@ -88,7 +93,7 @@ async function openControl(browser, server, errs) {
   const pg = await browser.newPage();
   pg.setDefaultTimeout(PATIENT);
   pg.on('pageerror', (e) => { if (errs) errs.push(e.message); console.log('CTRL PAGEERR', e.message); });
-  await pg.goto(`${server.url()}/control?userId=op&role=presenter`, { waitUntil: 'domcontentloaded', timeout: PATIENT });
+  await pg.goto(`${server.url()}/control?userId=op&role=presenter&token=${CTL_TOKEN}`, { waitUntil: 'domcontentloaded', timeout: PATIENT });
   await waitFor(pg, () => !!(window.__gm && typeof window.__control === 'function'
     && document.getElementById('mod-select').options.length > 1), 'control page ready with a populated picker');
   return pg;

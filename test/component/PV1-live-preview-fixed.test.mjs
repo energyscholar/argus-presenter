@@ -17,6 +17,11 @@ import { test, check as expect } from '../../harness/test.mjs';
 import { createServer } from '../../app/server.mjs';
 import { launch, until, wait } from '../../harness/multi.mjs';
 
+// Plan 0529 P2: the content catalogue is control-credentialed and FAILS CLOSED, so a test
+// that drives the GM panel must run a gated server and hand the page a token — exactly as a
+// real deployment does. Nothing else about these tests changed.
+const CTL_TOKEN = 'ap-test-control-token';
+
 // Enough beats that the outline column overflows and can be scrolled far down.
 const beats = [];
 for (let i = 1; i <= 80; i++) beats.push({ id: 'b' + i, component: 'card', opts: { title: 'Beat ' + i, promptId: 'p' + i } });
@@ -26,12 +31,12 @@ const MODULE = { title: 'Scroll demo', beats };
 const STEALER = '<!doctype html><body><input id="grab" autofocus><script>document.getElementById("grab").focus();</script></body>';
 
 test('PV1 — Live Preview: autofocus push does not scroll; dock is fixed left of #led-btn', async () => {
-  const server = await createServer({ port: 0 });
+  const server = await createServer({ port: 0, controlToken: CTL_TOKEN });
   const browser = await launch();
   try {
     const ctl = await browser.newPage();
     ctl.on('pageerror', (e) => console.log('CTRL PAGEERR', e.message));
-    await ctl.goto(`${server.url()}/control?userId=op&role=presenter`, { waitUntil: 'domcontentloaded' });
+    await ctl.goto(`${server.url()}/control?userId=op&role=presenter&token=${CTL_TOKEN}`, { waitUntil: 'domcontentloaded' });
     await ctl.waitForFunction(() => typeof window.__control === 'function' && window.__gm && typeof window.__gm.setModule === 'function');
     await until(() => server.presence().some((u) => u.role === 'presenter'), { label: 'presenter connected' });
 

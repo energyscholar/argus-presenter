@@ -12,6 +12,12 @@ import { writeFileSync, unlinkSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
+// Plan 0529 P2: the content catalogue is control-credentialed and FAILS CLOSED, so a test
+// that drives the GM panel must run a gated server and hand the page a token — exactly as a
+// real deployment does. Nothing else about these tests changed.
+const CTL_TOKEN = 'ap-test-control-token';
+const HDR = { headers: { 'x-control-token': CTL_TOKEN } };
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MODULES_DIR = join(__dirname, '..', '..', 'modules');   // default createServer MODULES_DIR
 
@@ -29,13 +35,13 @@ function cleanup() { for (const f of [fileA, fileB, fileS]) { try { unlinkSync(f
 
 test('SCH2 — /api/series lists series; series file is NOT listed as a module', async () => {
   writeFixtures();
-  const server = await createServer({ port: 0 });
+  const server = await createServer({ port: 0, controlToken: CTL_TOKEN });
   try {
-    const series = await (await fetch(server.url() + '/api/series')).json();
+    const series = await (await fetch(server.url() + '/api/series', HDR)).json();
     const s = series.find((x) => x.id === SERIES);
     expect(!!s, '/api/series lists the series', JSON.stringify(series));
     expect(s.title === 'Two-Part Demo' && s.count === 2, 'series carries title + module count', JSON.stringify(s));
-    const mods = await (await fetch(server.url() + '/api/modules')).json();
+    const mods = await (await fetch(server.url() + '/api/modules', HDR)).json();
     expect(mods.some((m) => m.id === MOD_A) && mods.some((m) => m.id === MOD_B), 'modules ARE listed', JSON.stringify(mods.map((m) => m.id)));
     expect(!mods.some((m) => m.id === SERIES || m.id === SERIES + '.series'), 'series file is NOT listed as a module', JSON.stringify(mods.map((m) => m.id)));
   } finally { await server.close(); cleanup(); }
@@ -43,27 +49,27 @@ test('SCH2 — /api/series lists series; series file is NOT listed as a module',
 
 test('SCH2 — /api/series/:id resolves its modules in order (with titles)', async () => {
   writeFixtures();
-  const server = await createServer({ port: 0 });
+  const server = await createServer({ port: 0, controlToken: CTL_TOKEN });
   try {
-    const d = await (await fetch(server.url() + '/api/series/' + SERIES)).json();
+    const d = await (await fetch(server.url() + '/api/series/' + SERIES, HDR)).json();
     expect(d.id === SERIES && Array.isArray(d.series.moduleIds), 'returns series manifest', JSON.stringify(d.series));
     expect(d.modules.length === 2, 'resolves both modules', JSON.stringify(d.modules));
     expect(d.modules[0].id === MOD_A && d.modules[0].title === 'Chapter One', 'module 1 resolved in order with title', JSON.stringify(d.modules[0]));
     expect(d.modules[1].id === MOD_B && d.modules[1].title === 'Chapter Two', 'module 2 resolved in order with title', JSON.stringify(d.modules[1]));
     // A missing moduleId marks {id, error:'missing'} rather than throwing.
     writeFileSync(fileS, JSON.stringify({ manifest: { title: 'T' }, moduleIds: [MOD_A, 'sch2-nope'] }));
-    const d2 = await (await fetch(server.url() + '/api/series/' + SERIES)).json();
+    const d2 = await (await fetch(server.url() + '/api/series/' + SERIES, HDR)).json();
     expect(d2.modules[1].error === 'missing', 'missing module id marked error:missing', JSON.stringify(d2.modules[1]));
   } finally { await server.close(); cleanup(); }
 });
 
 test('SCH2 — GM panel: choosing a series queues module 1; "Next in series" advances to module 2', async () => {
   writeFixtures();
-  const server = await createServer({ port: 0 });
+  const server = await createServer({ port: 0, controlToken: CTL_TOKEN });
   const browser = await launch();
   try {
     const ctl = await browser.newPage();
-    await ctl.goto(`${server.url()}/control?userId=gm&role=presenter`, { waitUntil: 'domcontentloaded' });
+    await ctl.goto(`${server.url()}/control?userId=gm&role=presenter&token=${CTL_TOKEN}`, { waitUntil: 'domcontentloaded' });
     await ctl.waitForFunction(() => window.__gm && typeof window.__gm.series === 'function');
     // Wait for both async registries to populate the selects.
     await ctl.waitForFunction((sid, a, b) => {

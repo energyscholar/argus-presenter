@@ -8,8 +8,13 @@ import { test, expect } from '../../harness/test.mjs';
 import { createServer } from '../../app/server.mjs';
 import { launch, connectUser, until, wait } from '../../harness/multi.mjs';
 
+// Plan 0529 P2: the content catalogue is control-credentialed and FAILS CLOSED, so a test
+// that drives the GM panel must run a gated server and hand the page a token — exactly as a
+// real deployment does. Nothing else about these tests changed.
+const CTL_TOKEN = 'ap-test-control-token';
+
 test('MON2 — view-as thumbnail renders the target user\'s live display', async () => {
-  const server = await createServer({ port: 0 });
+  const server = await createServer({ port: 0, controlToken: CTL_TOKEN });
   const browser = await launch();
   try {
     // Give alice a distinct per-user display, then connect her so byUser has the conn.
@@ -18,7 +23,7 @@ test('MON2 — view-as thumbnail renders the target user\'s live display', async
 
     // Open the GM control panel as a presenter.
     const ctl = await browser.newPage();
-    await ctl.goto(`${server.url()}/control?userId=gm&name=GM&role=presenter`, { waitUntil: 'domcontentloaded' });
+    await ctl.goto(`${server.url()}/control?userId=gm&name=GM&role=presenter&token=${CTL_TOKEN}`, { waitUntil: 'domcontentloaded' });
     await ctl.waitForFunction(() => typeof window.__control === 'function');
     await until(() => server.presence().some((u) => u.role === 'presenter'), { label: 'presenter connected' });
 

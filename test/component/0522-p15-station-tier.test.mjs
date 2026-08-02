@@ -41,6 +41,11 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { WebSocket } from 'ws';
 
+// Plan 0529 P2: the content catalogue is control-credentialed and FAILS CLOSED, so a test
+// that drives the GM panel must run a gated server and hand the page a token — exactly as a
+// real deployment does. Nothing else about these tests changed.
+const CTL_TOKEN = 'ap-test-control-token';
+
 const PATIENT = 60000;
 
 /*
@@ -106,7 +111,7 @@ async function boot({ stations }) {
   process.env.PRESENTER_PLUGINS_DIR = dir;
   process.env.PRESENTER_MODULES_DIR = mods;
   let server;
-  try { server = await createServer({ port: 0 }); }
+  try { server = await createServer({ port: 0, controlToken: CTL_TOKEN }); }
   finally {
     if (prevP === undefined) delete process.env.PRESENTER_PLUGINS_DIR; else process.env.PRESENTER_PLUGINS_DIR = prevP;
     if (prevM === undefined) delete process.env.PRESENTER_MODULES_DIR; else process.env.PRESENTER_MODULES_DIR = prevM;
@@ -125,7 +130,7 @@ async function openControl(browser, server, errs) {
     const orig = WebSocket.prototype.send;
     WebSocket.prototype.send = function (d) { try { window.__sent.push(String(d)); } catch (e) {} return orig.call(this, d); };
   });
-  await pg.goto(`${server.url()}/control?userId=op&role=presenter`, { waitUntil: 'domcontentloaded', timeout: PATIENT });
+  await pg.goto(`${server.url()}/control?userId=op&role=presenter&token=${CTL_TOKEN}`, { waitUntil: 'domcontentloaded', timeout: PATIENT });
   await until(async () => pg.evaluate(() => !!(window.__gm && typeof window.__control === 'function' && document.getElementById('st-tier-wrap'))),
     { label: 'the control page booted', timeout: PATIENT });
   return pg;

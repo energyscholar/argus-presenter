@@ -46,9 +46,9 @@ test('AUT-1 — POST writes a module; it then appears in the registry + fetchabl
     const post = await fetch(server.url() + '/api/modules/' + id, { method: 'POST', headers: { 'content-type': 'application/json', 'x-control-token': TOKEN }, body: JSON.stringify(MODULE) });
     const pj = await post.json();
     expect(post.status === 200 && pj.ok === true && pj.id === id, 'POST → 200 {ok:true}', 'status=' + post.status + ' ' + JSON.stringify(pj));
-    const list = await (await fetch(server.url() + '/api/modules')).json();
+    const list = await (await fetch(server.url() + '/api/modules', { headers: { 'x-control-token': TOKEN } })).json();
     expect(Array.isArray(list) && list.some((m) => m.id === id), 'registry now discovers the written module', JSON.stringify(list.map((m) => m.id)));
-    const one = await (await fetch(server.url() + '/api/modules/' + id)).json();
+    const one = await (await fetch(server.url() + '/api/modules/' + id, { headers: { 'x-control-token': TOKEN } })).json();
     expect(one.module && one.module.title === 'WB test' && one.module.beats.length === 1, 'GET returns the written module', JSON.stringify(one.module && one.module.title));
   } finally { cleanup(id); await server.close(); }
 });

@@ -32,6 +32,11 @@ import { mkdtempSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
+// Plan 0529 P2: the content catalogue is control-credentialed and FAILS CLOSED, so a test
+// that drives the GM panel must run a gated server and hand the page a token — exactly as a
+// real deployment does. Nothing else about these tests changed.
+const CTL_TOKEN = 'ap-test-control-token';
+
 const PATIENT = 30000;
 const ALPHA = 1, BETA = 2;   // stationManifest's two declared stations; BETA is the deployment default
 
@@ -63,7 +68,7 @@ async function boot() {
   process.env.PRESENTER_PLUGINS_DIR = dir;
   process.env.PRESENTER_MODULES_DIR = mods;
   let server;
-  try { server = await createServer({ port: 0 }); }
+  try { server = await createServer({ port: 0, controlToken: CTL_TOKEN }); }
   finally {
     if (prevP === undefined) delete process.env.PRESENTER_PLUGINS_DIR; else process.env.PRESENTER_PLUGINS_DIR = prevP;
     if (prevM === undefined) delete process.env.PRESENTER_MODULES_DIR; else process.env.PRESENTER_MODULES_DIR = prevM;
@@ -123,7 +128,7 @@ test('0522 t36 — the roster row carries mirror + spotlight + set-station, and 
     ctl.setDefaultTimeout(PATIENT);
     const errs = [];
     ctl.on('pageerror', (e) => { errs.push(e.message); console.log('CTRL PAGEERR', e.message); });
-    await ctl.goto(`${server.url()}/control?userId=op&role=presenter`, { waitUntil: 'domcontentloaded', timeout: PATIENT });
+    await ctl.goto(`${server.url()}/control?userId=op&role=presenter&token=${CTL_TOKEN}`, { waitUntil: 'domcontentloaded', timeout: PATIENT });
     await until(async () => ctl.evaluate(() => !!(window.__gm && typeof window.__control === 'function')),
       { label: 'the control panel booted', timeout: PATIENT });
     await until(async () => ctl.evaluate(() => (window.__gm.users() || []).some((u) => u.userId === 'vic') && (window.__gm.stations() || []).length > 0),

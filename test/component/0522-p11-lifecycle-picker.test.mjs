@@ -32,6 +32,11 @@ import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
+// Plan 0529 P2: the content catalogue is control-credentialed and FAILS CLOSED, so a test
+// that drives the GM panel must run a gated server and hand the page a token — exactly as a
+// real deployment does. Nothing else about these tests changed.
+const CTL_TOKEN = 'ap-test-control-token';
+
 const PATIENT = 90000;
 
 // The localStorage key the checkbox owns. Asserted by name: the key IS the contract between one
@@ -67,7 +72,7 @@ async function boot() {
   const prev = process.env.PRESENTER_MODULES_DIR;
   process.env.PRESENTER_MODULES_DIR = dir;                       // read once, inside createServer
   let server;
-  try { server = await createServer({ port: 0 }); }
+  try { server = await createServer({ port: 0, controlToken: CTL_TOKEN }); }
   finally { if (prev === undefined) delete process.env.PRESENTER_MODULES_DIR; else process.env.PRESENTER_MODULES_DIR = prev; }
   return { dir, server };
 }
@@ -76,7 +81,7 @@ async function openControl(browser, server, page) {
   const pg = page || await browser.newPage();
   pg.setDefaultTimeout(PATIENT);
   if (!page) pg.on('pageerror', (e) => console.log('CTRL PAGEERR', e.message));
-  await pg.goto(`${server.url()}/control?userId=op&role=presenter`, { waitUntil: 'domcontentloaded', timeout: PATIENT });
+  await pg.goto(`${server.url()}/control?userId=op&role=presenter&token=${CTL_TOKEN}`, { waitUntil: 'domcontentloaded', timeout: PATIENT });
   await pg.waitForFunction(() => window.__gm && document.getElementById('mod-select').options.length > 1, { timeout: PATIENT });
   return pg;
 }
@@ -146,7 +151,7 @@ test('0522 t28 — nothing is dropped for a missing field: no status, no kind, o
     expect('…the typo is reported rather than swallowed', /unrecognized status/.test(g.tip) && /banana/.test(g.tip), JSON.stringify(g));
 
     // The server half — the same normalisation, visible on the wire.
-    const api = await ctl.evaluate(() => fetch('/api/modules', { cache: 'no-store' }).then((r) => r.json()));
+    const api = await ctl.evaluate((t) => fetch('/api/modules', { cache: 'no-store', headers: { 'x-control-token': t } }).then((r) => r.json()), CTL_TOKEN);
     const row = (id) => api.find((m) => m.id === id);
     expect('/api/modules sends the whole catalogue — the FILTER IS THE CLIENT\'S, not the server\'s',
       api.length === CAT.length, JSON.stringify(api.map((m) => m.id)));
@@ -189,7 +194,7 @@ test('0522 t29 — the picker is grouped by kind, groups A–Z and members A–Z
       JSON.stringify(zulu.members) === JSON.stringify(['Apple Deck', 'Zebra Deck']), JSON.stringify(zulu));
 
     // Kind reaches the client at all — grouping cannot show what the API never sent.
-    const api = await ctl.evaluate(() => fetch('/api/modules', { cache: 'no-store' }).then((r) => r.json()));
+    const api = await ctl.evaluate((t) => fetch('/api/modules', { cache: 'no-store', headers: { 'x-control-token': t } }).then((r) => r.json()), CTL_TOKEN);
     expect('/api/modules carries `kind` for the picker to group by',
       api.find((m) => m.id === 'p11-a').kind === 'zulu', JSON.stringify(api.find((m) => m.id === 'p11-a')));
 

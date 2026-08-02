@@ -27,6 +27,11 @@ import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
+// Plan 0529 P2: the content catalogue is control-credentialed and FAILS CLOSED, so a test
+// that drives the GM panel must run a gated server and hand the page a token — exactly as a
+// real deployment does. Nothing else about these tests changed.
+const CTL_TOKEN = 'ap-test-control-token';
+
 const CLEAN = 'p10-clean';     // valid: 3 beats, 2 sections, a manifest.summary — the t26 subject
 const WARNED = 'p10-warned';   // trips V3-unknown-component ⇒ warn ≥ 1 — the t27 ⚠ subject
 
@@ -53,7 +58,7 @@ async function boot() {
   const prev = process.env.PRESENTER_MODULES_DIR;
   process.env.PRESENTER_MODULES_DIR = dir;                       // read once, inside createServer
   let server;
-  try { server = await createServer({ port: 0 }); }
+  try { server = await createServer({ port: 0, controlToken: CTL_TOKEN }); }
   finally { if (prev === undefined) delete process.env.PRESENTER_MODULES_DIR; else process.env.PRESENTER_MODULES_DIR = prev; }
   return { dir, server };
 }
@@ -62,7 +67,7 @@ async function openControl(browser, server) {
   const pg = await browser.newPage();
   pg.setDefaultTimeout(PATIENT);
   pg.on('pageerror', (e) => console.log('CTRL PAGEERR', e.message));
-  await pg.goto(`${server.url()}/control?userId=op&role=presenter`, { waitUntil: 'domcontentloaded', timeout: PATIENT });
+  await pg.goto(`${server.url()}/control?userId=op&role=presenter&token=${CTL_TOKEN}`, { waitUntil: 'domcontentloaded', timeout: PATIENT });
   await pg.waitForFunction(() => window.__gm && document.getElementById('mod-select').options.length > 1, { timeout: PATIENT });
   return pg;
 }
@@ -96,7 +101,7 @@ test('0522 t26 — the option LABEL is the title; counts and summary live in tit
 
     // The summary reaching the browser at all is P10's server-side half: /api/modules never sent
     // it before, and a tooltip cannot show what the API withholds.
-    const api = await ctl.evaluate(() => fetch('/api/modules', { cache: 'no-store' }).then((r) => r.json()));
+    const api = await ctl.evaluate((t) => fetch('/api/modules', { cache: 'no-store', headers: { 'x-control-token': t } }).then((r) => r.json()), CTL_TOKEN);
     const row = api.find((m) => m.id === CLEAN);
     expect('/api/modules now carries `summary` for the picker to show', row && row.summary === CLEAN_SUMMARY, JSON.stringify(row));
     expect('…and still carries the counts it always did', row && row.beats === 3 && row.sections === 2, JSON.stringify(row));

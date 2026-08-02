@@ -39,7 +39,7 @@ test('AUT-3-save — creator save() writes to the registry; load() re-populates 
     expect(saved && saved.ok === true, 'save() resolved {ok:true}', JSON.stringify(saved));
 
     // The written module is now discoverable in the registry.
-    const list = await (await fetch(server.url() + '/api/modules')).json();
+    const list = await (await fetch(server.url() + '/api/modules', { headers: { 'x-control-token': TOKEN } })).json();
     expect(Array.isArray(list) && list.some((m) => m.id === ID), 'registry now lists the saved id', JSON.stringify(list.map((m) => m.id)));
 
     // Clear the editor, then Load pulls the saved module back for editing.

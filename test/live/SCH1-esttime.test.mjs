@@ -8,6 +8,11 @@ import { test, check as expect } from '../../harness/test.mjs';
 import { createServer } from '../../app/server.mjs';
 import { launch, until } from '../../harness/multi.mjs';
 
+// Plan 0529 P2: the content catalogue is control-credentialed and FAILS CLOSED, so a test
+// that drives the GM panel must run a gated server and hand the page a token — exactly as a
+// real deployment does. Nothing else about these tests changed.
+const CTL_TOKEN = 'ap-test-control-token';
+
 // Section with two beats: 90s + 150s = 240s = "~4 min".
 const TIMED_MODULE = {
   title: 'Timed demo',
@@ -29,14 +34,14 @@ const UNTIMED_MODULE = {
 
 async function openPanel(browser, server) {
   const ctl = await browser.newPage();
-  await ctl.goto(`${server.url()}/control?userId=gm&role=presenter`, { waitUntil: 'domcontentloaded' });
+  await ctl.goto(`${server.url()}/control?userId=gm&role=presenter&token=${CTL_TOKEN}`, { waitUntil: 'domcontentloaded' });
   await ctl.waitForFunction(() => window.__gm && typeof window.__gm.setModule === 'function');
   await until(() => server.presence().some((u) => u.role === 'presenter'), { label: 'presenter connected' });
   return ctl;
 }
 
 test('SCH1 — timed beats roll up a module total and a per-section estimate', async () => {
-  const server = await createServer({ port: 0 });
+  const server = await createServer({ port: 0, controlToken: CTL_TOKEN });
   const browser = await launch();
   try {
     const ctl = await openPanel(browser, server);
@@ -57,7 +62,7 @@ test('SCH1 — timed beats roll up a module total and a per-section estimate', a
 });
 
 test('SCH1 — a module with no durations shows no "~…min" estimate text', async () => {
-  const server = await createServer({ port: 0 });
+  const server = await createServer({ port: 0, controlToken: CTL_TOKEN });
   const browser = await launch();
   try {
     const ctl = await openPanel(browser, server);

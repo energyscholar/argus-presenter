@@ -96,7 +96,16 @@ import { validate, summarize } from '/validate.mjs';   // AUT-3: SINGLE-SOURCE v
 (function(){
   var q = new URLSearchParams(location.search);
   var identity = { userId: q.get('userId')||'gm', userName: q.get('name')||'GM', role: q.get('role')||'presenter' };
-  if(q.get('token')) identity.token = q.get('token');   // AUTH-1: forward control secret to gate the role
+  // AUTH-1: forward control secret to gate the role. Plan 0529 P2 added the localStorage fallback,
+  // the SAME namespace + key control.html persists and manage.html already reads — no second auth
+  // scheme and no second store. Until P2 the fallback did not matter here, because every read on
+  // this page was ungated and only the SAVE needed a credential; now the Load picker needs one too,
+  // and without this a GM who unlocked on /control and then opened /creator would find it empty.
+  var NS='argus-presenter', TOKEN_KEY=NS+':token';
+  if(q.get('token')) identity.token = q.get('token');
+  else { try{ var _t=localStorage.getItem(TOKEN_KEY); if(_t) identity.token=_t; }catch(e){} }
+  // THE one control-credential header helper for this page (parity with control.html's ctlHeaders).
+  function ctlHeaders(base){ var h = base || {}; if(identity.token) h['x-control-token'] = identity.token; return h; }
   var ws=null;
   var beats = [];   // in-memory SOURCE OF TRUTH: [{component,id,promptId,target,optsStr}]
   var COMPONENTS = ['card','choice','crud','dice','form','image','map','narration','poll-results','scene','slider','stepper','svg-reactive','text-input'];
@@ -207,7 +216,7 @@ import { validate, summarize } from '/validate.mjs';   // AUT-3: SINGLE-SOURCE v
   // POST the authored module to the write-back endpoint. AUTH-1: forward the control token when present.
   function saveModule(id){
     if(!ID_RE.test(String(id||''))) return Promise.reject(new Error('bad id'));
-    var headers = Object.assign({'content-type':'application/json'}, identity.token?{'x-control-token':identity.token}:{});
+    var headers = ctlHeaders({'content-type':'application/json'});
     return fetch('/api/modules/'+encodeURIComponent(id), { method:'POST', headers:headers, body:JSON.stringify(getModule()) })
       .then(function(r){ return r.json().then(function(d){ return { status:r.status, ok:r.ok, data:d }; }); })
       .then(function(res){
@@ -222,7 +231,7 @@ import { validate, summarize } from '/validate.mjs';   // AUT-3: SINGLE-SOURCE v
 
   // GET one module and populate the editor for further editing.
   function loadModule(id){
-    return fetch('/api/modules/'+encodeURIComponent(id))
+    return fetch('/api/modules/'+encodeURIComponent(id), { headers: ctlHeaders() })
       .then(function(r){ return r.json().then(function(d){ return { status:r.status, ok:r.ok, data:d }; }); })
       .then(function(res){
         if(res.ok && res.data && res.data.module){ setModule(res.data.module); $('save-id').value=id; showMsg('↺ loaded “'+id+'”','ok'); return res.data; }
@@ -232,7 +241,7 @@ import { validate, summarize } from '/validate.mjs';   // AUT-3: SINGLE-SOURCE v
 
   // Populate the Load <select> from the registry.
   function refreshList(){
-    return fetch('/api/modules').then(function(r){ return r.json(); }).then(function(list){
+    return fetch('/api/modules', { headers: ctlHeaders() }).then(function(r){ return r.json(); }).then(function(list){
       var sel=$('load-select'); var prev=sel.value; sel.innerHTML='';
       (list||[]).forEach(function(m){ var o=el('option'); o.value=m.id; o.textContent=m.id+(m.title?(' — '+m.title):''); sel.appendChild(o); });
       if(prev){ for(var i=0;i<sel.options.length;i++){ if(sel.options[i].value===prev){ sel.value=prev; break; } } }

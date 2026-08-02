@@ -62,7 +62,7 @@ test('0522 t32 — RETIRE MOVES the module into _archive/ and never unlinks it',
 
     // Sanity: the module is in the picker's list before it is retired, so its later absence
     // means something.
-    const listed = await (await fetch(server.url() + '/api/modules')).json();
+    const listed = await (await fetch(server.url() + '/api/modules', { headers: { 'x-control-token': TOKEN } })).json();
     expect('the module is in the picker list to begin with', listed.some((m) => m.id === 'junk'), JSON.stringify(listed.map((m) => m.id)));
 
     const res = await post(server, 'junk', { op: 'retire' });
@@ -79,7 +79,7 @@ test('0522 t32 — RETIRE MOVES the module into _archive/ and never unlinks it',
 
     // §ANNEAL H — the archive needs no exclusion code: the scan is a non-recursive readdir
     // filtered to .json, so a SUBDIRECTORY can never appear as a module.
-    const after = await (await fetch(server.url() + '/api/modules')).json();
+    const after = await (await fetch(server.url() + '/api/modules', { headers: { 'x-control-token': TOKEN } })).json();
     expect('the picker no longer lists it', !after.some((m) => m.id === 'junk'), JSON.stringify(after.map((m) => m.id)));
     expect('and the _archive directory itself is not listed as a module', !after.some((m) => m.id === '_archive'), JSON.stringify(after.map((m) => m.id)));
 
@@ -196,7 +196,7 @@ test('0522 t32b — the curation list shows what the picker hides: broken module
     mkdirSync(join(dir, '_archive'), { recursive: true });
     writeFileSync(join(dir, '_archive', 'already.json'), JSON.stringify(deck('Already Archived')));
 
-    const picker = await (await fetch(server.url() + '/api/modules')).json();
+    const picker = await (await fetch(server.url() + '/api/modules', { headers: { 'x-control-token': TOKEN } })).json();
     expect('the PICKER hides the broken module', !picker.some((m) => m.id === 'broken'), JSON.stringify(picker.map((m) => m.id)));
 
     const d = await (await fetch(server.url() + '/api/module-admin', { headers: { 'x-control-token': TOKEN } })).json();

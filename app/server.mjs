@@ -584,8 +584,16 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       // seed (public by design) and a boolean. The browser computes sha256(seed+password).
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-cache' });
       res.end(JSON.stringify({ gated: !!(CONTROL_TOKEN || ROLE_HASH), seed: ROLE_SEED }));
-    } else if (req.url === '/api/modules') {
+    } else if (req.url === '/api/modules' || req.url.startsWith('/api/modules?')) {
       // Discover available modules (id, title, counts, validation summary) — for the GM panel's SELECT list.
+      // ⚠ The `?...` arm is Plan 0529 P2. This branch was an EXACT match, so `/api/modules?token=…`
+      // matched nothing (it does not start with `/api/modules/` either) and fell through to a bare
+      // 404 — which reads as "no such route" when the truth is "wrong credential". The header
+      // carrier hid it: control.html sends x-control-token, so nothing in the product noticed.
+      // /api/session-log and /api/situation already spell their routes this way; these two did not.
+      // CONTROL-ONLY, FAILS CLOSED — see catalogueReadAuthed.
+      const a = catalogueReadAuthed(req, '/api/modules');
+      if (!a.ok) { res.writeHead(a.code, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: a.error })); return; }
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-cache' });
       res.end(JSON.stringify(listModules()));
     } else if (req.url === '/api/module-admin' || req.url.startsWith('/api/module-admin?')) {
@@ -664,6 +672,10 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         return;
       }
       // Fetch ONE module (full JSON + validation) so the panel can validate-then-load.
+      // Plan 0529 P2 — CONTROL-ONLY, FAILS CLOSED. This is the route that mattered most: the LIST
+      // leaks titles, but this one hands over the whole authored file — every unrevealed beat in it.
+      const ra = catalogueReadAuthed(req, '/api/modules/:id');
+      if (!ra.ok) { res.writeHead(ra.code, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: ra.error })); return; }
       let module = null; try { module = readModuleFile(id); } catch (e) { res.writeHead(400); res.end(JSON.stringify({ error: String(e.message || e) })); return; }
       if (!module) { res.writeHead(404); res.end(JSON.stringify({ error: 'not found' })); return; }
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
@@ -724,13 +736,21 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         truncated: payload.truncated,
         unparsedLines: payload.unparsedLines,
       }));
-    } else if (req.url === '/api/series') {
+    } else if (req.url === '/api/series' || req.url.startsWith('/api/series?')) {
       // Discover available series (id, title, module count) — for the GM panel's series SELECT.
+      // The `?...` arm is Plan 0529 P2 — same exact-match gap as /api/modules above.
+      // CONTROL-ONLY, FAILS CLOSED — see catalogueReadAuthed.
+      const a = catalogueReadAuthed(req, '/api/series');
+      if (!a.ok) { res.writeHead(a.code, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: a.error })); return; }
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-cache' });
       res.end(JSON.stringify(listSeries()));
     } else if (req.url.startsWith('/api/series/')) {
       // Fetch ONE series: its manifest + moduleIds, plus each module resolved to the SAME
       // summary shape as listModules (missing ids → { id, error:'missing' }).
+      // Plan 0529 P2 — CONTROL-ONLY, FAILS CLOSED. A series enumerates the modules a run will walk;
+      // ungated it is a table of contents for material nobody has been shown yet.
+      const sa = catalogueReadAuthed(req, '/api/series/:id');
+      if (!sa.ok) { res.writeHead(sa.code, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: sa.error })); return; }
       const id = decodeURIComponent(req.url.slice(12).split('?')[0]);
       if (!/^[\w.-]+$/.test(id)) { res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'bad id' })); return; }
       let series = null; try { series = readSeriesFile(id); } catch (e) { res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: String(e.message || e) })); return; }
@@ -810,6 +830,38 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       log.warn('session-log', 'read-refused-ungated', { url: '/api/session-log',
         reason: 'no control credential is configured — the session log carries participants\' own words and fails closed (Plan 0522 P16.2 / R6)' });
       return { ok: false, code: 403, error: 'reading the session log requires a control credential, and this server has none configured — start it with a rolePassword (or a controlToken). The log carries the session transcript; it is not served ungated.' };
+    }
+    return httpControlCredentialOk(req) ? { ok: true } : { ok: false, code: 403, error: 'forbidden' };
+  }
+  /*
+   * ── Plan 0529 P2 — READING THE CONTENT CATALOGUE IS ROLE-GATED, AND FAILS CLOSED. ─────────
+   *
+   * THE GAP. The per-beat visibility strip guards the SOCKET path: a participant is sent a beat
+   * only when it is presented, and only the slice their role may see. None of that runs here.
+   * `GET /api/modules/<id>` reads the authored file off disk and returns it whole — every beat,
+   * including the ones the operator has not reached yet and the ones addressed to one seat.
+   * Anyone holding the url got the ending before the room did.
+   *
+   * SAME CREDENTIAL, NO NEW SCHEME. This is the control credential the ws control roles present
+   * on hello (CONTROL_TOKEN or the roleSeed+rolePassword hash), read out of `x-control-token` or
+   * `?token=` — identical to /api/session-log and the module write.
+   *
+   * FAIL CLOSED, like /api/session-log and moduleWriteAuthed, and NOT like /api/situation. The
+   * usual "ungated ⇒ open" rule is right for surfaces whose worst case is a LAN peer seeing the
+   * roster. It is wrong here for the reason P16.1 recorded: presenter_start raises a PUBLIC
+   * ingress, so ungated-and-public is an observed state of this deployment, not a hypothesis.
+   * "No credential configured" is not "no gate to apply" — it is "nothing to verify against",
+   * and the only safe answer to an unverifiable request for unrevealed content is no.
+   *
+   * ⚠ PLAYER-VISIBLE COST: NONE, and that is checkable rather than hopeful. app/presenter.html
+   * fetches exactly ONE api route, /api/auth; beats reach the audience over the socket. The four
+   * routes gated here are read by control.html and creator.html only — both control-role pages.
+   */
+  function catalogueReadAuthed(req, route) {
+    if (!CONTROL_TOKEN && !ROLE_HASH) {
+      log.warn('modules', 'catalogue-read-refused-ungated', { url: route,
+        reason: 'no control credential is configured — the catalogue carries unrevealed authored content and fails closed (Plan 0529 P2)' });
+      return { ok: false, code: 403, error: 'reading the content catalogue requires a control credential, and this server has none configured — start it with a rolePassword (or a controlToken). These files carry material that has not been presented yet; they are not served ungated.' };
     }
     return httpControlCredentialOk(req) ? { ok: true } : { ok: false, code: 403, error: 'forbidden' };
   }

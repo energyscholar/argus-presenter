@@ -489,6 +489,13 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   // unlock token from localStorage (so a refresh stays authed).
   if(q.get('token')) identity.token = q.get('token');
   else { try{ var _t=localStorage.getItem(TOKEN_KEY); if(_t) identity.token=_t; }catch(e){} }
+  // THE one control-credential header helper for this page's HTTP calls. Plan 0529 P2 renamed it
+  // from `dgHeaders` (it was the digest's) and hoisted it here, beside the line that sets
+  // identity.token: it is no longer the digest's private helper but the page's, and a name that
+  // says "digest" on a call that fetches the module catalogue is the naming-canon rule-zero
+  // failure (one name, one meaning). Every gated read on this page goes through it, so there is
+  // exactly one place to change when the credential mechanism does.
+  function ctlHeaders(base){ var h = base || {}; if(identity.token) h['x-control-token'] = identity.token; return h; }
   // AUTH-ROLE (P5.5): is the presenter role gated, and what public salt do we hash with?
   // Default UNGATED on fetch failure. effRole = the server's EFFECTIVE granted role (from welcome).
   var authGated=false, authSeed=NS, effRole=null, attempting=false;
@@ -547,7 +554,7 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   function control(action,args){ lastControl={action:action,args:args||{}}; if(ws&&ws.readyState===1) ws.send(JSON.stringify({t:'control',action:action,args:args||{}})); }
   function connect(){
     ws=new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host);
-    ws.onopen=function(){ $('led2').classList.add('on'); $('statustext').textContent='connected · '+identity.userName; ws.send(JSON.stringify(Object.assign({t:'hello'},identity))); refreshModules(); };   // AUT-2b: re-scan modules on every (re)connect so the <select> never goes stale after a server restart / instance-swap / unlock reconnect
+    ws.onopen=function(){ $('led2').classList.add('on'); $('statustext').textContent='connected · '+identity.userName; ws.send(JSON.stringify(Object.assign({t:'hello'},identity))); refreshModules(); refreshSeries(); };   // AUT-2b: re-scan modules on every (re)connect so the <select> never goes stale after a server restart / instance-swap / unlock reconnect. Plan 0529 P2 added refreshSeries here for the SAME reason, now that it needs a credential: the unlock path (a GM who types the password instead of arriving with ?token=) closes and reopens the socket, and boot's one refreshSeries() already ran and 403'd. Without this the series picker stays empty until a manual reload — the exact blank-panel failure P2 exists to avoid.
     ws.onclose=function(){ $('led2').classList.remove('on'); $('statustext').textContent='disconnected'; renderConfig(); setTimeout(connect,800); };
     ws.onmessage=onMsg;
   }
@@ -595,7 +602,7 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     var liveId = (curBeat>=0 && beats[curBeat]) ? beats[curBeat].id : null;
     var recId  = (recBeat>=0 && beats[recBeat]) ? beats[recBeat].id : null;
     var stale = function(){ $('mod-info').textContent='↻ this module changed on disk — reload FAILED, still showing the previous copy'; };
-    fetch('/api/modules/'+encodeURIComponent(id)+'?fresh='+Date.now(),{cache:'no-store'})
+    fetch('/api/modules/'+encodeURIComponent(id)+'?fresh='+Date.now(),{cache:'no-store',headers:ctlHeaders()})
       .then(function(r){return r.json();})
       .then(function(d){
         if(!d||d.error||!d.module){ stale(); return; }
@@ -750,7 +757,7 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   // needs it, because it may have to REVEAL a module before it can select one.
   function refreshModules(){
     var sel=$('mod-select');
-    return fetch('/api/modules',{cache:'no-store'}).then(function(r){return r.json();}).then(function(list){
+    return fetch('/api/modules',{cache:'no-store',headers:ctlHeaders()}).then(function(r){return r.json();}).then(function(list){
       // ⚠ P9 — `keep` is read HERE, at apply time, not at call time. refreshModules() has four
       // call sites and TWO of them fire at boot (the bottom-of-file kickoff and ws.onopen), so
       // two rebuilds are in flight at once: a snapshot taken at call time is already stale when
@@ -805,7 +812,7 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   $('mod-select').onchange=function(){ var id=this.value; setModPref(id);   // P9: the last module SELECTED is the default next time (cleared when the GM picks the placeholder)
     module=null; curBeat=-1; $('mod-valid').innerHTML=''; $('outline').innerHTML=''; renderNav();
     if(!id){ $('mod-info').textContent=''; $('mod-load').disabled=true; return; }
-    fetch('/api/modules/'+encodeURIComponent(id)).then(function(r){return r.json();}).then(function(d){
+    fetch('/api/modules/'+encodeURIComponent(id),{headers:ctlHeaders()}).then(function(r){return r.json();}).then(function(d){
       if(!d||d.error||!d.module){ $('mod-info').textContent='Error: '+((d&&d.error)||'could not load module'); $('mod-load').disabled=true; return; }
       module=d.module; var v=d.validation||{warn:0,info:0};
       $('mod-info').textContent=(module.manifest&&module.manifest.summary)||'';
@@ -834,7 +841,7 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   // into #mod-select (the GM still clicks Validate&Load per module); "Next in series ▶" advances.
   function refreshSeries(){
     var sel=$('series-select'); if(!sel) return; var keep=sel.value;
-    fetch('/api/series').then(function(r){return r.json();}).then(function(list){
+    fetch('/api/series',{headers:ctlHeaders()}).then(function(r){return r.json();}).then(function(list){
       sel.innerHTML='<option value="">— series —</option>';
       (list||[]).forEach(function(s){ var o=document.createElement('option'); o.value=s.id; o.textContent=s.title+' ('+s.count+')'; sel.appendChild(o); });
       if(keep){ try{ sel.value=keep; }catch(e){} }
@@ -854,7 +861,7 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   }
   $('series-select').onchange=function(){ var id=this.value; seriesModules=[]; seriesPos=-1; updateSeriesNav();
     if(!id) return;
-    fetch('/api/series/'+encodeURIComponent(id)).then(function(r){return r.json();}).then(function(d){
+    fetch('/api/series/'+encodeURIComponent(id),{headers:ctlHeaders()}).then(function(r){return r.json();}).then(function(d){
       if(!d||d.error||!d.series){ return; }
       seriesModules=(d.series.moduleIds||[]).slice(); seriesPos=seriesModules.length?0:-1; updateSeriesNav();
       if(seriesModules.length) queueModule(seriesModules[0]);
@@ -1667,16 +1674,15 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   // works whether voice is on or off (it shows text + session too). NOT the raw transcript firehose.
   var DG_CID = 'ctl-' + Math.random().toString(36).slice(2, 8);   // this page's consumer id (its own cursor)
   var dgLast = null, dgTimer = null, dgInFlight = false;
-  function dgHeaders(base){ var h = base || {}; if(identity.token) h['x-control-token'] = identity.token; return h; }
   function fetchSituation(){
     if(dgInFlight) return Promise.resolve(dgLast); dgInFlight = true;
-    return fetch('/api/situation?c='+encodeURIComponent(DG_CID), { cache:'no-store', headers: dgHeaders() })
+    return fetch('/api/situation?c='+encodeURIComponent(DG_CID), { cache:'no-store', headers: ctlHeaders() })
       .then(function(r){ return r.ok ? r.json() : null; })
       .then(function(sit){ dgInFlight = false; if(sit){ dgLast = sit; renderDigest(sit); } return sit; })
       .catch(function(){ dgInFlight = false; return null; });
   }
   function workOp(id, op, extra){
-    return fetch('/api/work', { method:'POST', headers: dgHeaders({'content-type':'application/json'}),
+    return fetch('/api/work', { method:'POST', headers: ctlHeaders({'content-type':'application/json'}),
       body: JSON.stringify(Object.assign({ id:id, op:op }, extra||{})) })
       .then(function(r){ return r.json().catch(function(){return null;}); })
       .then(function(d){ fetchSituation(); return d; })      // refresh both faces' shared view immediately

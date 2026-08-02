@@ -38,6 +38,11 @@ import { mkdirSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
+// Plan 0529 P2: the content catalogue is control-credentialed and FAILS CLOSED, so a test
+// that drives the GM panel must run a gated server and hand the page a token — exactly as a
+// real deployment does. Nothing else about these tests changed.
+const CTL_TOKEN = 'ap-test-control-token';
+
 const SHOTS = join(dirname(fileURLToPath(import.meta.url)), '..', 'screenshots');
 mkdirSync(SHOTS, { recursive: true });
 
@@ -59,7 +64,7 @@ async function openControl(browser, server, { width, height } = {}) {
   const pg = await browser.newPage();
   pg.on('pageerror', (e) => console.log('CTRL PAGEERR', e.message));
   if (width && height) await pg.setViewport({ width, height });
-  await pg.goto(`${server.url()}/control?userId=op&role=presenter&name=Op`, { waitUntil: 'domcontentloaded' });
+  await pg.goto(`${server.url()}/control?userId=op&role=presenter&name=Op&token=${CTL_TOKEN}`, { waitUntil: 'domcontentloaded' });
   await pg.waitForFunction(() => typeof window.__control === 'function' && !!document.getElementById('adhoc-details'));
   await until(() => server.presence().some((u) => u.role === 'presenter'), { label: 'presenter connected' });
   return pg;
@@ -103,7 +108,7 @@ function comparePixels(pg, aB64, bB64) {
 }
 
 test('0522 t49 — Ad-hoc push is CLOSED on first load, and every accordion remembers what the operator did', async () => {
-  const server = await createServer({ port: 0 });
+  const server = await createServer({ port: 0, controlToken: CTL_TOKEN });
   const browser = await launch();
   try {
     const ctl = await openControl(browser, server);
@@ -169,7 +174,7 @@ test('0522 t49 — Ad-hoc push is CLOSED on first load, and every accordion reme
 });
 
 test('0522 t50 — at 1366×768 the enlarged dock does not overlap in-flow content (asserted from a screenshot)', async () => {
-  const server = await createServer({ port: 0 });
+  const server = await createServer({ port: 0, controlToken: CTL_TOKEN });
   const browser = await launch();
   try {
     const ctl = await openControl(browser, server, { width: 1366, height: 768 });

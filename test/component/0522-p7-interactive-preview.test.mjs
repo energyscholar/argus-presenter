@@ -39,6 +39,11 @@ import { readFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
+// Plan 0529 P2: the content catalogue is control-credentialed and FAILS CLOSED, so a test
+// that drives the GM panel must run a gated server and hand the page a token — exactly as a
+// real deployment does. Nothing else about these tests changed.
+const CTL_TOKEN = 'ap-test-control-token';
+
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 const FORM_OPTS = {
@@ -53,7 +58,7 @@ const FORM_OPTS = {
 async function openControl(browser, server, userId = 'op') {
   const pg = await browser.newPage();
   pg.on('pageerror', (e) => console.log('CTRL PAGEERR', e.message));
-  await pg.goto(`${server.url()}/control?userId=${userId}&role=presenter`, { waitUntil: 'domcontentloaded' });
+  await pg.goto(`${server.url()}/control?userId=${userId}&role=presenter&token=${CTL_TOKEN}`, { waitUntil: 'domcontentloaded' });
   await pg.waitForFunction(() => window.__gm && typeof window.__gm.setFullscreen === 'function' && !!document.getElementById('btn-pvfull'));
   await until(() => server.presence().some((u) => u.role === 'presenter'), { label: 'control page connected' });
   return pg;
@@ -93,7 +98,7 @@ const isFullscreen = (pg) => pg.evaluate(() => window.__gm.fullscreen());
 /* ─────────────────────────────────────────────────────────────────────────────────────────── */
 
 test('0522 t17 — full screen renders the preview at scale(1), and GO is out of reach (R9)', async () => {
-  const server = await createServer({ port: 0 });
+  const server = await createServer({ port: 0, controlToken: CTL_TOKEN });
   const browser = await launch();
   try {
     const pg = await openControl(browser, server);
@@ -153,7 +158,7 @@ test('0522 t17 — full screen renders the preview at scale(1), and GO is out of
 });
 
 test('0522 t18 — ESC exits full screen, the Press ESC hint is present and barely visible (R8)', async () => {
-  const server = await createServer({ port: 0 });
+  const server = await createServer({ port: 0, controlToken: CTL_TOKEN });
   const browser = await launch();
   try {
     const pg = await openControl(browser, server);
@@ -203,7 +208,7 @@ test('0522 t18 — ESC exits full screen, the Press ESC hint is present and bare
 });
 
 test('0522 t19 — a degrade during full-screen interaction does not destroy the operator\'s input', async () => {
-  const server = await createServer({ port: 0 });
+  const server = await createServer({ port: 0, controlToken: CTL_TOKEN });
   const browser = await launch();
   try {
     const pg = await openControl(browser, server);
@@ -271,7 +276,7 @@ test('0522 t19 — a degrade during full-screen interaction does not destroy the
 });
 
 test('0522 t20 — the preview sandbox is allow-scripts and ONLY allow-scripts (no allow-forms)', async () => {
-  const server = await createServer({ port: 0 });
+  const server = await createServer({ port: 0, controlToken: CTL_TOKEN });
   const browser = await launch();
   try {
     const pg = await openControl(browser, server);
@@ -300,7 +305,7 @@ test('0522 t20 — the preview sandbox is allow-scripts and ONLY allow-scripts (
 });
 
 test('0522 t21 — a form submitted in the PREVIEW produces no answer on the real channel; the drop is recorded', async () => {
-  const server = await createServer({ port: 0 });
+  const server = await createServer({ port: 0, controlToken: CTL_TOKEN });
   const browser = await launch();
   const PID = 'p7-t21';
   try {
@@ -360,7 +365,7 @@ test('0522 t21 — a form submitted in the PREVIEW produces no answer on the rea
 });
 
 test('0522 t22 — a shared form is INTERACTIVE in the docked preview: real click, real typing, handler fires (R7)', async () => {
-  const server = await createServer({ port: 0 });
+  const server = await createServer({ port: 0, controlToken: CTL_TOKEN });
   const browser = await launch();
   try {
     const pg = await openControl(browser, server);

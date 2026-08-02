@@ -37,6 +37,11 @@ import { mkdirSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
+// Plan 0529 P2: the content catalogue is control-credentialed and FAILS CLOSED, so a test
+// that drives the GM panel must run a gated server and hand the page a token — exactly as a
+// real deployment does. Nothing else about these tests changed.
+const CTL_TOKEN = 'ap-test-control-token';
+
 const SHOTS = join(dirname(fileURLToPath(import.meta.url)), '..', 'screenshots');
 mkdirSync(SHOTS, { recursive: true });
 
@@ -62,7 +67,7 @@ function participant(url, hello) {
 async function openControl(browser, server, deck = DECK) {
   const pg = await browser.newPage();
   pg.on('pageerror', (e) => console.log('CTRL PAGEERR', e.message));
-  await pg.goto(`${server.url()}/control?userId=op&role=presenter`, { waitUntil: 'domcontentloaded' });
+  await pg.goto(`${server.url()}/control?userId=op&role=presenter&token=${CTL_TOKEN}`, { waitUntil: 'domcontentloaded' });
   await pg.waitForFunction(() => window.__gm && typeof window.__control === 'function' && !!document.getElementById('pvstate'));
   server.setModule(JSON.parse(JSON.stringify(deck)));
   await pg.evaluate((d) => window.__gm.setModule(d), deck);
@@ -112,7 +117,7 @@ async function shot(pg, selector, file) {
 }
 
 test('0522 t14 — STAGED and LIVE are visually distinct in a SCREENSHOT, by pixels not by class name', async () => {
-  const server = await createServer({ port: 0 });
+  const server = await createServer({ port: 0, controlToken: CTL_TOKEN });
   const browser = await launch();
   let player = null;
   try {
@@ -184,7 +189,7 @@ test('0522 t14 — STAGED and LIVE are visually distinct in a SCREENSHOT, by pix
 });
 
 test('0522 t15 — a send that reaches NOBODY says so, as loudly as one that works (I5)', async () => {
-  const server = await createServer({ port: 0 });
+  const server = await createServer({ port: 0, controlToken: CTL_TOKEN });
   const browser = await launch();
   let seated = null;
   try {
@@ -257,7 +262,7 @@ test('0522 t15 — a send that reaches NOBODY says so, as loudly as one that wor
 });
 
 test('0522 t16 — staging over an UNSENT beat never discards it silently, and GO still ships (I4/I5)', async () => {
-  const server = await createServer({ port: 0 });
+  const server = await createServer({ port: 0, controlToken: CTL_TOKEN });
   const browser = await launch();
   let player = null;
   try {
@@ -319,7 +324,7 @@ test('0522 t16 — staging over an UNSENT beat never discards it silently, and G
 });
 
 test('0522 R4 — the control-page click STAGES; ▶ Start and auto-follow still PUBLISH', async () => {
-  const server = await createServer({ port: 0 });
+  const server = await createServer({ port: 0, controlToken: CTL_TOKEN });
   const browser = await launch();
   let player = null;
   try {

@@ -7,13 +7,18 @@ import { createServer } from '../../app/server.mjs';
 import { launch, connectUser, contentFrame, waitContentFrame, until } from '../../harness/multi.mjs';
 import { WebSocket } from 'ws';
 
+// Plan 0529 P2: the content catalogue is control-credentialed and FAILS CLOSED, so a test
+// that drives the GM panel must run a gated server and hand the page a token — exactly as a
+// real deployment does. Nothing else about these tests changed.
+const CTL_TOKEN = 'ap-test-control-token';
+
 test('P1 — /control pushes a component + opens a poll (same store effect as MCP)', async () => {
-  const server = await createServer({ port: 0 });
+  const server = await createServer({ port: 0, controlToken: CTL_TOKEN });
   const browser = await launch();
   try {
     const part = await connectUser(browser, server, { userId: 'u1', userName: 'U1' });
     const ctl = await browser.newPage();
-    await ctl.goto(`${server.url()}/control?userId=gm&name=GM`, { waitUntil: 'domcontentloaded' });
+    await ctl.goto(`${server.url()}/control?userId=gm&name=GM&token=${CTL_TOKEN}`, { waitUntil: 'domcontentloaded' });
     await ctl.waitForFunction(() => typeof window.__control === 'function');
     await until(() => server.presence().some((u) => u.role === 'presenter'), { label: 'presenter connected' });
 
@@ -45,7 +50,7 @@ test('P1 — /control pushes a component + opens a poll (same store effect as MC
 });
 
 test('P1 — a non-presenter control message is ignored (S1/S2)', async () => {
-  const server = await createServer({ port: 0 });
+  const server = await createServer({ port: 0, controlToken: CTL_TOKEN });
   const url = server.url().replace('http', 'ws');
   try {
     const ws = new WebSocket(url);

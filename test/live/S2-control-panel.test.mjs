@@ -7,6 +7,8 @@ import { createServer } from '../../app/server.mjs';
 import { launch, connectUser, contentFrame, until, wait } from '../../harness/multi.mjs';
 import { WebSocket } from 'ws';
 
+const CTL_TOKEN = 'ap-test-control-token';
+
 const helloAndCollect = (url, hello) => new Promise((res) => {
   const ws = new WebSocket(url); const presence = [];
   ws.on('message', (b) => { try { const m = JSON.parse(b); if (m.t === 'presence') presence.push(m.users); } catch {} });
@@ -52,13 +54,17 @@ test('delivery — showBeat routes by target and merges promptId into opts', asy
 });
 
 test('registry — /api/modules discovers + validates; path-traversal id is rejected', async () => {
-  const server = await createServer({ port: 0 });
+  // Plan 0529 P2: the catalogue reads are control-credentialed and fail closed, so this fixture
+  // runs a gated server and presents the token. What the test ASSERTS is unchanged — discovery,
+  // validation, and the path-traversal refusal — only the caller is now credentialed.
+  const server = await createServer({ port: 0, controlToken: CTL_TOKEN });
+  const hdr = { 'x-control-token': CTL_TOKEN };
   try {
-    const list = await (await fetch(server.url() + '/api/modules')).json();
+    const list = await (await fetch(server.url() + '/api/modules', { headers: hdr })).json();
     expect(Array.isArray(list) && list.some((m) => m.id === 'demo-welcome'), 'discovers demo module', JSON.stringify(list));
-    const one = await (await fetch(server.url() + '/api/modules/demo-welcome')).json();
+    const one = await (await fetch(server.url() + '/api/modules/demo-welcome', { headers: hdr })).json();
     expect(one.module && one.module.beats.length > 0 && !!one.validation, 'fetch one returns module+validation', JSON.stringify(one.validation));
-    const bad = await fetch(server.url() + '/api/modules/' + encodeURIComponent('../server'));
+    const bad = await fetch(server.url() + '/api/modules/' + encodeURIComponent('../server'), { headers: hdr });
     expect(bad.status === 404, 'path-traversal id rejected (404)', 'status=' + bad.status);
   } finally { await server.close(); }
 });

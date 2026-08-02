@@ -14,6 +14,11 @@ import { join } from 'path';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 
+// Plan 0529 P2: the content catalogue is control-credentialed and FAILS CLOSED, so a test
+// that drives the GM panel must run a gated server and hand the page a token — exactly as a
+// real deployment does. Nothing else about these tests changed.
+const CTL_TOKEN = 'ap-test-control-token';
+
 test('CLI-1 — /api/modules lists real modules only; parses-but-not-a-module is filtered out', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'argus-mods-'));
   // (a) a real content module (has beats) and (b) garbage JSON that parses but has no beats.
@@ -27,8 +32,8 @@ test('CLI-1 — /api/modules lists real modules only; parses-but-not-a-module is
   process.env.PRESENTER_MODULES_DIR = dir;   // MODULES_DIR is read at createServer time
   let server;
   try {
-    server = await createServer({ port: 0 });
-    const res = await fetch(server.url() + '/api/modules');
+    server = await createServer({ port: 0, controlToken: CTL_TOKEN });
+    const res = await fetch(server.url() + '/api/modules', { headers: { 'x-control-token': CTL_TOKEN } });
     const list = await res.json();
     const ids = list.map((m) => m.id);
     expect(ids.includes('goodmod'), 'real module appears', JSON.stringify(ids));

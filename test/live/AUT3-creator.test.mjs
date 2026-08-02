@@ -10,13 +10,18 @@ import { test, expect } from '../../harness/test.mjs';
 import { createServer } from '../../app/server.mjs';
 import { launch, until } from '../../harness/multi.mjs';
 
+// Plan 0529 P2: the content catalogue is control-credentialed and FAILS CLOSED, so a test
+// that drives the GM panel must run a gated server and hand the page a token — exactly as a
+// real deployment does. Nothing else about these tests changed.
+const CTL_TOKEN = 'ap-test-control-token';
+
 test('AUT-3 — creator: in-browser validate flags unknown component + preview renders via the server pipeline', async () => {
-  const server = await createServer({ port: 0 });
+  const server = await createServer({ port: 0, controlToken: CTL_TOKEN });
   const browser = await launch();
   try {
     const page = await browser.newPage();
     page.on('pageerror', (e) => console.log('PAGEERR creator', e.message));
-    await page.goto(`${server.url()}/creator?userId=gm&role=presenter`, { waitUntil: 'domcontentloaded' });
+    await page.goto(`${server.url()}/creator?userId=gm&role=presenter&token=${CTL_TOKEN}`, { waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => window.__creator && typeof window.__creator.validate === 'function');
     await until(() => server.presence().some((u) => u.role === 'presenter'), { label: 'creator presenter connected' });
 

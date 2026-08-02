@@ -8,6 +8,11 @@ import { test, check as expect } from '../../harness/test.mjs';
 import { createServer } from '../../app/server.mjs';
 import { launch, until } from '../../harness/multi.mjs';
 
+// Plan 0529 P2: the content catalogue is control-credentialed and FAILS CLOSED, so a test
+// that drives the GM panel must run a gated server and hand the page a token — exactly as a
+// real deployment does. Nothing else about these tests changed.
+const CTL_TOKEN = 'ap-test-control-token';
+
 const SEQ_MODULE = {
   title: 'Seq demo',
   sections: [{ id: 's', title: 'S', sequences: [
@@ -32,14 +37,14 @@ const PLAIN_MODULE = {
 
 async function openPanel(browser, server) {
   const ctl = await browser.newPage();
-  await ctl.goto(`${server.url()}/control?userId=gm&role=presenter`, { waitUntil: 'domcontentloaded' });
+  await ctl.goto(`${server.url()}/control?userId=gm&role=presenter&token=${CTL_TOKEN}`, { waitUntil: 'domcontentloaded' });
   await ctl.waitForFunction(() => window.__gm && typeof window.__gm.setModule === 'function');
   await until(() => server.presence().some((u) => u.role === 'presenter'), { label: 'presenter connected' });
   return ctl;
 }
 
 test('DEL3 — a section with sequences renders a nested .seq tier with all beats split across sequences', async () => {
-  const server = await createServer({ port: 0 });
+  const server = await createServer({ port: 0, controlToken: CTL_TOKEN });
   const browser = await launch();
   try {
     const ctl = await openPanel(browser, server);
@@ -61,7 +66,7 @@ test('DEL3 — a section with sequences renders a nested .seq tier with all beat
 });
 
 test('DEL3 — a plain section (no sequences) still renders beats directly (no .seq)', async () => {
-  const server = await createServer({ port: 0 });
+  const server = await createServer({ port: 0, controlToken: CTL_TOKEN });
   const browser = await launch();
   try {
     const ctl = await openPanel(browser, server);

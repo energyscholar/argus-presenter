@@ -28,6 +28,11 @@ import { createServer } from '../../app/server.mjs';
 import { launch, until, wait } from '../../harness/multi.mjs';
 import { WebSocket } from 'ws';
 
+// Plan 0529 P2: the content catalogue is control-credentialed and FAILS CLOSED, so a test
+// that drives the GM panel must run a gated server and hand the page a token — exactly as a
+// real deployment does. Nothing else about these tests changed.
+const CTL_TOKEN = 'ap-test-control-token';
+
 /** Raw seated participant — `connectUser` cannot pass a stationUID, and stations are the point. */
 function participant(url, hello) {
   return new Promise((resolve) => {
@@ -41,7 +46,7 @@ function participant(url, hello) {
 async function openControl(browser, server) {
   const pg = await browser.newPage();
   pg.on('pageerror', (e) => console.log('CTRL PAGEERR', e.message));
-  await pg.goto(`${server.url()}/control?userId=op&role=presenter`, { waitUntil: 'domcontentloaded' });
+  await pg.goto(`${server.url()}/control?userId=op&role=presenter&token=${CTL_TOKEN}`, { waitUntil: 'domcontentloaded' });
   await pg.waitForFunction(() => window.__gm && typeof window.__control === 'function' && !!document.getElementById('target-select'));
   return pg;
 }
@@ -49,7 +54,7 @@ async function openControl(browser, server) {
 const PILOT = 2, GUNNER = 5;
 
 test('0522 t12/t13 — the dropdown lists ALL + people + declared stations, and defaults to ALL on every load', async () => {
-  const server = await createServer({ port: 0 });
+  const server = await createServer({ port: 0, controlToken: CTL_TOKEN });
   const browser = await launch();
   let alice = null, bob = null;
   try {
@@ -136,7 +141,7 @@ test('0522 t12/t13 — the dropdown lists ALL + people + declared stations, and 
 });
 
 test('0522 t11 — picking a target changes what the PREVIEW renders, stations included', async () => {
-  const server = await createServer({ port: 0 });
+  const server = await createServer({ port: 0, controlToken: CTL_TOKEN });
   const browser = await launch();
   let alice = null, bob = null;
   try {
@@ -190,7 +195,7 @@ test('0522 t11 — picking a target changes what the PREVIEW renders, stations i
 });
 
 test('0522 t10 — the control page ships every beat with `targets` as an ARRAY, default included', async () => {
-  const server = await createServer({ port: 0 });
+  const server = await createServer({ port: 0, controlToken: CTL_TOKEN });
   const browser = await launch();
   let alice = null;
   try {

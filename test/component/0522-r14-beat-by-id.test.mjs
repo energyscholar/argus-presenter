@@ -33,6 +33,11 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { WebSocket } from 'ws';
 
+// Plan 0529 P2: the content catalogue is control-credentialed and FAILS CLOSED, so a test
+// that drives the GM panel must run a gated server and hand the page a token — exactly as a
+// real deployment does. Nothing else about these tests changed.
+const CTL_TOKEN = 'ap-test-control-token';
+
 const ID = 'r14mod';
 
 // ⛔ modules/*.json is gitignored and has no version history. Every fixture here lives in a temp
@@ -50,7 +55,7 @@ async function boot(beatIds) {
   const prev = process.env.PRESENTER_MODULES_DIR;
   process.env.PRESENTER_MODULES_DIR = dir;                       // read once, inside createServer
   let server;
-  try { server = await createServer({ port: 0 }); }
+  try { server = await createServer({ port: 0, controlToken: CTL_TOKEN }); }
   finally { if (prev === undefined) delete process.env.PRESENTER_MODULES_DIR; else process.env.PRESENTER_MODULES_DIR = prev; }
   return { dir, file, server };
 }
@@ -58,7 +63,7 @@ async function boot(beatIds) {
 async function openControl(browser, server) {
   const pg = await browser.newPage();
   pg.on('pageerror', (e) => console.log('CTRL PAGEERR', e.message));
-  await pg.goto(`${server.url()}/control?userId=op&role=presenter`, { waitUntil: 'domcontentloaded' });
+  await pg.goto(`${server.url()}/control?userId=op&role=presenter&token=${CTL_TOKEN}`, { waitUntil: 'domcontentloaded' });
   await pg.waitForFunction(() => window.__gm && typeof window.__control === 'function'
     && document.getElementById('mod-select').options.length > 1);
   return pg;
