@@ -2809,51 +2809,51 @@
       "messages": {
         "result@participant": {
           "frames": [],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "op@participant": {
           "frames": [],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "op-denied-path@participant": {
           "frames": [],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "op-invalid@participant": {
           "frames": [],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "control-clear@participant": {
           "frames": [],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "control-unknown@participant": {
           "frames": [],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "control-spotlight@participant": {
           "frames": [],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "pong@participant": {
           "frames": [],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "telemetry@participant": {
           "frames": [],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "request-poll@participant": {
           "frames": [],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "ack@participant": {
           "frames": [],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "ack-unknown@participant": {
           "frames": [],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "station-select@participant": {
           "frames": [
@@ -2863,7 +2863,7 @@
               "t": "station"
             }
           ],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "station-select-unknown@participant": {
           "frames": [
@@ -2873,7 +2873,7 @@
               "t": "station"
             }
           ],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "station-default@participant": {
           "frames": [
@@ -2886,7 +2886,7 @@
               "t": "station"
             }
           ],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "station-show@participant": {
           "frames": [
@@ -2896,7 +2896,7 @@
               "t": "station"
             }
           ],
-          "sawPing": true
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "station-share@participant": {
           "frames": [
@@ -2906,7 +2906,7 @@
               "t": "station"
             }
           ],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "attendance-request@participant": {
           "frames": [
@@ -2929,23 +2929,23 @@
               "t": "attendance"
             }
           ],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "voice-seg-start@participant": {
           "frames": [],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "voice-seg-end@participant": {
           "frames": [],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "voicedbg@participant": {
           "frames": [],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "chat@participant": {
           "frames": [],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "pvs-subscribe@participant": {
           "frames": [
@@ -2956,23 +2956,23 @@
               "t": "pvs_subscribed"
             }
           ],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "pvs-unsubscribe@participant": {
           "frames": [],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "unknown-type@participant": {
           "frames": [],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "no-type@participant": {
           "frames": [],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "result@presenter": {
           "frames": [],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "op@presenter": {
           "frames": [
@@ -2989,7 +2989,7 @@
               "t": "host"
             }
           ],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "op-denied-path@presenter": {
           "frames": [
@@ -3006,11 +3006,11 @@
               "t": "host"
             }
           ],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "op-invalid@presenter": {
           "frames": [],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "control-clear@presenter": {
           "frames": [
@@ -3044,11 +3044,11 @@
               "t": "clear"
             }
           ],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "control-unknown@presenter": {
           "frames": [],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "control-spotlight@presenter": {
           "frames": [
@@ -3088,27 +3088,27 @@
               "userId": "u-part"
             }
           ],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "pong@presenter": {
           "frames": [],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "telemetry@presenter": {
           "frames": [],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "request-poll@presenter": {
           "frames": [],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "ack@presenter": {
           "frames": [],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "ack-unknown@presenter": {
           "frames": [],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "station-select@presenter": {
           "frames": [
@@ -3118,7 +3118,7 @@
               "t": "station"
             }
           ],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "station-select-unknown@presenter": {
           "frames": [
@@ -3128,7 +3128,7 @@
               "t": "station"
             }
           ],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "station-default@presenter": {
           "frames": [
@@ -3141,7 +3141,7 @@
               "t": "station"
             }
           ],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "station-show@presenter": {
           "frames": [
@@ -3151,7 +3151,7 @@
               "t": "station"
             }
           ],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "station-share@presenter": {
           "frames": [
@@ -3161,7 +3161,7 @@
               "t": "station"
             }
           ],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "attendance-request@presenter": {
           "frames": [
@@ -3191,19 +3191,19 @@
               "t": "attendance"
             }
           ],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "voice-seg-start@presenter": {
           "frames": [],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "voice-seg-end@presenter": {
           "frames": [],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "voicedbg@presenter": {
           "frames": [],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "chat@presenter": {
           "frames": [
@@ -3224,7 +3224,7 @@
               "t": "host"
             }
           ],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "pvs-subscribe@presenter": {
           "frames": [
@@ -3256,19 +3256,19 @@
               "voiceIdConf": null
             }
           ],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "pvs-unsubscribe@presenter": {
           "frames": [],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "unknown-type@presenter": {
           "frames": [],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "no-type@presenter": {
           "frames": [],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         }
       }
     },
@@ -5079,7 +5079,7 @@
               "t": "clear"
             }
           ],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "a": {
           "frames": [
@@ -5172,7 +5172,7 @@
               "t": "clear"
             }
           ],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         },
         "b": {
           "frames": [
@@ -5265,7 +5265,7 @@
               "t": "clear"
             }
           ],
-          "sawPing": false
+          "sawPing": "<PING:HEARTBEAT-NONDETERMINISTIC>"
         }
       },
       "sessionLog": {

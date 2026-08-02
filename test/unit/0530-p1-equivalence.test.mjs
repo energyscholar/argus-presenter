@@ -93,10 +93,28 @@ test('t0530-p1-02 — the comparator DETECTS a difference in every section, and 
 test('t0530-p1-03 — the instrument is not empty: the fingerprint covers every section', async () => {
   const fp = await fingerprint();
   const c = coverage(fp);
-  const floors = { httpBare: 30, httpGated: 60, welcomes: 10, messageProbes: 50, oplogEntries: 10, logLines: 100, logTags: 10 };
+  const floors = { httpBare: 30, httpGated: 60, welcomes: 10, messageProbes: 50, oplogEntries: 10, logLines: 100, logTags: 10, pingsCompared: 10 };
   for (const [k, floor] of Object.entries(floors)) {
     expect(c[k] >= floor, `the fingerprint still covers ${k} (>= ${floor})`, `${k}=${c[k]}`);
   }
+
+  /*
+   * ⛓ P2b — THE HEARTBEAT EXCLUSION MAY NOT GROW, IN EITHER DIRECTION.
+   *
+   * `sawPing` was a false-positive generator: 10 sequential `verify` runs on an UNCHANGED tree gave
+   * 8 EQUIVALENT and 2 DIFFERENT, both DIFFERENT runs reporting only
+   * `sections.sockets.messages.station-show@participant.sawPing`. The cause is the 5 s heartbeat
+   * (`app/server.mjs:763`) landing on whichever probe socket happens to be open. It is now compared
+   * ONLY in the hello-reply window, where the ping is the deterministic X3 RTT probe, and carries a
+   * named token in the 55 post-welcome windows (52 message probes + 3 session sockets).
+   *
+   * The `pingsCompared` floor above stops the exclusion eating the 10 windows that DO carry
+   * behaviour. This ceiling stops it spreading to windows nobody has justified. A phase that trips
+   * either has widened a deliberate loss of evidence: justify it in the splitPings block, or undo it.
+   */
+  expect(c.pingsExcluded === 55,
+    'the heartbeat exclusion still covers exactly the 55 post-welcome windows — no more, no fewer',
+    `pingsExcluded=${c.pingsExcluded}`);
   expect(!JSON.stringify(fp.sections).includes('<CAPTURE-FAILED>'),
     'no section threw during capture — a thrown section would compare equal to a thrown baseline',
     JSON.stringify(fp.sections).slice(0, 300));

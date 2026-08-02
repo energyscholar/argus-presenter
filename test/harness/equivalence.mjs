@@ -37,6 +37,13 @@
  * and never deletes the key. A dropped field hides a change; a tokenised one still proves the
  * field was there, still proves its type, and still goes red if it disappears.
  *
+ * ⚠ EXACTLY ONE FIELD IS EXCLUDED FROM COMPARISON RATHER THAN MERELY TOKENISED: `sawPing`, and only
+ * outside the hello-reply window. A 5 s heartbeat on a clock the capture does not control made this
+ * gate report DIFFERENT ON AN UNCHANGED TREE — measured at 2 of 10 sequential runs before plan 0530
+ * P2b. Nothing else is excluded, and the exclusion is fenced by a floor and a ceiling in
+ * t0530-p1-03 so it cannot grow quietly. The reasoning, the two ping emitters, and the arithmetic
+ * are all in the `splitPings` block below.
+ *
  * ── ⛓ WHY THE ENVIRONMENT IS SYNTHETIC ────────────────────────────────────────────────────────
  * The capture points `PRESENTER_PLUGINS_DIR` and `PRESENTER_MODULES_DIR` at throwaway temp trees
  * it builds itself. Three reasons, all of which would otherwise make the baseline a lie:
@@ -380,14 +387,63 @@ async function openSocket(url, hello) {
 }
 
 /*
- * Heartbeat pings arrive every PING_MS on a wall clock the capture does not control, so their
- * COUNT is timing, not behaviour. They are separated out and counted as a presence flag rather
- * than dropped — "a ping happened" stays visible, "how many" does not become flakiness.
+ * ⛓ PINGS — AND WHY `sawPing` IS COMPARED IN ONE WINDOW ONLY (plan 0530 P2b).
+ *
+ * The server emits `{t:'ping'}` from exactly TWO places (enumerated from `app/server.mjs`, not from
+ * a plan — a cited site is a lower bound), and only one of them is on a request path:
+ *
+ *   1. `app/server.mjs:1014` — the X3 RTT probe, sent SYNCHRONOUSLY inside the `hello` handler
+ *      right after the welcome frame. Deterministic, behavioural, and worth a gate: if a refactor
+ *      drops it, every `welcome.*.sawPing` goes true -> false and the comparator names the field.
+ *   2. `app/server.mjs:763` — the heartbeat, `setInterval(..., PING_MS = 5000)`, started when the
+ *      SERVER is constructed. It fires on a wall clock the capture does not control, at whichever
+ *      socket happens to be open when the tick lands.
+ *
+ * ⚠ EMITTER 2 MADE THIS FIELD A FALSE-POSITIVE GENERATOR, AND THAT WAS OBSERVED, NOT REASONED.
+ * A message probe lives ~240 ms — a 90 ms welcome settle that `c.take()` DISCARDS, then a 110 ms
+ * recorded reply window, then a 40 ms gap with no socket at all — and the message phase runs ~12.5 s,
+ * so ~2 heartbeat ticks land in it and only ~46% of a tick's landing zone is inside a recorded
+ * window. WHICH probe catches one is pure scheduling. The baseline caught `station-show@participant`;
+ * plan 0530 P2 twice saw a different probe catch it ON AN UNCHANGED TREE, and P2b then measured it:
+ * 10 sequential `verify` runs on an untouched checkout gave 8 EQUIVALENT and 2 DIFFERENT, both
+ * DIFFERENT runs reporting this field and nothing else. On an idle box the fixed waits make the
+ * tick land in the same slot; under load the accumulated drift moves it.
+ * `sections.session.frames.*` has the SAME defect with a thinner margin — its recorded window is
+ * ~1.3 s against a 5 s first tick, so it is deterministic only while the box stays fast.
+ *
+ * ⛓ THE RULE: `sawPing` is compared ONLY in the window that contains the hello reply, because that
+ * is the only window in which a ping is behaviour. Everywhere else the welcome has already been
+ * consumed, the heartbeat is the ONLY possible source, and the field therefore carries ZERO
+ * information about the server — excluding it there costs no coverage whatsoever. (Nothing else is
+ * surrendered: pings are stripped from `frames` in every window either way, so the recorded frame
+ * lists are unaffected.) Seven more 0530 phases lean on this gate; a gate that can say DIFFERENT
+ * without a code change certifies nothing.
+ *
+ * The exclusion is LOUD, not quiet: the key stays present and carries a named token, so a field
+ * that VANISHES still goes red, and `coverage()` counts both populations separately so the
+ * exclusion cannot grow later without a test going red — see t0530-p1-03's `pingsCompared` floor
+ * and `pingsExcluded` ceiling.
+ *
+ * ⛔ Do NOT widen PINGS_EXCLUDED to the welcome window. That deletes the only gate on the X3 RTT
+ *    probe, and the `pingsCompared` floor exists precisely to stop it.
+ * ⛔ Do NOT "fix" this by making PING_MS configurable. That is an `app/` behaviour change, which
+ *    plan 0530 §2 forbids outright.
  */
-function splitPings(frames, redactor) {
+export const PING_EXCLUDED = '<PING:HEARTBEAT-NONDETERMINISTIC>';
+const PINGS_COMPARED = 'pings-compared';   // the hello-reply window: the X3 RTT probe is deterministic
+const PINGS_EXCLUDED = 'pings-excluded';   // any post-welcome window: only the 5 s heartbeat can land
+
+/** Split ping frames out of a recorded window. `mode` is MANDATORY — see the block above. */
+function splitPings(frames, redactor, mode) {
+  if (mode !== PINGS_COMPARED && mode !== PINGS_EXCLUDED) {
+    throw new Error(`splitPings: the ping mode must be stated explicitly at the call site, got ${String(mode)}`);
+  }
   const kept = [], pings = [];
   for (const f of frames) (f && f.t === 'ping' ? pings : kept).push(f);
-  return { frames: kept.map((f) => redactor.value(plain(f))), sawPing: pings.length > 0 };
+  return {
+    frames: kept.map((f) => redactor.value(plain(f))),
+    sawPing: mode === PINGS_EXCLUDED ? PING_EXCLUDED : pings.length > 0,
+  };
 }
 
 const HELLOS = [
@@ -479,7 +535,9 @@ async function captureSockets(dep) {
   try {
     for (const h of HELLOS) {
       const c = await openSocket(url, h.hello);
-      out.welcome[h.name] = splitPings(c.take(), redactor);
+      // The ONLY window whose ping is behaviour: this take() still holds the hello reply, and the
+      // X3 RTT probe rides in it. Compared.
+      out.welcome[h.name] = splitPings(c.take(), redactor, PINGS_COMPARED);
       c.close();
       await wait(20);
     }
@@ -500,7 +558,9 @@ async function captureSockets(dep) {
         c.take();                       // discard the welcome; it is fingerprinted above
         c.send(m.msg);
         await wait(SETTLE_REPLY);
-        out.messages[`${m.name}@${role}`] = splitPings(c.take(), redactor);
+        // The welcome (and its RTT probe) was discarded four lines up, so a ping here can ONLY be
+        // the 5 s heartbeat. Excluded — it is the clock talking, not the server.
+        out.messages[`${m.name}@${role}`] = splitPings(c.take(), redactor, PINGS_EXCLUDED);
         c.close();
         await wait(40);
       }
@@ -584,10 +644,13 @@ async function captureSession(dep) {
     out.getAck = redactor.value(plain(server.getAck('ready')));
     out.getPoll = redactor.value(plain(server.getPoll('poll-1')));
     out.displayState = redactor.value(plain(server.getModule() ? JSON.parse(server._displayStateForTest()) : null));
+    // Same story as the message probes: these three take()s are post-welcome, so only the heartbeat
+    // can reach them. It has never landed here (the scripted session is ~1.3 s against a 5 s first
+    // tick) — which is exactly the point: this window is one slow box away from flaking too.
     out.frames = {
-      gm: splitPings(gm.take(), redactor),
-      a: splitPings(a.take(), redactor),
-      b: splitPings(b.take(), redactor),
+      gm: splitPings(gm.take(), redactor, PINGS_EXCLUDED),
+      a: splitPings(a.take(), redactor, PINGS_EXCLUDED),
+      b: splitPings(b.take(), redactor, PINGS_EXCLUDED),
     };
     gm.close(); a.close(); b.close();
     await wait(40);
@@ -731,10 +794,30 @@ export function writeBaseline(fp) {
   return BASELINE_PATH;
 }
 
+/**
+ * Every `sawPing` in the fingerprint, split into the population that is COMPARED (a real boolean,
+ * the hello-reply windows) and the one that is EXCLUDED (the heartbeat token). Counting both is the
+ * whole guard against a deliberate loss of evidence quietly spreading: see the splitPings block.
+ */
+function countPings(node, acc = { compared: 0, excluded: 0 }) {
+  if (Array.isArray(node)) { for (const v of node) countPings(v, acc); return acc; }
+  if (node && typeof node === 'object') {
+    for (const [k, v] of Object.entries(node)) {
+      if (k !== 'sawPing') { countPings(v, acc); continue; }
+      if (v === PING_EXCLUDED) acc.excluded++;
+      else if (typeof v === 'boolean') acc.compared++;
+    }
+  }
+  return acc;
+}
+
 /** Rough size of the instrument, so "the harness captured nothing" cannot pass as "no difference". */
 export function coverage(fp) {
   const s = fp && fp.sections ? fp.sections : {};
+  const pings = countPings(s);
   return {
+    pingsCompared: pings.compared,
+    pingsExcluded: pings.excluded,
     httpBare: Object.keys((s.http && s.http.bare) || {}).length,
     httpGated: Object.keys((s.http && s.http.gated) || {}).length,
     welcomes: Object.keys((s.sockets && s.sockets.welcome) || {}).length,
