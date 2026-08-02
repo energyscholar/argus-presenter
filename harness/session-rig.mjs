@@ -767,6 +767,60 @@ export async function runSession(spec, { shotDir = SHOT_DIR, keepOpen = false } 
     };
 
     /*
+     * ── ⛓ THE CATALOGUE GATE, ASKED BY A PARTICIPANT'S OWN BROWSER (plan 0529 G1) ────────────
+     *
+     * `/api/modules` and `/api/series` serve the AUTHORED file WHOLE — every beat, including the
+     * ones the operator has not reached yet and the ones addressed to a single seat. Plan 0529 P2
+     * gated all four on the control credential. Unit tests prove the HANDLER refuses; they cannot
+     * prove that a refusal is what a real client actually gets, mid-session, on the very server a
+     * control page is reading the same routes from at the same moment.
+     *
+     * So the probe is issued FROM INSIDE a seated participant's page — same origin, same browser,
+     * whatever that page really carries — and its credentialed twin from the control page. A
+     * refusal with no positive control beside it proves only that something went wrong somewhere.
+     *
+     * ⚠ 403 AND 404 ARE DIFFERENT ANSWERS, and telling them apart is the point. Plan 0529 P2 found
+     * these routes had been EXACT-match, so `?token=` fell through to a bare 404 that reads as a
+     * pass to anyone checking for "not 200". `<seriesRoute>` here names a series that does not
+     * exist in the staged directory, so the credentialed answer to it SHOULD be 404 — which is
+     * exactly what distinguishes "the gate let me through and there was nothing there" from "the
+     * gate refused me". Both statuses are recorded; neither is asserted here.
+     *
+     * Recorded, never asserted (this file observes). Routes and a spec-supplied marker only.
+     */
+    const catalogueRoutes = ['/api/modules', `/api/modules/${moduleId}`, '/api/series', `/api/series/${moduleId}`];
+    const leakMarker = B.finale || B.staged || moduleId;   // a beat id that only the AUTHORED file carries
+    const probeCatalogue = async (page, token, what) => {
+      try {
+        return await bounded(page.evaluate(async (arg) => {
+          const out = [];
+          for (const route of arg.routes) {
+            try {
+              const res = await fetch(route, { headers: arg.token ? { 'x-control-token': arg.token } : {} });
+              let body = '';
+              try { body = await res.text(); } catch (e) { /* a body we cannot read is still a status */ }
+              out.push({ route, status: res.status, bytes: body.length, carriesMarker: body.indexOf(arg.marker) >= 0 });
+            } catch (e) { out.push({ route, status: 0, error: String((e && e.message) || e) }); }
+          }
+          return out;
+        }, { routes: catalogueRoutes, token, marker: leakMarker }), 20000, what);
+      } catch (e) { return [{ route: '(probe failed)', status: null, error: String((e && e.message) || e) }]; }
+    };
+    report.findings.catalogueGate = {
+      routes: catalogueRoutes,
+      marker: leakMarker,
+      fromParticipant: await probeCatalogue(players[0].page, null, 'catalogue probe — participant, no credential'),
+      fromControl: await probeCatalogue(ctl.page, CONTROL_TOKEN, 'catalogue probe — control, credentialed'),
+      // What the GM's own desk actually holds at this point in the session, read off the panel
+      // rather than off a status code: a gate that blanked the operator would show here.
+      gmDesk: await ev(ctl.page, () => ({
+        modOptions: (document.getElementById('mod-select') || { options: [] }).options.length,
+        seriesOptions: (document.getElementById('series-select') || { options: [] }).options.length,
+        loadedBeats: ((window.__gm.module() || {}).beats || []).length,
+      }), undefined, 'gm desk catalogue state'),
+    };
+
+    /*
      * ── THE HEALTH PAYLOAD, TAKEN WHILE THE SESSION IS STILL UP ──────────────────────────────
      * `server.health()` is verbatim what the `presenter_health` MCP tool returns — its handler is
      * `need().health({ staleMs })` and nothing else — so this is that tool's answer, observed on a
