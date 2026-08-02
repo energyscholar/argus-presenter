@@ -34,7 +34,7 @@ import { createSessionLog, resolveSessionLogDir } from '../lib/session-log.mjs';
 import { selectProfile, DEFAULT_PROFILE } from './profiles.mjs';
 import { createHeuristicSummarizer } from './summarizer.mjs';
 import { buildDigest } from './digests.mjs';
-import { deriveTrust, annotate as annotateTrust } from './untrusted.mjs';
+import { deriveTrust, annotate as annotateTrust, sanitizeUntrusted, sanitizeFields, TRUST } from './untrusted.mjs';
 import { renderMarkdown } from './markdown.mjs';
 
 // X6 resilience caps.
@@ -999,8 +999,13 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     }
     return rows;
   }
+  // Plan 0529 P1 — `safeId` neutralizes the fence sentinels in a participant-authored identity string
+  // at SERVE time, leaving every other value (null, a number) exactly as it was. Both identity columns
+  // are typed by the person in the row, and presence() is read by AGENTS as well as by control pages:
+  // presenter_stations().seats and presenter_debug().presence are both built from it.
+  const safeId = (s) => (typeof s === 'string' ? sanitizeUntrusted(s) : s);
   function presence() {
-    return byPerson((c) => ({ userId: c.userId, userName: c.userName, role: c.role, eyesOn: c.eyesOn || null, stationUid: seatStationUid(c.userId) }))
+    return byPerson((c) => ({ userId: safeId(c.userId), userName: safeId(c.userName), role: c.role, eyesOn: c.eyesOn || null, stationUid: seatStationUid(c.userId) }))
       .filter((r) => r.userId);
   }
   // Full presence (incl. IP + socketId + current display id) pushed to CONTROL roles only, for the GM user list.
@@ -1023,7 +1028,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       // Plan 0522 P14 — the spotlight grant rides the roster so the row's toggle shows the state
       // the server actually holds. A toggle that renders from its own last click is a toggle that
       // lies after any reconnect, and the grant already survives one (welcome.spotlightGranted).
-      return { userId: c.userId, userName: c.userName, role: c.role, ip: c.ip, socketId: c.id, lastSeen: c.lastSeen, display: displayIdFor(c), eyesOn: c.eyesOn || null,
+      return { userId: safeId(c.userId), userName: safeId(c.userName), role: c.role, ip: c.ip, socketId: c.id, lastSeen: c.lastSeen, display: displayIdFor(c), eyesOn: c.eyesOn || null,
         stationUid: uid, stationLabel: st ? st.stationLabel : null, spotlightGranted: spotlight.has(c.userId), socketIds: [c.id], ips: [c.ip || null] };
     });
     for (const [ws, c] of conns.entries()) if (c.role === 'presenter' || c.role === 'ai') send(ws, { t: 'presence', users });
@@ -2064,7 +2069,15 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     (poll.spec.options || []).forEach((o) => { counts[o.value] = 0; });
     const votes = store.get('polls/' + promptId + '/votes') || {};   // store is authoritative (D2)
     let count = 0;
-    for (const uid of Object.keys(votes)) { const v = votes[uid]; counts[v] = (counts[v] || 0) + 1; count++; }
+    // Plan 0529 P1: a vote VALUE is participant-supplied and is not validated against the poll's
+    // declared options, so it becomes a tally KEY verbatim — and the tally is spread into
+    // situation.polls, an agent-facing payload. Only strings are neutralized: coercing a non-string
+    // here would change the key a number/boolean vote has always produced.
+    for (const uid of Object.keys(votes)) {
+      const raw = votes[uid];
+      const v = typeof raw === 'string' ? sanitizeUntrusted(raw) : raw;
+      counts[v] = (counts[v] || 0) + 1; count++;
+    }
     return { tally: counts, count, spec: poll.spec };
   }
 
@@ -2188,11 +2201,18 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   const settledTurnRing = [];
   // Feed ONE freshly-settled turn to the staging ring; the evicted head (now older than recent-N) folds
   // into the rolling summary. Incremental + non-blocking (pure in-memory), called from closeTurn.
+  // Plan 0529 P1 — SANITIZE ON THE WAY IN. Everything else in the working set is fenced at SERVE time,
+  // but the summarizer FOLDS what it is given into an opaque rolling headline: once a live sentinel is
+  // inside `summary.text` there is no per-speaker boundary left to fence it at. A turn that scrolls out
+  // of the 20-turn window would otherwise re-enter the agent's context RAW through the summarizer, so
+  // the text and the display name are neutralized here, at the one door into that state.
   function stageSettledTurn(t) {
-    const text = t.items.map((i) => i.text || '').join(' ').trim();
+    const text = sanitizeUntrusted(t.items.map((i) => i.text || '').join(' ').trim());
     if (!text) return;                         // an empty turn carries no continuity — skip
     const last = t.items[t.items.length - 1];
-    settledTurnRing.push({ turnId: t.turnId, userId: t.userId, userName: (last && last.userName) || null, text });
+    const userName = (last && last.userName) != null ? sanitizeUntrusted(last.userName) : null;
+    const userId = t.userId != null ? sanitizeUntrusted(t.userId) : t.userId;
+    settledTurnRing.push({ turnId: t.turnId, userId, userName, text });
     while (settledTurnRing.length > RECENT_TURNS_N) summarizer.onTurnAged(settledTurnRing.shift());
   }
 
@@ -2572,6 +2592,16 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     return b ? { index: currentBeat, total, component: b.component, id: b.id != null ? b.id : null, title: contentModule.title }
       : { index: currentBeat, total, title: contentModule.title };
   }
+  // Plan 0529 P1 — the rolling summary, served as DELIMITED DATA. `speakers[].userName` is the one
+  // participant-authored string the summarizer keeps structurally (the rest is folded into `text`), so
+  // it is neutralized here before the whole snapshot is annotated at PARTICIPANT trust. The annotation
+  // is additive: turnsSummarized / sheddedFolded / speakers / text keep their shapes, and `text` gains
+  // the guarantee it never had — it cannot carry a live closing marker.
+  function fencedSummary() {
+    const v = summarizer.view();
+    const speakers = (v.speakers || []).map((sp) => sanitizeFields(sp, ['userName']));
+    return annotateTrust({ ...v, speakers }, TRUST.PARTICIPANT);
+  }
   // Assemble the BOUNDED working set for `consumerId`, advancing that consumer's server-held cursor.
   function buildSituation(consumerId, recentN = RECENT_TURNS_N) {
     const last = situationCursors.get(consumerId) || 0;
@@ -2625,7 +2655,10 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       // Plan 0473 P7: the ROLLING SUMMARY — continuity for context OLDER than the recent-N turns.
       // A PRECOMPUTED, BOUNDED snapshot (this is a pure read of the incrementally-maintained state via
       // the F-10 seam — it NEVER blocks/computes on read), so a long session is not amnesiac past N.
-      summary: summarizer.view(),
+      // Plan 0529 P1: served FENCED, like recentTurns above. A summary is a FLATTENED MIXTURE of many
+      // speakers' words with the per-speaker trust boundary already dissolved — untrusted BY
+      // CONSTRUCTION — so it carries the label even though stageSettledTurn already neutralized it.
+      summary: fencedSummary(),
       // Plan 0473 P4: the WORK QUEUE — the judgment items, prioritized + bounded (aged/expired pruned).
       queue,
       // Plan 0473 P6: one-glance overload awareness. `floor` = the current proactive floor state
@@ -2816,8 +2849,11 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     if (it.cluster) {
       v.cluster = true;
       v.count = it.count || 1;
-      v.askers = (it.askers || []).slice(0, 50);
-      if (it.variants) v.variants = it.variants.slice(0, 50);
+      // Plan 0529 P1: `askers` are participant identities and `variants` are VERBATIM participant
+      // utterances — a second copy of exactly the content the fence exists for, on a nested field
+      // that annotateTrust below only reaches at the top level. Neutralized here.
+      v.askers = (it.askers || []).slice(0, 50).map((a) => sanitizeFields(a, ['userId', 'userName']));
+      if (it.variants) v.variants = it.variants.slice(0, 50).map((x) => (typeof x === 'string' ? sanitizeUntrusted(x) : x));
     }
     // Plan 0473 P9: delimit-as-data — fence the item's text when its speaker is untrusted (participant/
     // guest), flag guests. Additive to the item shape; a self/controller item passes through unfenced.
@@ -3368,11 +3404,16 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       const now = Date.now();
       const control = (viewerRole === 'presenter' || viewerRole === 'ai');
       // TODO(opsec): throttle control-view info exposure — see plan 0466 §Deferred
+      // Plan 0529 P1: the roster is an AGENT-FACING payload (situation.roster, presenter_attendance)
+      // and its two identity columns are typed by the person in the row. They never went through the
+      // fence — a hostile display name emitted a live closing marker straight into the agent's context
+      // from a row that carries no `text` at all. Neutralized on EVERY row (a control row's name is
+      // typed too), so the redacted participant view below inherits it.
       const full = [...conns.values()].map((c) => {
         const lastSeenAgoSec = Math.floor((now - (c.lastSeen || now)) / 1000);
         const connected = (now - (c.lastSeen || 0)) <= staleMs;   // green when fresh, red when stale
         return {
-          userId: c.userId, userName: c.userName, role: c.role,
+          userId: safeId(c.userId), userName: safeId(c.userName), role: c.role,
           connected,                                             // <-- the dot (liveness only)
           connectedSec: Math.floor((now - (c.connectedAt || now)) / 1000),
           lastSeenAgoSec,                                        // replaces old idle number; bounded, never epoch-sized
@@ -3401,7 +3442,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     // in group C); opLog = the structured-log tail (role-redacted for the viewer).
     debugDump: (role = 'presenter') => ({
       presence: presence(),
-      connections: [...conns.values()].map((c) => ({ socketId: c.id, userId: c.userId, role: c.role })),
+      connections: [...conns.values()].map((c) => ({ socketId: c.id, userId: safeId(c.userId), role: c.role })),   // 0529 P1: a self-asserted id is participant-authored
       state: { polls: [...polls.entries()].map(([id, p]) => ({ promptId: id, open: p.open, ...tally(id) })), store: store.snapshot({ role, userId: null }).state },
       version: store.version(),
       opLog: log.view(role, { max: 50 }),
