@@ -13,7 +13,14 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 test('A5 — manifest lists ALL core components, each with fields', () => {
   const m = generateManifest();
   const names = coreComponentNames();
-  expect(m.components.length === names.length && names.length === 14, 'all 14 core components listed', `${m.components.length}/${names.length}`);
+  // The literal is a tripwire: a component may not join the registry without someone noticing.
+  // It read 14 and dates from v0.1.0. Two components have joined since — `navmap` (S210) and
+  // `prose` (0493) — and NEITHER tripped it, because navmap arrived first with no schema entry and
+  // `generateManifest()` has thrown ever since, on the line above this one. One missing object key
+  // hid the count AND hid a committed manifest two components out of date. Plan 0525 P5 restores
+  // both; `t80` (test/unit/0525-p5-core-schema-coverage.test.mjs) is the assertion that now names a
+  // schemaless component directly, so this literal can never again be shadowed by a throw.
+  expect(m.components.length === names.length && names.length === 16, 'all 16 core components listed', `${m.components.length}/${names.length}`);
   for (const c of m.components) {
     expect(Array.isArray(c.fields) && c.fields.length >= 1, `${c.name} has a field schema`, c.name);
     expect(c.fields.every((f) => f.name && f.type), `${c.name} fields have name+type`);

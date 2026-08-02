@@ -244,6 +244,72 @@
       ]
     },
     {
+      "name": "navmap",
+      "fields": [
+        {
+          "name": "controllable",
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "name": "image",
+          "type": "string"
+        },
+        {
+          "name": "svg",
+          "type": "string"
+        },
+        {
+          "name": "preset",
+          "type": "string"
+        },
+        {
+          "name": "label",
+          "type": "string"
+        },
+        {
+          "name": "laser",
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "name": "x",
+          "type": "number",
+          "default": 0
+        },
+        {
+          "name": "y",
+          "type": "number",
+          "default": 0
+        },
+        {
+          "name": "scale",
+          "type": "number",
+          "default": 1
+        },
+        {
+          "name": "tokenLabel",
+          "type": "string",
+          "default": "AD"
+        },
+        {
+          "name": "tokenPx",
+          "type": "number",
+          "default": 0.654
+        },
+        {
+          "name": "tokenPy",
+          "type": "number",
+          "default": 0.345
+        },
+        {
+          "name": "tokenId",
+          "type": "string",
+          "default": "ship-ad"
+        }
+      ]
+    },
+    {
       "name": "poll-results",
       "fields": [
         {
@@ -268,6 +334,25 @@
         {
           "name": "promptId",
           "type": "string"
+        }
+      ]
+    },
+    {
+      "name": "prose",
+      "fields": [
+        {
+          "name": "html",
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "title",
+          "type": "string"
+        },
+        {
+          "name": "chrome",
+          "type": "boolean",
+          "default": true
         }
       ]
     },

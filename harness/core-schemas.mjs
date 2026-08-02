@@ -4,7 +4,33 @@
  * { name, type, default?, required? }. This is the machine-readable source the
  * manifest generator (A5) attaches to the registry catalog, and the schema the
  * validator/assembler checks authored content against. Domain-neutral.
+ *
+ * ⚠ EVERY components/ DIRECTORY NEEDS AN ENTRY HERE. `generateManifest()` filters for the ones
+ * that have none and THROWS, so a component added without a schema does not fail quietly — it
+ * fails everywhere the manifest is built, in tests about other things. `t80`
+ * (test/unit/0525-p5-core-schema-coverage.test.mjs) is the test that names the missing one.
  */
+
+/*
+ * The `map` field list is named because ONE OTHER COMPONENT RENDERS THROUGH IT. components/navmap/
+ * navmap.js does not reimplement the map: it looks the `map` factory up in the client registry and
+ * calls it with the SAME opts object, then appends one draggable token on top —
+ *   "opts = <map opts> + { tokenLabel?, tokenPx?, tokenPy?, tokenId? }"
+ * — so every field below is equally a navmap field, and sharing the list rather than copying it is
+ * what stops the two parting company the day a map field is added.
+ */
+const mapFields = [
+  { name: 'controllable', type: 'boolean', default: false },
+  { name: 'image', type: 'string' },
+  { name: 'svg', type: 'string' },
+  { name: 'preset', type: 'string' },
+  { name: 'label', type: 'string' },
+  { name: 'laser', type: 'boolean', default: true },
+  { name: 'x', type: 'number', default: 0 },
+  { name: 'y', type: 'number', default: 0 },
+  { name: 'scale', type: 'number', default: 1 },
+];
+
 export const coreSchemas = {
   choice: { fields: [
     { name: 'prompt', type: 'string', default: 'Choose:' },
@@ -76,16 +102,24 @@ export const coreSchemas = {
     { name: 'frame', type: 'boolean', default: false },
     { name: 'fit', type: 'string' },
   ] },
-  map: { fields: [
-    { name: 'controllable', type: 'boolean', default: false },
-    { name: 'image', type: 'string' },
-    { name: 'svg', type: 'string' },
-    { name: 'preset', type: 'string' },
-    { name: 'label', type: 'string' },
-    { name: 'laser', type: 'boolean', default: true },
-    { name: 'x', type: 'number', default: 0 },
-    { name: 'y', type: 'number', default: 0 },
-    { name: 'scale', type: 'number', default: 1 },
+  map: { fields: mapFields },
+  // navmap — the map, plus ONE token any seat may drag. It delegates rendering to `map` with the
+  // same opts (above) and adds four of its own, read straight out of components/navmap/navmap.js:
+  //   tokenLabel  the caption under the token          opts.tokenLabel || 'AD'
+  //   tokenPx/Py  where it starts, as a FRACTION of the untransformed content box, matching the
+  //               map's own marker anchoring — not pixels, so it survives pan and zoom
+  //               typeof opts.tokenPx === 'number' ? opts.tokenPx : 0.654  (py: 0.345)
+  //   tokenId     the marker id it writes to `map/markers`; re-adding the same id overwrites, which
+  //               is what makes the token SHARED rather than one per dragger    opts.tokenId || 'ship-ad'
+  // The defaults are the component's own, recorded rather than tidied: an author who fills nothing
+  // in gets exactly these, and a schema that hid them would be describing a component that does
+  // not exist.
+  navmap: { fields: [
+    ...mapFields,
+    { name: 'tokenLabel', type: 'string', default: 'AD' },
+    { name: 'tokenPx', type: 'number', default: 0.654 },
+    { name: 'tokenPy', type: 'number', default: 0.345 },
+    { name: 'tokenId', type: 'string', default: 'ship-ad' },
   ] },
   'svg-reactive': { fields: [
     { name: 'label', type: 'string' },
