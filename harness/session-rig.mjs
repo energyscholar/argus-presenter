@@ -26,6 +26,20 @@
  *    collide with a live session.
  * 4. ⚠ EVERY browser call is BOUNDED. puppeteer's `evaluate` and `screenshot` have no default
  *    timeout, and one wedged call turns a run into a killed process that tells you nothing.
+ * 5. ⚠⚠ `manifest.defaultBeatId` REACHES EVERY CLIENT AT MODULE LOAD, BEFORE THE PRESENTER SENDS
+ *    ANYTHING (plan 0525 P3.3). Loading a module is itself a push. This cost the rig two failing
+ *    runs to learn: an early draft "sent" the default beat at S3 and then waited for the displays
+ *    to change, and they never did — they were already showing it. A spec's `beats.staged` must
+ *    therefore NOT be the module's default beat, or the staging assertion passes for the wrong
+ *    reason and the send after it asserts a change against a screen that never had to move.
+ *
+ * ── THE SPEC CONTRACT ───────────────────────────────────────────────────────────────────────
+ * runSession(spec) reads: { moduleId, seats, emptyStationUid, beats, notes } plus two OPTIONAL
+ * deployment-wiring keys — `moduleSourceDir` (where to copy `<moduleId>.json` FROM; default
+ * `modules/`) and `pluginsDir` (what PRESENTER_PLUGINS_DIR is set to for the run; default: the
+ * installed tree). Both exist so a spec can supply CONTENT THAT IS COMMITTED: the repo's own
+ * `modules/` and `plugins/<name>/` are gitignored, so a spec built on them cannot run in a clean
+ * clone, a scratch worktree or CI. Neither key carries a deployment's vocabulary — they are paths.
  */
 import { createHash } from 'node:crypto';
 import { mkdtempSync, mkdirSync, copyFileSync, readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs';
@@ -80,10 +94,16 @@ export const ev = (page, fn, arg, what = 'evaluate') => bounded(page.evaluate(fn
 
 // ── primitives ────────────────────────────────────────────────────────────────────────────────
 
-/** Copy the campaign module into a throwaway dir. Returns {dir, sourceSha}. NEVER writes to modules/. */
-export function stageModuleDir(moduleId) {
-  const src = join(ROOT, 'modules', `${moduleId}.json`);
-  if (!existsSync(src)) throw new Error(`module ${src} not found — this rig needs Bruce's working tree (modules/ is gitignored)`);
+/**
+ * Copy the spec's module into a throwaway dir. Returns {dir, sourceSha}. NEVER writes to the source.
+ *
+ * `sourceDir` defaults to the repo's `modules/`, which is GITIGNORED — a spec pointing there needs
+ * a working tree that has the content in it. A spec may pass its own committed directory instead,
+ * and then the whole run has no untracked dependency at all (plan 0525 P3.1).
+ */
+export function stageModuleDir(moduleId, sourceDir = join(ROOT, 'modules')) {
+  const src = join(sourceDir, `${moduleId}.json`);
+  if (!existsSync(src)) throw new Error(`module ${src} not found — a spec sourcing from the default modules/ needs a working tree that has it (modules/ is gitignored)`);
   const bytes = readFileSync(src);
   const dir = mkdtempSync(join(tmpdir(), 'ap-0524-modules-'));
   copyFileSync(src, join(dir, `${moduleId}.json`));
@@ -257,11 +277,15 @@ export async function waitChanged(player, before, label) {
 // ── the rig ───────────────────────────────────────────────────────────────────────────────────
 
 export async function runSession(spec, { shotDir = SHOT_DIR, keepOpen = false } = {}) {
-  const { moduleId, seats: SEATS, emptyStationUid: EMPTY_STATION_UID, beats: B, notes: N = {} } = spec;
+  const {
+    moduleId, seats: SEATS, emptyStationUid: EMPTY_STATION_UID, beats: B, notes: N = {},
+    // Optional deployment wiring — see THE SPEC CONTRACT in this file's header.
+    moduleSourceDir = undefined, pluginsDir: SPEC_PLUGINS_DIR = null,
+  } = spec;
   const t0 = Date.now();
   const report = {
     startedAt: new Date(t0).toISOString(), moduleId, specName: spec.name || moduleId,
-    scenes: [], shots: [], warnings: [], pageErrors: [], timings: {}, findings: {},
+    scenes: [], shots: [], warnings: [], pageErrors: [], timings: { shots: [] }, findings: {},
   };
   const scene = (name, note, data) => {
     const s = { n: report.scenes.length, name, note, at: Date.now() - t0, ...data };
@@ -270,10 +294,18 @@ export async function runSession(spec, { shotDir = SHOT_DIR, keepOpen = false } 
   };
   mkdirSync(shotDir, { recursive: true });
 
-  const staged = stageModuleDir(moduleId);
+  const staged = stageModuleDir(moduleId, moduleSourceDir);
   const prevModulesDir = process.env.PRESENTER_MODULES_DIR;
   process.env.PRESENTER_MODULES_DIR = staged.dir;
-  report.module = { id: moduleId, sourceSha: staged.sourceSha, sourceBytes: staged.sourceBytes, tempDir: staged.dir };
+  report.module = { id: moduleId, sourceSha: staged.sourceSha, sourceBytes: staged.sourceBytes, tempDir: staged.dir, src: staged.src };
+  /*
+   * The plugin tree the deployment runs. Set here rather than at the spec's import, because the
+   * whole suite is ONE process: a spec that set it on import would silently change the deployment
+   * every later test file sees. Restored in `finally`, unconditionally.
+   */
+  const prevPluginsDir = process.env.PRESENTER_PLUGINS_DIR;
+  if (SPEC_PLUGINS_DIR) process.env.PRESENTER_PLUGINS_DIR = SPEC_PLUGINS_DIR;
+  report.pluginsDir = process.env.PRESENTER_PLUGINS_DIR || join(ROOT, 'plugins');
 
   const CONTROL_TOKEN = 'rig-0524-' + Math.random().toString(36).slice(2, 10);
   const { createServer } = await import('../app/server.mjs');
@@ -291,10 +323,57 @@ export async function runSession(spec, { shotDir = SHOT_DIR, keepOpen = false } 
   let browser = null;
   const players = [];
   let ctl = null;
+  /*
+   * ── ⚠⚠ FINDING, AND ITS CORRECTION — A CAPTURE WAITS FOR A FRAME (plan 0525 P3.2) ──────────
+   *
+   * Runs kept warning that a handful of captures missed SHOT_BOUND_MS while every other capture in
+   * the same run settled in ~200 ms — and always the TAIL of one `shootAll` loop (all four
+   * displays after the control page; or the two after the display that reloaded). The obvious
+   * reading is "a page in that state is slower to capture, raise the bound". MEASURED, BOTH
+   * HALVES OF THAT ARE FALSE:
+   *
+   *   · NOT SLOW.   A wedged capture was left outstanding and IDLED for 13 000 ms with no
+   *                 progress. Forcing a repaint on that page released it in ~50 ms (13 053 ms
+   *                 total). Idle time buys nothing at any bound.
+   *   · NOT TIGHT.  Five static pages, three rounds, a 15 000 ms ceiling: 1 of 15 captures
+   *                 finished. No bound would have stopped the complaining — it would only have
+   *                 stopped the reporting.
+   *
+   * The cause is that a headless capture waits for the target to produce a COMPOSITOR FRAME, and a
+   * backgrounded, static tab never produces one. puppeteer serialises `screenshot()` browser-wide,
+   * so the first stuck capture queues every later one — hence the tail-of-the-loop signature — and
+   * the run recovers at the next scene only because the next send repaints every display.
+   *
+   * ⇒ THE FIX IS TO GIVE IT THE FRAME, NOT A BIGGER NUMBER. `bringToFront()` immediately before
+   *   the capture: 15 of 15 captures, 49–86 ms, zero misses, same pages, same browser flags.
+   *   SHOT_BOUND_MS stays where it was and the warning still fires — a bound raised until it goes
+   *   quiet is a measurement converted into a silence.
+   *
+   * Every capture is TIMED into report.timings.shots either way. A miss is abandoned (never
+   * awaited longer, which would stall the run behind the very mutex above) but still followed:
+   * `settledMs` records when the abandoned capture eventually finished, so a future regression can
+   * be read as slow-vs-wedged from the report instead of re-derived from scratch.
+   */
   const shot = async (page, name) => {
     const file = join(shotDir, `${String(report.shots.length).padStart(2, '0')}-${name}.png`);
-    try { await bounded(page.screenshot({ path: file, captureBeyondViewport: false }), SHOT_BOUND_MS, `screenshot ${name}`); report.shots.push(file); }
-    catch (e) { report.warnings.push(`screenshot ${name}: ${e.message}`); }
+    const t0shot = Date.now();
+    try { await bounded(page.bringToFront(), 5000, `bringToFront ${name}`); }
+    catch (e) { report.warnings.push(`bringToFront ${name}: ${e.message}`); }
+    const row = { name, ms: null, ok: false };
+    report.timings.shots.push(row);
+    const capture = page.screenshot({ path: file, captureBeyondViewport: false });
+    capture.then(
+      () => { row.settledMs = Date.now() - t0shot; },
+      (e) => { row.settleError = String(e && e.message || e); },
+    );
+    try {
+      await bounded(capture, SHOT_BOUND_MS, `screenshot ${name}`);
+      row.ms = Date.now() - t0shot; row.ok = true;
+      report.shots.push(file);
+    } catch (e) {
+      row.ms = Date.now() - t0shot; row.missedBound = SHOT_BOUND_MS;
+      report.warnings.push(`screenshot ${name}: ${e.message}`);
+    }
     return file;
   };
   const shootAll = async (tag) => {
@@ -358,6 +437,29 @@ export async function runSession(spec, { shotDir = SHOT_DIR, keepOpen = false } 
 
     // ── S2 module loaded ─────────────────────────────────────────────────────────────────────
     const loaded = await loadModule(ctl, moduleId);
+    /*
+     * ⚑ WHAT THE OUTLINE MARKS, ROW BY ROW. A beat may be authored `onDemand` — prepared, but not
+     * on the linear path — and until plan 0525 P1 neither presenting surface rendered that fact.
+     * Recorded here as authored-vs-rendered per row, with checkVisibility() rather than a rect,
+     * because a badge that exists in the DOM and cannot be seen is the same defect wearing a hat.
+     */
+    report.findings.outlineMarkers = await ev(ctl.page, () => {
+      const m = window.__gm.module() || {};
+      const beats = m.beats || [];
+      return {
+        hasApi: typeof Element.prototype.checkVisibility === 'function',
+        rows: [...document.querySelectorAll('#outline .beat')].map((row) => {
+          const i = Number(row.dataset.i);
+          const badge = row.querySelector('.ondemand');
+          return {
+            index: i, id: (beats[i] || {}).id || null, authored: !!(beats[i] || {}).onDemand,
+            badge: !!badge,
+            badgeVisible: badge && typeof badge.checkVisibility === 'function' ? badge.checkVisibility() : null,
+            badgeText: badge ? (badge.textContent || '').trim() : null,
+          };
+        }),
+      };
+    }, undefined, 'outline markers');
     scene('module-loaded', N['module-loaded'] || '', loaded);
     await shot(ctl.page, 'module-loaded__gm');
     deadline();
@@ -666,6 +768,8 @@ export async function runSession(spec, { shotDir = SHOT_DIR, keepOpen = false } 
     try { await server.close(); } catch {}
     if (prevModulesDir === undefined) delete process.env.PRESENTER_MODULES_DIR;
     else process.env.PRESENTER_MODULES_DIR = prevModulesDir;
+    if (prevPluginsDir === undefined) delete process.env.PRESENTER_PLUGINS_DIR;
+    else process.env.PRESENTER_PLUGINS_DIR = prevPluginsDir;
     try { rmSync(staged.dir, { recursive: true, force: true }); } catch {}
   }
   return report;
@@ -702,6 +806,15 @@ export function writeReport(report, dir = SHOT_DIR) {
   }
   lines.push(`\n## Findings — the §7 suspicions\n`);
   lines.push(`\n\`\`\`json\n${f(report.findings)}\n\`\`\`\n`);
+  // P3.2 — the capture cost, summarised, so a bound that is merely tight is told from a wedge.
+  const st = report.timings && report.timings.shots ? report.timings.shots : [];
+  if (st.length) {
+    const ms = st.map((s) => s.ms || 0).sort((a, b) => a - b);
+    const missed = st.filter((s) => s.missedBound);
+    lines.push(`\n## Capture cost\n\n- ${st.length} captures · median **${ms[Math.floor(ms.length / 2)]} ms** · max **${ms[ms.length - 1]} ms** · **${missed.length}** missed the ${SHOT_BOUND_MS} ms bound`);
+    if (missed.length) lines.push(missed.map((s) => `  - \`${s.name}\` — abandoned at ${s.ms} ms; ${s.settledMs != null ? `the capture itself settled at **${s.settledMs} ms**` : 'never settled'}`).join('\n'));
+    lines.push('');
+  }
   lines.push(`\n## Timings\n\n\`\`\`json\n${f(report.timings)}\n\`\`\`\n`);
   if (report.warnings.length) lines.push(`\n## Warnings\n\n${report.warnings.map((w) => `- ${w}`).join('\n')}\n`);
   if (report.pageErrors.length) lines.push(`\n## Page errors\n\n${report.pageErrors.map((w) => `- ${w}`).join('\n')}\n`);
@@ -715,10 +828,12 @@ export function writeReport(report, dir = SHOT_DIR) {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const specPath = process.argv[2];
-  if (!specPath) { console.log('usage: node harness/session-rig.mjs <path-to-spec.mjs>'); process.exit(2); }
+  // Optional: where the screenshots and the report go. Two specs must not overwrite each other's.
+  const shotDir = process.argv[3] ? (process.argv[3].startsWith('/') ? process.argv[3] : join(process.cwd(), process.argv[3])) : SHOT_DIR;
+  if (!specPath) { console.log('usage: node harness/session-rig.mjs <path-to-spec.mjs> [shot-dir]'); process.exit(2); }
   const { default: spec } = await import(specPath.startsWith('/') ? specPath : join(process.cwd(), specPath));
-  const report = await runSession(spec);
-  const out = writeReport(report);
+  const report = await runSession(spec, { shotDir });
+  const out = writeReport(report, shotDir);
   console.log(`
 ${report.ok ? 'OK' : 'FAILED'} — ${report.scenes.length} scenes, ${report.shots.length} shots, ${(report.durationMs / 1000).toFixed(1)}s`);
   console.log(`report: ${out}`);

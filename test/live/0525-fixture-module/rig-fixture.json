@@ -1,0 +1,73 @@
+{
+  "manifest": {
+    "title": "Rig fixture — a whole walk with nothing private in it",
+    "version": "1.0",
+    "kind": "fixture",
+    "summary": "Sixteen beats in five sections, shaped to the session rig's walk: one default beat, one to stage, four to survey, two per-seat, two to the room, two mid-deck, one before the arrow, a RUN OF TWO on-demand beats, and a close. Committed on purpose — the rig's other spec needs content that is gitignored, and this one needs nothing at all.",
+    "defaultBeatId": "b-title",
+    "requirements": { "terminalClear": true, "gateTimeoutMs": 180000 }
+  },
+  "sections": [
+    {
+      "id": "s1-open",
+      "title": "Opening",
+      "kind": "section",
+      "summary": "The title page the module load puts on every screen by itself, and the first beat a presenter stages.",
+      "beatIds": ["b-title", "b-staged"]
+    },
+    {
+      "id": "s2-survey",
+      "title": "Four readings",
+      "kind": "section",
+      "summary": "Four ordinary beats walked in order, one after another, to the whole room.",
+      "beatIds": ["b-survey-1", "b-survey-2", "b-survey-3", "b-survey-4"]
+    },
+    {
+      "id": "s3-split",
+      "title": "One seat, then the room",
+      "kind": "section",
+      "summary": "Two beats addressed to a single seat, then two addressed to everybody.",
+      "beatIds": ["b-seat-1", "b-seat-2", "b-room-1", "b-room-2"]
+    },
+    {
+      "id": "s4-corridor",
+      "title": "The corridor",
+      "kind": "section",
+      "summary": "Two mid-deck beats and the beat the presenter is standing on when the arrow is pressed.",
+      "beatIds": ["b-mid-1", "b-mid-2", "b-before-door"]
+    },
+    {
+      "id": "s5-door",
+      "title": "The door, and the close",
+      "kind": "section",
+      "summary": "A RUN OF TWO consecutive on-demand beats — prepared, but not on the path — and then the close. The arrow from b-before-door lands on the first of the run and ships it: that is the DESIGNED behaviour (plan 0525 R5). The marker informs whoever is presenting; it is not a rule the product enforces.",
+      "beatIds": ["b-door-outer", "b-door-inner", "b-finale"]
+    }
+  ],
+  "beats": [
+    { "id": "b-title", "component": "card", "promptId": "pr-title", "opts": { "title": "Rig fixture", "body": "This is the module title page. It is this module's manifest.defaultBeatId, which means it reaches every connected display the moment the module is LOADED — before whoever is presenting sends anything at all. Nothing on this page was pushed by a person. The session rig learned that the hard way: an early draft sent this beat and then waited for the screens to change, and they never did, because they were already showing it. That was a defect in the script, not in the product, and it is the reason this deck stages a different beat first. Everything below is ordinary content, written long enough that a rendered frame has a stable signature a rig can hash and compare.", "footer": "Argus Presenter · committed fixture · nothing here is private" } },
+
+    { "id": "b-staged", "component": "card", "promptId": "pr-staged", "opts": { "title": "The approach", "body": "The first beat a presenter STAGES rather than ships. Clicking its row in the outline arms it and changes nothing on anybody's display; only GO sends it. That split is the single most important thing the session rig exists to prove, because when it breaks the failure is silent — you stage, you believe you have shipped, and no surface contradicts you. This beat is deliberately NOT the module's default beat: staging the default and then asserting that nothing changed would pass for the wrong reason, and sending it would assert that a screen changed against a screen that was already showing it.", "footer": "staged, then GO" } },
+
+    { "id": "b-survey-1", "component": "card", "promptId": "pr-survey-1", "opts": { "title": "First reading", "body": "One of four ordinary beats walked in order to the whole room. Each carries different words on purpose: the rig compares a hash of the rendered frame before and after every send, so two beats that rendered identically would make a real failure look like a pass. There is nothing clever in this beat. It is here to be sent, to arrive, and to be measurably different from the beat before it and the beat after it. The rig times each of these four sends and records the numbers, which is how a slow path is told apart from a broken one.", "footer": "1 of 4" } },
+    { "id": "b-survey-2", "component": "card", "promptId": "pr-survey-2", "opts": { "title": "Second reading", "body": "The second of the four. A presenting surface can walk these with the arrow keys or by clicking each row; the rig clicks, because a click stages and then GO ships, and that is the path a human actually takes through a deck. The words differ from the first reading so the frame signature differs too. Nothing about this content is domain-specific, nothing about it is private, and nothing about it is gitignored: the whole point of this deck is that a clean clone, a scratch worktree or a continuous-integration machine can run the entire session walk without any file that only one person has.", "footer": "2 of 4" } },
+    { "id": "b-survey-3", "component": "card", "promptId": "pr-survey-3", "opts": { "title": "Third reading", "body": "The third of the four. By now every connected display has changed three times, and the rig has a screenshot of every surface at every scene. A screenshot nobody asserts on is a demo, and a demo cannot fail — so the rig records what it saw into a report and the test file is where failure lives. This beat exists to make the walk long enough that the interesting scenes later on are reached with real accumulated session state behind them, rather than on a freshly booted server that has done nothing yet.", "footer": "3 of 4" } },
+    { "id": "b-survey-4", "component": "card", "promptId": "pr-survey-4", "opts": { "title": "Fourth reading", "body": "The last of the four. After this the walk splits: two beats go to a single seat and nobody else, and then two go to the whole room. Addressing is the other thing that fails silently — a send to a seat nobody is sitting in used to report success, which is how you find out during a session that half the room never saw the thing you were talking about. The deck below gives the rig one beat pair for each case, and one station with nobody in it to send the third case at.", "footer": "4 of 4" } },
+
+    { "id": "b-seat-1", "component": "card", "promptId": "pr-seat-1", "opts": { "title": "For one seat only", "body": "Addressed to a single station rather than to the room. Exactly one display should change; every other display should hold whatever it was already showing. This is the shape of a private aside — the reading only one post gets, the note only one person is meant to act on — and it is worth testing precisely because 'it went to everyone' and 'it went to the right one' look identical from the presenting side. The rig hashes all four displays before and after and reports which ones moved, by name.", "footer": "one seat" } },
+    { "id": "b-seat-2", "component": "card", "promptId": "pr-seat-2", "opts": { "title": "Still one seat only", "body": "The second beat in the private pair, so the targeted seat is asked to change twice while the rest of the room does not change at all. Two is better than one here: a single send that reaches only one display could be luck, or could be a race that has not resolved yet. This beat also gives the targeted display distinct content to hold through the next scene, when the room gets its own broadcast and the targeted seat must be seen NOT to receive it.", "footer": "one seat, again" } },
+
+    { "id": "b-room-1", "component": "card", "promptId": "pr-room-1", "opts": { "title": "To the whole room", "body": "The target goes back to everybody and this beat is broadcast. Every display should change, including the one that was being addressed privately a moment ago. This beat is also reused later, deliberately: it is the one staged and sent at a station with nobody sitting in it, where the correct outcome is a loud receipt saying zero recipients and not one display moving anywhere. Reusing a beat there is not laziness — it means the only variable between the two sends is the address.", "footer": "everybody" } },
+    { "id": "b-room-2", "component": "card", "promptId": "pr-room-2", "opts": { "title": "The room again", "body": "The second broadcast, so every display has moved twice under a room-wide address. After this the walk sends to a station that nobody occupies. The screens must not change, the receipt must say so in words a human reads rather than in a return code nobody looks at, and the server must agree that the recipient count was zero. A send that succeeds at reaching nobody is the most expensive kind of success there is, because you only discover it after the moment has passed.", "footer": "everybody, again" } },
+
+    { "id": "b-mid-1", "component": "card", "promptId": "pr-mid-1", "opts": { "title": "Mid-deck", "body": "An ordinary beat, mid-way through the deck, sent to the room. The rig is now far enough into the session that the server has a real op-log behind it, the roster has been rebuilt, several displays have re-rendered many times, and any state that accumulates badly has had a chance to accumulate. Several findings in this rig's history only appeared this late in a run and did not reproduce in a short isolated probe, which is the whole argument for walking a long deck instead of asserting one send.", "footer": "mid-deck" } },
+    { "id": "b-mid-2", "component": "card", "promptId": "pr-mid-2", "opts": { "title": "Mid-deck, second", "body": "The second mid-deck beat. Immediately after this the walk reaches the beat the presenter is standing on when the arrow key is pressed, and the arrow is the half of the split that publishes IMMEDIATELY — no staging, no GO. Both halves of that split are deliberate and both are asserted: a beat row stages, an arrow ships. A deck that only ever exercised one of them would let the other change without anybody noticing.", "footer": "mid-deck" } },
+
+    { "id": "b-before-door", "component": "card", "promptId": "pr-before-door", "opts": { "title": "The corridor ends", "body": "The beat the presenter is standing on when the arrow is pressed. The NEXT beat in this deck is marked on demand, and pressing the arrow here walks straight onto it and ships it. That is correct, and it must stay correct: the marker is a note to whoever is presenting, not a rule the product enforces. If the arrow ever starts skipping marked beats, this deck is where a test notices.", "footer": "press the arrow here" } },
+
+    { "id": "b-door-outer", "component": "card", "promptId": "pr-door-outer", "onDemand": true, "opts": { "title": "Behind the door", "body": "PREPARED, BUT NOT ON THE PATH. This beat is marked on demand: the presenter is not supposed to walk onto it in sequence, and is supposed to show it only if the audience finds the door and decides to open it. The product does not enforce that and must not — when they do ask, the presenter clicks the row and it ships like any other beat. Everything the marker does is make itself visible: a badge on the outline row a human scans, and a field on the cue sheet an agent reads.", "footer": "◈ on demand — the first of a run of two" } },
+    { "id": "b-door-inner", "component": "card", "promptId": "pr-door-inner", "onDemand": true, "opts": { "title": "Behind the second door", "body": "The SECOND of two consecutive on-demand beats, which is why this deck is shaped the way it is: a run of two is the case a navigation 'fix' would get wrong in a way a single marked beat would hide, because skipping one marked beat lands you on another. Nothing skips. The arrow lands on the first of the run; this one is reached by an explicit click, which is the only thing on demand can mean. Both rows carry the badge; no other row in this deck does.", "footer": "◈ on demand — the second of the run" } },
+
+    { "id": "b-finale", "component": "card", "promptId": "pr-finale", "opts": { "title": "The close", "body": "The last beat of the walk. By the time this arrives the rig has seated four displays by seat link, loaded a module, watched the default beat cascade by itself, staged without shipping, shipped with GO, addressed one seat, addressed the room, addressed an empty station, pressed the arrow, opened a door, projected a station screen to the room, reloaded a display, and screenshotted every surface at every scene. None of it needed a single file that is not committed to this repository.", "footer": "end of the fixture walk" } }
+  ]
+}
