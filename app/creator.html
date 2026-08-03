@@ -79,6 +79,24 @@
       <button id="btn-load">Load</button>
       <button id="btn-refresh" title="refresh module list">↻</button>
     </div>
+    <!-- Plan 0532 P3b — WHERE THE EMPTY LOAD PICKER SAYS WHY IT IS EMPTY. Same defect, same
+         mechanism, second surface: the catalogue fails closed (0529 P2) and until now this page
+         answered a refusal with a picker holding NOTHING AT ALL and no words anywhere on screen.
+         This is P3's control.html notice, element for element — same two reason codes, same
+         collapsed <details>, same split between an always-visible cause and a one-click remedy.
+         It NEVER carries content; only the server's own reason code, mapped in CATALOGUE_NOTICE.
+
+         ⚠ THE COLLAPSED SHAPE IS A MEASUREMENT HERE TOO, and the budget is TIGHTER than it looks.
+         This page is a `grid auto 1fr` whose columns are `overflow:auto`, so an over-tall block
+         scrolls rather than clipping — but at 800×600 with an EMPTY document the left column is
+         548 px of a 548 px box: 25 px of slack, and Save / Load is the last section in it. A
+         three-sentence block (the shape P3 measured at 153 px) puts this notice and the save
+         message below the fold at the exact moment the operator needs to read them. Collapsed it
+         costs ~19 px, so the whole section still fits. t0532-p3b-03 holds that line. -->
+    <details id="load-notice" hidden style="margin-top:6px;font-size:12px;line-height:1.45;color:var(--warn)">
+      <summary id="load-notice-cause" role="status" style="cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></summary>
+      <div id="load-notice-fix" style="padding:4px 0 0 14px;color:var(--dim)"></div>
+    </details>
     <div id="save-msg" class="vrow" style="margin-top:6px;display:none"></div>
   </section>
 </div>
@@ -216,6 +234,64 @@ import { validate, summarize } from '/validate.mjs';   // AUT-3: SINGLE-SOURCE v
   var ID_RE = /^[\w.-]+$/;   // path-safe id, mirrors the server-side guard
   function showMsg(txt,kind){ var d=$('save-msg'); d.style.display=''; d.className='vrow '+(kind==='ok'?'vinfo':(kind==='err'?'vwarn':'')); d.textContent=txt; }
 
+  /*
+   * ── Plan 0532 P3b — A REFUSAL THE OPERATOR CAN ACT ON, ON THIS PAGE TOO ──────────────────
+   *
+   * P3 gave the control page this; the plan named that page only, and this one was left with the
+   * identical hole (0529 P2's call sites 6–7). The catalogue routes fail closed and that stays.
+   * What was missing is that A REFUSAL WAS INDISTINGUISHABLE FROM AN EMPTY SHELF — worse here than
+   * on the control page, because refreshList() emptied the picker and THEN threw on the 403 body,
+   * so the operator was left with a <select> holding zero options, a swallowed exception, and no
+   * words at all.
+   *
+   * ⛓ SAME MECHANISM, NOT A SECOND ONE. The two reason codes, the two texts and the collapsed
+   * <details> shape are P3's, deliberately identical — the two pages must not describe the same
+   * server state in two voices. ⚠ They are DUPLICATED rather than shared because single-sourcing
+   * them means a new served module and therefore a new route, and P3b may not touch the server.
+   * The natural home if that ever changes is a `/catalogue-notice.mjs` beside /validate.mjs and
+   * /branch.mjs, which both exist for exactly this reason.
+   *
+   * ⛔ Nothing here asks for, weakens or works around the gate — the fetch is the same fetch and
+   * the refusal is still a refusal. Only the blank space acquires words.
+   */
+  // cause = the always-visible line; fix = the remedy, one click down. Split so this section pays
+  // for one line, not for a paragraph (see the markup comment on #load-notice).
+  var CATALOGUE_NOTICE = {
+    'server-has-no-credential': {
+      cause: '⚠ Nothing listed — no control credential is configured',
+      fix: 'The content catalogue fails closed, so nothing can be listed until this server has a '
+         + 'credential to check against. Restart it with a rolePassword (or a controlToken), then '
+         + 'reload this page.'
+    },
+    'credential-not-accepted': {
+      cause: '⚠ Nothing listed — this page is not unlocked',
+      fix: 'The server did not accept a control credential from this page. Unlock it with the '
+         + 'password, or open it with ?token=<the control token>.'
+    }
+  };
+  // Identity sentinel. "Refused" is a THIRD outcome and must never be mistaken for "an empty list";
+  // conflating them is the original defect, one layer up.
+  var CATALOGUE_REFUSED = {};
+  function setCatalogueNotice(reason){
+    var el=$('load-notice'); if(!el) return;
+    var n = reason ? (CATALOGUE_NOTICE[reason] || CATALOGUE_NOTICE['credential-not-accepted']) : null;
+    $('load-notice-cause').textContent = n ? n.cause : '';
+    $('load-notice-fix').textContent   = n ? n.fix   : '';
+    // The cause is also the picker's own tooltip — the operator's eye is on the picker, not here.
+    var sel=$('load-select'); if(sel) sel.title = n ? (n.cause + ' — ' + n.fix) : '';
+    el.hidden = !n;
+    if(!n) el.open = false;
+  }
+  // Parse a catalogue response once, branching on STATUS rather than on shape. A 403 body is valid
+  // JSON, so a bare r.json() quietly yields {error,reason} where a list was expected.
+  function catalogueJson(r){
+    return r.json().catch(function(){ return null; }).then(function(d){
+      if(r.status===403){ setCatalogueNotice((d&&d.reason)||'credential-not-accepted'); return CATALOGUE_REFUSED; }
+      setCatalogueNotice(null);
+      return d;
+    });
+  }
+
   // POST the authored module to the write-back endpoint. AUTH-1: forward the control token when present.
   function saveModule(id){
     if(!ID_RE.test(String(id||''))) return Promise.reject(new Error('bad id'));
@@ -235,16 +311,27 @@ import { validate, summarize } from '/validate.mjs';   // AUT-3: SINGLE-SOURCE v
   // GET one module and populate the editor for further editing.
   function loadModule(id){
     return fetch('/api/modules/'+encodeURIComponent(id), { headers: ctlHeaders() })
-      .then(function(r){ return r.json().then(function(d){ return { status:r.status, ok:r.ok, data:d }; }); })
+      .then(function(r){ return r.json().catch(function(){ return null; }).then(function(d){ return { status:r.status, ok:r.ok, data:d }; }); })
       .then(function(res){
-        if(res.ok && res.data && res.data.module){ setModule(res.data.module); $('save-id').value=id; showMsg('↺ loaded “'+id+'”','ok'); return res.data; }
+        // P3b (0532) — SITE 7. A 403 here is the same refusal the picker is already showing, so
+        // raise the notice rather than printing a bare 'HTTP 403' that names nothing to do about it.
+        if(res.status===403){
+          setCatalogueNotice((res.data&&res.data.reason)||'credential-not-accepted');
+          showMsg('✗ load refused — see the note under the picker','err');
+          return res.data||{ error:'forbidden' };
+        }
+        if(res.ok && res.data && res.data.module){ setCatalogueNotice(null); setModule(res.data.module); $('save-id').value=id; showMsg('↺ loaded “'+id+'”','ok'); return res.data; }
         var err=(res.data&&res.data.error)||('HTTP '+res.status); showMsg('✗ load failed: '+err,'err'); return res.data||{ error:err };
       });
   }
 
   // Populate the Load <select> from the registry.
   function refreshList(){
-    return fetch('/api/modules', { headers: ctlHeaders() }).then(function(r){ return r.json(); }).then(function(list){
+    return fetch('/api/modules', { headers: ctlHeaders() }).then(catalogueJson).then(function(list){
+      // P3b (0532) — SITE 6. Refused: the notice is already on screen, so leave the picker exactly
+      // as it is. ⛓ RETURN BEFORE THE innerHTML='' BELOW — that line ran first and the throw came
+      // second, which is precisely how a refusal came to look like "there is no content here".
+      if(list===CATALOGUE_REFUSED) return;
       var sel=$('load-select'); var prev=sel.value; sel.innerHTML='';
       (list||[]).forEach(function(m){ var o=el('option'); o.value=m.id; o.textContent=m.id+(m.title?(' — '+m.title):''); sel.appendChild(o); });
       if(prev){ for(var i=0;i<sel.options.length;i++){ if(sel.options[i].value===prev){ sel.value=prev; break; } } }
