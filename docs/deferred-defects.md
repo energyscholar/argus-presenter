@@ -279,3 +279,33 @@ is unconditional, but both rows it heads (`#cfg-station-row`, `#cfg-name-row`) a
 plugin declares stations — so a stations-less deployment gets a section title with no section. One
 line to fix (hide the heading with its rows) and NOT W4c's to fix: it predates this wave and lives
 in the station block.
+
+## ⛔ PEEK RENDERS NOTHING — success is reported and the stage stays empty (found S227, post-tag)
+
+**Severity: this defeats the feature.** A participant selects the deck, **the badge appears saying
+they are looking at it**, and **nothing renders.** No page error. Nothing tells them, or the
+facilitator, that it failed.
+
+**Measured against the live deployment (installed plugin, port 3000, 1280×720):**
+
+| layer | result |
+|---|---|
+| wire — `{t:'peek',surfaceUid:1}` | ✅ `{t:'surface',ok:true,…,hasScreen:true}` |
+| content frame | ✅ **146,198 bytes, cards present** (`crewName`/`Delleron` match) |
+| badge | ✅ *"▤ YOU ARE LOOKING AT · The crew deck · only you see this"* |
+| **stage** | ⛔ **`.ap-card` = 0, `[class*=card]` = 0, body text 124 chars** |
+| page errors | **none** — nothing announces the failure |
+
+⇒ **The server is correct and the client does not paint it.** W5-B's own round trip passed because it
+asserted **the frame**, not the render — over a websocket client with no DOM. **A frame received is
+not a screen shown**, and that gap is exactly what this test found.
+
+⚠ **Suspect, not confirmed:** `surfaceDescriptor` sets `requires:[pluginName]`, so a peek is the
+first thing that makes a plugin's **browser half** live (W5-B measured the frame carrying
+`ship-status.js`, `system-renderer.js`). If those assets do not assemble, the component may never
+mount. ⛔ **`harness/assemble.mjs:36` hardcodes `join(ROOT,'plugins',name)`** — defect B1, still open.
+**Check that path first.**
+
+⛓ **THE TEST THAT WOULD HAVE CAUGHT IT:** every peek proof in this run asserted the frame or the
+badge. **None asserted that a card is on the screen afterwards.** A fix must add
+`.ap-card` count > 0 in a real browser after a peek — the same standard W2 was held to and passed.
