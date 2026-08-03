@@ -367,7 +367,7 @@
             <!-- Bell as a control: 🔔 rings (notifier); 👁 verifies watching (bell + requireAck). Same api.chime path as presenter_bell / presenter_verify_watching. -->
             <button class="mini" id="btn-bell" title="Ring the bell — gentle chime + banner on all displays (notify a backgrounded human)">🔔 Bell</button>
             <button class="mini" id="btn-verify" title="Verify watching — banner with a CONFIRM button; proves eyes-on / not AFK">👁 Verify</button>
-            <label id="autofollow-lbl" title="auto-advance to the branch-recommended next beat when a player answers"><input type="checkbox" id="autofollow"> ⛓ auto-follow branch</label>
+            <label id="autofollow-lbl" title="auto-advance to the branch-recommended next beat when a participant answers"><input type="checkbox" id="autofollow"> ⛓ auto-follow branch</label>
           </div>
         </div>
       </div>
@@ -616,7 +616,7 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
         renderOutline(); renderNav();
         $('mod-info').textContent='↻ reloaded from disk — '+((module.beats||[]).length)+' beats'
           +(lostLive?' · ⚠ the live beat is no longer in this module':'')
-          +' · players unchanged, Validate & Load to push';
+          +' · participants unchanged, Validate & Load to push';
       })
       .catch(stale);
   }

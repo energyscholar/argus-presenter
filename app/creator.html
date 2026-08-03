@@ -95,7 +95,10 @@
 import { validate, summarize } from '/validate.mjs';   // AUT-3: SINGLE-SOURCE validator (served by the server, not duplicated)
 (function(){
   var q = new URLSearchParams(location.search);
-  var identity = { userId: q.get('userId')||'gm', userName: q.get('name')||'GM', role: q.get('role')||'presenter' };
+  // 0532 P2: the DISPLAY name default was 'GM' — visible in the roster to everyone in the session.
+  // Now page-named, matching control.html's 'Control'. The userId default `gm` is an IDENTITY
+  // value, not prose, and is deliberately left alone.
+  var identity = { userId: q.get('userId')||'gm', userName: q.get('name')||'Creator', role: q.get('role')||'presenter' };
   // AUTH-1: forward control secret to gate the role. Plan 0529 P2 added the localStorage fallback,
   // the SAME namespace + key control.html persists and manage.html already reads — no second auth
   // scheme and no second store. Until P2 the fallback did not matter here, because every read on

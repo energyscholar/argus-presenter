@@ -81,10 +81,12 @@ export const coreTools = [
       voice: { type: 'boolean', description: 'Enable inbound voice + ASR (default true when driven via MCP)' },
       // S210: createServer() has always accepted a profile, but presenter_start did not expose it, so
       // every MCP-driven session silently ran `wearable` — a SOLO profile with maxPending:1 and the
-      // floor disabled. For a table (GM + ~5 players) that is the wrong machine: use 'rpg', which
-      // summarizes ambient narrative instead of discarding it, keeps only questions/requests as work
-      // items, and enables floor control under load. See app/profiles.mjs.
-      profile: { type: 'string', description: "Session profile: 'wearable' (solo, DEFAULT), 'rpg' (GM + table), 'teaching' (class), etc. Wrong profile = wrong queue/floor/digest behaviour." },
+      // floor disabled. For a facilitated group (one facilitator + ~5 participants) that is the
+      // wrong machine: use 'rpg', which summarizes ambient discussion instead of discarding it,
+      // keeps only questions/requests as work items, and enables floor control under load.
+      // ⚠ 'rpg' is a PROFILE KEY (app/profiles.mjs), a config value — not prose. Plan 0532 P2
+      // neutralised the register around it and deliberately left the key alone.
+      profile: { type: 'string', description: "Session profile: 'wearable' (solo, DEFAULT), 'rpg' (a facilitated small group — one facilitator plus several participants), 'teaching' (class), etc. Wrong profile = wrong queue/floor/digest behaviour." },
       // Plan 0488: every remaining createServer() option, so the agent can start ANY server the
       // library can build. Coverage is asserted by test/unit/0488-surface-coverage.test.mjs.
       controlToken: { type: 'string', description: 'Gate control actions + module write-back on this token.' },
@@ -378,7 +380,7 @@ export const coreTools = [
   },
   {
     name: 'show_beat',
-    description: 'Show a beat of the CURRENT module BY ID (or by index) — random access, not linear. A tabletop module is a CATALOG, not a deck: the players decide the order, so the GM cues a scene by name ("the logs", "the museum") and it appears. Use presenter_beats to list the ids. ⏹ To wipe the stage back to the default branding image: presenter_default_branding.',
+    description: 'Show a beat of the CURRENT module BY ID (or by index) — random access, not linear. Some modules are a CATALOG rather than a deck: the audience decides the order, so the facilitator cues a segment by name ("the logs", "the museum") and it appears. Use presenter_beats to list the ids. ⏹ To wipe the stage back to the default branding image: presenter_default_branding.',
     input: { type: 'object', properties: { beatId: { type: 'string', description: 'Beat id from the loaded module' }, index: { type: 'number', description: 'Zero-based beat index (used only when beatId is absent)' } } },
     handler: async ({ beatId, index } = {}) => {
       const s = need();
@@ -399,7 +401,7 @@ export const coreTools = [
   },
   {
     name: 'presenter_beats',
-    description: 'List the beats of the CURRENTLY loaded module (index, id, component, title) — the cue sheet for show_beat. This is the GM catalog: what can be put on screen right now, in any order. ⚑ A beat carrying `onDemand:true` is PREPARED BUT NOT ON THE PATH — a note to whoever is presenting, not a rule the product enforces: do not walk onto it in sequence, show it only when the audience asks for that thing. The classic shape is the beat behind a closed door — it exists, and it appears iff they find the door and decide to open it. When they do ask, just call show_beat as usual; nothing is blocked. The key is ABSENT on an ordinary beat.',
+    description: 'List the beats of the CURRENTLY loaded module (index, id, component, title) — the cue sheet for show_beat. This is the facilitator\'s catalog: what can be put on screen right now, in any order. ⚑ A beat carrying `onDemand:true` is PREPARED BUT NOT ON THE PATH — a note to whoever is presenting, not a rule the product enforces: do not walk onto it in sequence, show it only when the audience asks for that thing. The classic shape is the beat behind a closed door — it exists, and it appears iff they find the door and decide to open it. When they do ask, just call show_beat as usual; nothing is blocked. The key is ABSENT on an ordinary beat.',
     input: { type: 'object', properties: {} },
     handler: async () => {
       const s = need();
@@ -449,7 +451,7 @@ export const coreTools = [
   },
   {
     name: 'prev_beat',
-    description: 'Step the current content module BACK one beat (all viewers follow). The mirror of next_beat — without it a GM who overshoots can only jump by id via show_beat. Returns null at the start of the module.',
+    description: 'Step the current content module BACK one beat (all viewers follow). The mirror of next_beat — without it a facilitator who overshoots can only jump by id via show_beat. Returns null at the start of the module.',
     input: { type: 'object', properties: {} },
     handler: async () => ({ beat: need().prevBeat() })
   },
@@ -502,19 +504,19 @@ export const coreTools = [
   },
   {
     name: 'presenter_spotlight',
-    description: 'Plan 0508 (SPOTLIGHT — give the players the stage): grant or revoke a SEAT\'s right to promote its own station screen to every display. Default-DENY: nothing is shareable until granted. The granted seat gets a "◉ Share my screen with everyone" button in its Config panel; pressing it re-pushes THAT SEAT\'s current per-user display to all (throttled to one share per 3 s, re-rendered per viewer so OPSEC stripping still applies — never a verbatim copy of their HTML). Use this so a player (e.g. the Sensor Operator) can talk the table through their own readout instead of the GM narrating it. Pair with push_component{target:<userId>} to stock that seat\'s station first.',
+    description: 'Plan 0508 (SPOTLIGHT — give the participants the stage): grant or revoke a SEAT\'s right to promote its own station screen to every display. Default-DENY: nothing is shareable until granted. The granted seat gets a "◉ Share my screen with everyone" button in its Config panel; pressing it re-pushes THAT SEAT\'s current per-user display to all (throttled to one share per 3 s, re-rendered per viewer so OPSEC stripping still applies — never a verbatim copy of their HTML). Use this so a participant (e.g. whoever holds the station carrying the readout everyone needs) can talk the room through it themselves instead of the facilitator narrating it. Pair with push_component{target:<userId>} to stock that seat\'s station first.',
     input: { type: 'object', properties: { userId: { type: 'string', description: 'Seat slug, e.g. "seat-one"' }, granted: { type: 'boolean', default: true, description: 'false revokes' } }, required: ['userId'] },
     handler: async ({ userId, granted = true }) => need().spotlight(userId, granted)
   },
   {
     name: 'presenter_stations',
-    description: 'Plan 0514: list the STATION REGISTRY this deployment declares (uid, label, group, icon, colour, occupancy cap, whether it has a screen) AND which seat currently holds which station. This is the agent\'s read of the room: it is how you see that a player followed a mis-cased link and landed on the default station instead of the one they were sent. Stations are declared by a plugin, never by core — a deployment with no station plugin returns an empty list, which is not an error.',
+    description: 'Plan 0514: list the STATION REGISTRY this deployment declares (uid, label, group, icon, colour, occupancy cap, whether it has a screen) AND which seat currently holds which station. This is the agent\'s read of the room: it is how you see that a participant followed a mis-cased link and landed on the default station instead of the one they were sent. Stations are declared by a plugin, never by core — a deployment with no station plugin returns an empty list, which is not an error.',
     input: { type: 'object', properties: {} },
     handler: async () => need().stations()
   },
   {
     name: 'presenter_station_set',
-    description: 'Plan 0514: seat a player at a station on their behalf — for the player who cannot find the dropdown, or who arrived on a link that resolved to the default. Addressed by stationUid (never by name: strings drift and fail silently, integers fail loudly or not at all). An unresolvable uid resolves to the deployment default rather than erroring, so this can never throw a seat out of the room. The seat is re-rendered immediately, and the reply reports `delivered` — how many of that identity\'s live clients were actually re-rendered. Plan 0522 P14: seating SOMEONE ELSE is a controller capability, so the reply may be a refusal by name rather than a change: `no-stations` (this deployment declares none), `not-connected` (nobody is holding that userId right now — this used to answer ok:true and change nothing, which let a caller "prove" a seating no human ever received), or `not-controller`. The identical gate governs the human control page, so what you can do here and what a GM can do there are the same thing (I1).',
+    description: 'Plan 0514: seat a participant at a station on their behalf — for the person who cannot find the dropdown, or who arrived on a link that resolved to the default. Addressed by stationUid (never by name: strings drift and fail silently, integers fail loudly or not at all). An unresolvable uid resolves to the deployment default rather than erroring, so this can never throw a seat out of the room. The seat is re-rendered immediately, and the reply reports `delivered` — how many of that identity\'s live clients were actually re-rendered. Plan 0522 P14: seating SOMEONE ELSE is a controller capability, so the reply may be a refusal by name rather than a change: `no-stations` (this deployment declares none), `not-connected` (nobody is holding that userId right now — this used to answer ok:true and change nothing, which let a caller "prove" a seating no human ever received), or `not-controller`. The identical gate governs the human control page, so what you can do here and what a facilitator can do there are the same thing (I1).',
     input: { type: 'object', properties: {
       userId: { type: 'string', description: 'Seat id, as reported by presenter_stations / presenter_attendance' },
       stationUid: { type: 'number', description: 'Station uid from presenter_stations' },
@@ -523,7 +525,7 @@ export const coreTools = [
   },
   {
     name: 'presenter_station_project',
-    description: 'Plan 0522 P15: put ONE station\'s screen on other people\'s displays — "everyone look at what Sensors is seeing". TRANSIENT, and that is the whole point: NO SEAT IS WRITTEN. Nobody is re-seated, no station assignment changes, and nothing records that this happened; each viewer keeps the station they were sitting at and the next push replaces the projection. (The obvious wrong implementation is to seat the room at that station — that would re-seat every player durably, through the same resolver presenter_station_set uses, and every one of them would have to be put back by hand.) Each viewer is rendered in THEIR OWN context, so identity stamping and the visibility strip still apply — never a verbatim copy of one seat\'s bytes. An empty station is a legitimate thing to project: it renders the generic placeholder built from registry values. Reply: {ok, stationUid, stationLabel, projected (how many displays actually received it — a truthful 0 is possible and is not silently swallowed), targets}. Refusals are BY NAME, never a silent no-op: `no-stations` (this deployment declares none) or `no-such-station` (that uid is not in the registry — deliberately NOT resolved to the deployment default the way seating is, because silently projecting a different station than the one asked for is worse than refusing). The identical capability is on the human control page\'s station tier, so what you can do here and what a GM can do there are the same thing (I1).',
+    description: 'Plan 0522 P15: put ONE station\'s screen on other people\'s displays — "everyone look at what Sensors is seeing". TRANSIENT, and that is the whole point: NO SEAT IS WRITTEN. Nobody is re-seated, no station assignment changes, and nothing records that this happened; each viewer keeps the station they were sitting at and the next push replaces the projection. (The obvious wrong implementation is to seat the room at that station — that would re-seat every participant durably, through the same resolver presenter_station_set uses, and every one of them would have to be put back by hand.) Each viewer is rendered in THEIR OWN context, so identity stamping and the visibility strip still apply — never a verbatim copy of one seat\'s bytes. An empty station is a legitimate thing to project: it renders the generic placeholder built from registry values. Reply: {ok, stationUid, stationLabel, projected (how many displays actually received it — a truthful 0 is possible and is not silently swallowed), targets}. Refusals are BY NAME, never a silent no-op: `no-stations` (this deployment declares none) or `no-such-station` (that uid is not in the registry — deliberately NOT resolved to the deployment default the way seating is, because silently projecting a different station than the one asked for is worse than refusing). The identical capability is on the human control page\'s station tier, so what you can do here and what a facilitator can do there are the same thing (I1).',
     input: { type: 'object', properties: {
       stationUid: { type: 'number', description: 'Station uid from presenter_stations' },
       targets: { type: 'array', items: { type: 'string' }, description: 'Who sees it. Wire targets: "all" (default — the room), a userId, a role, or "station:<uid>". Omit for the room.' },
@@ -542,7 +544,7 @@ export const coreTools = [
   },
   {
     name: 'presenter_refresh_modules',
-    description: 'Plan 0508: tell every open Control page to RE-SCAN the modules directory, so a module Argus just wrote to disk appears in the GM\'s picker without a page reload or a server restart. Call it right after writing a new module file. Returns how many control pages were notified.',
+    description: 'Plan 0508: tell every open Control page to RE-SCAN the modules directory, so a module Argus just wrote to disk appears in the facilitator\'s picker without a page reload or a server restart. Call it right after writing a new module file. Returns how many control pages were notified.',
     input: { type: 'object', properties: { id: { type: 'string', description: 'Optional module id to highlight as newly available' } } },
     handler: async ({ id = null } = {}) => ({ notified: need().modulesChanged(id), id })
   },
@@ -591,7 +593,7 @@ export const coreTools = [
   },
   {
     name: 'presenter_raf',
-    description: 'RAF metrics from the op-log: peer-catalysis ratio (peer-visible peer actions), teacher-dependency (AI/GM-catalyzed), interaction-graph density (peer->peer response edges).',
+    description: 'RAF metrics from the op-log: peer-catalysis ratio (peer-visible peer actions), teacher-dependency (AI/facilitator-catalyzed), interaction-graph density (peer->peer response edges).',
     input: { type: 'object', properties: { windowMs: { type: 'number', default: 5000, description: 'Response window for peer->peer interaction edges' } } },
     handler: async ({ windowMs = 5000 } = {}) => need().raf({ windowMs })
   }
