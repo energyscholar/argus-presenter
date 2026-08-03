@@ -384,6 +384,23 @@
           <select id="mod-select" style="flex:1 1 auto"><option value="">— select a module —</option></select>
           <button id="mod-refresh" class="mini" title="rescan">⟳</button>
         </div>
+        <!-- Plan 0532 P3 — WHERE THE EMPTY PICKER SAYS WHY IT IS EMPTY. The catalogue fails closed
+             (0529 P2); before this, a refusal produced a picker holding only its placeholder and
+             nothing else on screen at all. This sits directly under the picker it explains, is
+             hidden whenever the catalogue is being served, and NEVER carries content — only the
+             server's own reason code, mapped to words in CATALOGUE_NOTICE below.
+
+             ⚠ IT IS A <details>, AND THAT IS A MEASUREMENT, NOT A STYLE CHOICE. This page is a
+             `grid-template-rows: auto 1fr` — the header row takes what it needs and the CONTENT
+             row gets the remainder, one pixel for one pixel. At 800×600 the header is already
+             ~411 px of a 600 px window, so a three-sentence block in this 200 px column measured
+             153 px tall and left the digest column with nothing: V0473's one-click resolve went
+             off-screen and its click missed. The one-line summary is the CAUSE (always visible,
+             ~1 line of cost); the remedy is one click away. -->
+        <details id="mod-notice" hidden style="margin-top:6px;font-size:12px;line-height:1.45;color:var(--warn)">
+          <summary id="mod-notice-cause" role="status" style="cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></summary>
+          <div id="mod-notice-fix" style="padding:4px 0 0 14px;color:var(--dim)"></div>
+        </details>
         <!-- Plan 0522 P11 (R13) — THE ESCAPE HATCH. The picker groups by `kind` and shows only
              `status: active` by default. This one checkbox reveals EVERY module in the scan path
              regardless of status — working AND retired, no third state, no second control. It sits
@@ -603,9 +620,9 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     var recId  = (recBeat>=0 && beats[recBeat]) ? beats[recBeat].id : null;
     var stale = function(){ $('mod-info').textContent='↻ this module changed on disk — reload FAILED, still showing the previous copy'; };
     fetch('/api/modules/'+encodeURIComponent(id)+'?fresh='+Date.now(),{cache:'no-store',headers:ctlHeaders()})
-      .then(function(r){return r.json();})
+      .then(catalogueJson)   // P3 (0532) — a 403 here also raises the notice, not only the stale note
       .then(function(d){
-        if(!d||d.error||!d.module){ stale(); return; }
+        if(!d||d===CATALOGUE_REFUSED||d.error||!d.module){ stale(); return; }
         module=d.module;
         var v=d.validation||{warn:0,info:0};
         $('mod-valid').innerHTML = v.warn? '<span class="badge warn">⚠ '+v.warn+' warnings</span>' : '<span class="badge ok">✓ valid</span>';
@@ -753,11 +770,64 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     return o;
   }
 
+  /*
+   * ── Plan 0532 P3 — A REFUSAL THE OPERATOR CAN ACT ON ─────────────────────────────────
+   *
+   * The catalogue routes fail closed (0529 P2), and that stays. What was missing is that a
+   * REFUSAL WAS INDISTINGUISHABLE FROM AN EMPTY SHELF: the fetch 403'd, its JSON body was handed
+   * to code expecting an array, and the operator was left with a picker holding one placeholder
+   * and no words anywhere on the page. These helpers turn the server's `reason` code into a line
+   * under the picker.
+   *
+   * ⛔ Nothing here asks for, weakens or works around the gate — the fetch is the same fetch and
+   * the refusal is still a refusal. Only the blank space acquires words.
+   */
+  // cause = the always-visible line; fix = the remedy, one click down. Split so the header pays
+  // for one line, not for a paragraph (see the markup comment on #mod-notice).
+  var CATALOGUE_NOTICE = {
+    'server-has-no-credential': {
+      cause: '⚠ Nothing listed — no control credential is configured',
+      fix: 'The content catalogue fails closed, so nothing can be listed until this server has a '
+         + 'credential to check against. Restart it with a rolePassword (or a controlToken), then '
+         + 'reload this page.'
+    },
+    'credential-not-accepted': {
+      cause: '⚠ Nothing listed — this page is not unlocked',
+      fix: 'The server did not accept a control credential from this page. Unlock it with the '
+         + 'password, or open it with ?token=<the control token>.'
+    }
+  };
+  // Identity sentinel. "Refused" is a THIRD outcome and must never be mistaken for "an empty list";
+  // conflating them is the original defect, one layer up.
+  var CATALOGUE_REFUSED = {};
+  function setCatalogueNotice(reason){
+    var el=$('mod-notice'); if(!el) return;
+    var n = reason ? (CATALOGUE_NOTICE[reason] || CATALOGUE_NOTICE['credential-not-accepted']) : null;
+    $('mod-notice-cause').textContent = n ? n.cause : '';
+    $('mod-notice-fix').textContent   = n ? n.fix   : '';
+    // The cause is also the picker's own tooltip — the operator's eye is on the picker, not here.
+    var sel=$('mod-select'); if(sel) sel.title = n ? (n.cause + ' — ' + n.fix) : '';
+    el.hidden = !n;
+    if(!n) el.open = false;
+  }
+  // Parse a catalogue response once, branching on STATUS rather than on shape. A 403 body is valid
+  // JSON, so a bare r.json() quietly yields {error,reason} where a list was expected.
+  function catalogueJson(r){
+    return r.json().catch(function(){ return null; }).then(function(d){
+      if(r.status===403){ setCatalogueNotice((d&&d.reason)||'credential-not-accepted'); return CATALOGUE_REFUSED; }
+      setCatalogueNotice(null);
+      return d;
+    });
+  }
+
   // ⚠ Returns the rebuild's promise (P11). Every existing call site ignores it; queueModule()
   // needs it, because it may have to REVEAL a module before it can select one.
   function refreshModules(){
     var sel=$('mod-select');
-    return fetch('/api/modules',{cache:'no-store',headers:ctlHeaders()}).then(function(r){return r.json();}).then(function(list){
+    return fetch('/api/modules',{cache:'no-store',headers:ctlHeaders()}).then(catalogueJson).then(function(list){
+      // P3 (0532) — refused: the notice is already on screen, so leave the picker exactly as it is
+      // rather than rebuilding it into a bare placeholder that looks like "there is no content".
+      if(list===CATALOGUE_REFUSED) return;
       // ⚠ P9 — `keep` is read HERE, at apply time, not at call time. refreshModules() has four
       // call sites and TWO of them fire at boot (the bottom-of-file kickoff and ws.onopen), so
       // two rebuilds are in flight at once: a snapshot taken at call time is already stale when
@@ -812,7 +882,9 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   $('mod-select').onchange=function(){ var id=this.value; setModPref(id);   // P9: the last module SELECTED is the default next time (cleared when the GM picks the placeholder)
     module=null; curBeat=-1; $('mod-valid').innerHTML=''; $('outline').innerHTML=''; renderNav();
     if(!id){ $('mod-info').textContent=''; $('mod-load').disabled=true; return; }
-    fetch('/api/modules/'+encodeURIComponent(id),{headers:ctlHeaders()}).then(function(r){return r.json();}).then(function(d){
+    fetch('/api/modules/'+encodeURIComponent(id),{headers:ctlHeaders()}).then(catalogueJson).then(function(d){
+      // P3 (0532) — the notice carries the reason; mod-info must not shout 'forbidden' over it.
+      if(d===CATALOGUE_REFUSED){ $('mod-info').textContent=''; $('mod-load').disabled=true; return; }
       if(!d||d.error||!d.module){ $('mod-info').textContent='Error: '+((d&&d.error)||'could not load module'); $('mod-load').disabled=true; return; }
       module=d.module; var v=d.validation||{warn:0,info:0};
       $('mod-info').textContent=(module.manifest&&module.manifest.summary)||'';
@@ -841,7 +913,8 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   // into #mod-select (the GM still clicks Validate&Load per module); "Next in series ▶" advances.
   function refreshSeries(){
     var sel=$('series-select'); if(!sel) return; var keep=sel.value;
-    fetch('/api/series',{headers:ctlHeaders()}).then(function(r){return r.json();}).then(function(list){
+    fetch('/api/series',{headers:ctlHeaders()}).then(catalogueJson).then(function(list){
+      if(list===CATALOGUE_REFUSED) return;   // P3 (0532) — explained under the module picker
       sel.innerHTML='<option value="">— series —</option>';
       (list||[]).forEach(function(s){ var o=document.createElement('option'); o.value=s.id; o.textContent=s.title+' ('+s.count+')'; sel.appendChild(o); });
       if(keep){ try{ sel.value=keep; }catch(e){} }
@@ -861,8 +934,8 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   }
   $('series-select').onchange=function(){ var id=this.value; seriesModules=[]; seriesPos=-1; updateSeriesNav();
     if(!id) return;
-    fetch('/api/series/'+encodeURIComponent(id),{headers:ctlHeaders()}).then(function(r){return r.json();}).then(function(d){
-      if(!d||d.error||!d.series){ return; }
+    fetch('/api/series/'+encodeURIComponent(id),{headers:ctlHeaders()}).then(catalogueJson).then(function(d){
+      if(!d||d===CATALOGUE_REFUSED||d.error||!d.series){ return; }   // P3 (0532): refused ⇒ the notice is up
       seriesModules=(d.series.moduleIds||[]).slice(); seriesPos=seriesModules.length?0:-1; updateSeriesNav();
       if(seriesModules.length) queueModule(seriesModules[0]);
     }).catch(function(){});

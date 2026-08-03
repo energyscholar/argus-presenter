@@ -100,7 +100,8 @@ export function createHttpHandler(ctx) {
       // /api/session-log and /api/situation already spell their routes this way; these two did not.
       // CONTROL-ONLY, FAILS CLOSED — see catalogueReadAuthed.
       const a = catalogueReadAuthed(req, '/api/modules');
-      if (!a.ok) { res.writeHead(a.code, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: a.error })); return; }
+      // Plan 0532 P3 — `reason` travels with the refusal so the picker can say WHY it is empty.
+      if (!a.ok) { res.writeHead(a.code, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: a.error, reason: a.reason })); return; }
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-cache' });
       res.end(JSON.stringify(listModules()));
     } else if (req.url === '/api/module-admin' || req.url.startsWith('/api/module-admin?')) {
@@ -182,7 +183,7 @@ export function createHttpHandler(ctx) {
       // Plan 0529 P2 — CONTROL-ONLY, FAILS CLOSED. This is the route that mattered most: the LIST
       // leaks titles, but this one hands over the whole authored file — every unrevealed beat in it.
       const ra = catalogueReadAuthed(req, '/api/modules/:id');
-      if (!ra.ok) { res.writeHead(ra.code, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: ra.error })); return; }
+      if (!ra.ok) { res.writeHead(ra.code, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: ra.error, reason: ra.reason })); return; }
       let module = null; try { module = readModuleFile(id); } catch (e) { res.writeHead(400); res.end(JSON.stringify({ error: String(e.message || e) })); return; }
       if (!module) { res.writeHead(404); res.end(JSON.stringify({ error: 'not found' })); return; }
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
@@ -248,7 +249,7 @@ export function createHttpHandler(ctx) {
       // The `?...` arm is Plan 0529 P2 — same exact-match gap as /api/modules above.
       // CONTROL-ONLY, FAILS CLOSED — see catalogueReadAuthed.
       const a = catalogueReadAuthed(req, '/api/series');
-      if (!a.ok) { res.writeHead(a.code, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: a.error })); return; }
+      if (!a.ok) { res.writeHead(a.code, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: a.error, reason: a.reason })); return; }
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-cache' });
       res.end(JSON.stringify(listSeries()));
     } else if (req.url.startsWith('/api/series/')) {
@@ -257,7 +258,7 @@ export function createHttpHandler(ctx) {
       // Plan 0529 P2 — CONTROL-ONLY, FAILS CLOSED. A series enumerates the modules a run will walk;
       // ungated it is a table of contents for material nobody has been shown yet.
       const sa = catalogueReadAuthed(req, '/api/series/:id');
-      if (!sa.ok) { res.writeHead(sa.code, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: sa.error })); return; }
+      if (!sa.ok) { res.writeHead(sa.code, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: sa.error, reason: sa.reason })); return; }
       const id = decodeURIComponent(req.url.slice(12).split('?')[0]);
       if (!/^[\w.-]+$/.test(id)) { res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'bad id' })); return; }
       let series = null; try { series = readSeriesFile(id); } catch (e) { res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: String(e.message || e) })); return; }

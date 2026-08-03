@@ -613,13 +613,34 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
    * fetches exactly ONE api route, /api/auth; beats reach the audience over the socket. The four
    * routes gated here are read by control.html and creator.html only — both control-role pages.
    */
+  /*
+   * ⛓ Plan 0532 P3 — THE REFUSAL CARRIES A STABLE `reason`, AND THE TWO REFUSALS ARE NOT THE SAME.
+   *
+   * Fail-closed is correct and unchanged; what was missing is that the operator could not tell the
+   * two 403s apart without reading prose, and neither could the control page — so it rendered an
+   * empty picker and no explanation. The `reason` codes below are what a client branches on:
+   *
+   *   'server-has-no-credential'  — a CONFIGURATION fault on this box. Nothing was configured, so
+   *                                 there is nothing to verify against and no request can succeed.
+   *                                 The long `error` names the fix. Disclosing it is safe here and
+   *                                 only here: an ungated server has no secret to keep about its
+   *                                 credential, because it has none, and this whole page is
+   *                                 reachable by anyone who can reach the box at all.
+   *   'credential-not-accepted'   — a CALLER fault: absent or wrong. It says nothing about how the
+   *                                 server is configured (both the "you sent none" and the "yours
+   *                                 is wrong" cases return exactly this, byte for byte), so it
+   *                                 cannot be used to probe which scheme is in force.
+   *
+   * ⛔ No access decision changes. The same requests are refused and served as before.
+   */
   function catalogueReadAuthed(req, route) {
     if (!CONTROL_TOKEN && !ROLE_HASH) {
       log.warn('modules', 'catalogue-read-refused-ungated', { url: route,
         reason: 'no control credential is configured — the catalogue carries unrevealed authored content and fails closed (Plan 0529 P2)' });
-      return { ok: false, code: 403, error: 'reading the content catalogue requires a control credential, and this server has none configured — start it with a rolePassword (or a controlToken). These files carry material that has not been presented yet; they are not served ungated.' };
+      return { ok: false, code: 403, reason: 'server-has-no-credential', error: 'reading the content catalogue requires a control credential, and this server has none configured — start it with a rolePassword (or a controlToken). These files carry material that has not been presented yet; they are not served ungated.' };
     }
-    return httpControlCredentialOk(req) ? { ok: true } : { ok: false, code: 403, error: 'forbidden' };
+    return httpControlCredentialOk(req) ? { ok: true }
+      : { ok: false, code: 403, reason: 'credential-not-accepted', error: 'forbidden' };
   }
   /*
    * ── Plan 0522 P12 (R15) — MODULE MUTATION IS GATED UNCONDITIONALLY. FAIL CLOSED. ──────────
