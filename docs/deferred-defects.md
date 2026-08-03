@@ -280,32 +280,40 @@ plugin declares stations — so a stations-less deployment gets a section title 
 line to fix (hide the heading with its rows) and NOT W4c's to fix: it predates this wave and lives
 in the station block.
 
-## ⛔ PEEK RENDERS NOTHING — success is reported and the stage stays empty (found S227, post-tag)
+## ✅ RETRACTED — "peek renders nothing" was never a defect. The PROBE was the defect.
 
-**Severity: this defeats the feature.** A participant selects the deck, **the badge appears saying
-they are looking at it**, and **nothing renders.** No page error. Nothing tells them, or the
-facilitator, that it failed.
+**This entry previously reported, with a severity of "this defeats the feature", that a peeked
+surface rendered nothing. That was WRONG. Peek works.** Verified by screenshot against the live
+deployment: the surface renders in full on the participant's own display, with the badge and the
+Back control, and the room is undisturbed.
 
-**Measured against the live deployment (installed plugin, port 3000, 1280×720):**
+**Why the false positive, and it is worth keeping:** the evidence was
+`.ap-card = 0, [class*=card] = 0, body text 124 chars`, measured on the **top-level document**. But
+the stage is `<iframe sandbox="allow-scripts">` with **`allow-same-origin` deliberately absent** —
+an **opaque origin**. The parent document cannot reach inside it by `querySelector`,
+`contentDocument`, or `innerText`.
 
-| layer | result |
-|---|---|
-| wire — `{t:'peek',surfaceUid:1}` | ✅ `{t:'surface',ok:true,…,hasScreen:true}` |
-| content frame | ✅ **146,198 bytes, cards present** (`crewName`/`Delleron` match) |
-| badge | ✅ *"▤ YOU ARE LOOKING AT · The crew deck · only you see this"* |
-| **stage** | ⛔ **`.ap-card` = 0, `[class*=card]` = 0, body text 124 chars** |
-| page errors | **none** — nothing announces the failure |
+⇒ **That probe returns 0 whether the content rendered perfectly or not at all.** It is not weak
+evidence of failure. It is *no evidence*, and it was read as proof.
 
-⇒ **The server is correct and the client does not paint it.** W5-B's own round trip passed because it
-asserted **the frame**, not the render — over a websocket client with no DOM. **A frame received is
-not a screen shown**, and that gap is exactly what this test found.
+⛓ **The sharpest part: this entry's own proposed remedy was the SAME error.** It demanded a fix
+"must add `.ap-card` count > 0 in a real browser after a peek" — a test that would have failed
+forever against a perfectly working feature, and sent someone hunting a bug that was never there
+(it nominated `assemble.mjs:36` as the suspect). **A test built on a blind probe does not become
+sighted by being made mandatory.**
 
-⚠ **Suspect, not confirmed:** `surfaceDescriptor` sets `requires:[pluginName]`, so a peek is the
-first thing that makes a plugin's **browser half** live (W5-B measured the frame carrying
-`ship-status.js`, `system-renderer.js`). If those assets do not assemble, the component may never
-mount. ⛔ **`harness/assemble.mjs:36` hardcodes `join(ROOT,'plugins',name)`** — defect B1, still open.
-**Check that path first.**
+**How to actually observe the stage, strongest first:**
+1. ⭐ **Screenshot it.** `page.screenshot({captureBeyondViewport:false})` composites iframe content —
+   pixels cross the origin boundary when the DOM cannot. The flag is required or the call hangs.
+2. **Read `frame.srcdoc` as a string** and hash it. This proves *the server filled the frame*; it
+   does **not** prove the browser painted it. State which claim you are making.
+3. **Differential, never absolute:** drive two different inputs and assert the outputs DIFFER. An
+   absolute assertion needs a token confirmed to appear in rendered output — a beat *id* is panel
+   metadata and never reaches the frame.
 
-⛓ **THE TEST THAT WOULD HAVE CAUGHT IT:** every peek proof in this run asserted the frame or the
-badge. **None asserted that a card is on the screen afterwards.** A fix must add
-`.ap-card` count > 0 in a real browser after a peek — the same standard W2 was held to and passed.
+⚠ Re-query `document.getElementById('frame')` inside every evaluate: `showContent` DESTROYS and
+recreates the node, so a handle cached across a push is detached and its `srcdoc` is frozen forever
+— which looks exactly like "the display stopped updating".
+
+⛓ **The general rule: before recording a defect from a negative measurement, ask what the probe
+would show IF THE FEATURE WORKED. If the answer is "the same thing", the probe is the bug.**

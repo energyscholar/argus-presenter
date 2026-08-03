@@ -785,7 +785,21 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // Node's default "Unhandled 'error'" path (which terminates the process).
   wss.on('error', (e) => { try { log.warn('wss', 'error', { err: String(e && e.message || e) }); } catch {} });
 
-  function send(ws, msg) { try { ws.send(JSON.stringify(msg)); } catch (e) {} }
+  // Returns TRUE only if the frame actually left. It used to return nothing and swallow every
+  // throw, which made every delivery count downstream a count of sockets that MATCHED THE TARGET
+  // FILTER rather than sockets that were WRITTEN TO — so "✔ sent to N recipients" survived a
+  // serialization throw, a half-open socket, or a peer that was never OPEN. A receipt that cannot
+  // observe failure is not a receipt (I5).
+  function send(ws, msg) {
+    try {
+      if (!ws || ws.readyState !== 1) return false;   // 1 = OPEN; ws throws on CONNECTING anyway
+      ws.send(JSON.stringify(msg));
+      return true;
+    } catch (e) {
+      try { log.warn('ws', 'send-failed', { err: String((e && e.message) || e).slice(0, 120) }); } catch {}
+      return false;
+    }
+  }
   // Plan 0468 (Part A0): the heartbeat. The server pings every open socket every PING_MS; the
   // client replies {t:'pong'} (inbound traffic ⇒ c.lastSeen refreshed at L~338), so a silent but
   // connected client stays fresh (GREEN). A frozen/half-open socket stops ponging ⇒ lastSeen goes
@@ -1550,7 +1564,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   }
   function sendComponentTo(ws, c, desc) {
     const o = stampFor(c, desc.component, desc.opts || {});
-    send(ws, { t: 'content', contentId: o.promptId || null, html: assemble({ component: desc.component, opts: o, theme: desc.theme || 'argus', requires: desc.requires || [] }) });
+    return send(ws, { t: 'content', contentId: o.promptId || null, html: assemble({ component: desc.component, opts: o, theme: desc.theme || 'argus', requires: desc.requires || [] }) });
   }
   // Produce the HTML STRING for `desc` rendered in viewer `c`'s context — the html-
   // producing half of renderDisplay, factored out for PRIM-mirror (server push of a
@@ -1648,12 +1662,14 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     const b = contentModule.beats[i];
     const explicit = Array.isArray(targetList) && targetList.length ? targetList : null;
     const bases = explicit || [b.target || 'all'];
+    // `reached` is filled by pushComponent with the sockets it genuinely wrote to. It was
+    // previously filled by re-running targets() alongside the push, which counted the ADDRESS
+    // BOOK rather than the deliveries — see send()/pushComponent.
     const reached = new Set();
-    const note = (t) => { for (const ws of targets(t)) reached.add(ws); };
     // Route by the beat's target (per-user hooks broadcast to 'all' by default) and ensure promptId
     // reaches opts so interactive beats can actually collect/gate answers.
     const opts = (b.promptId != null) ? Object.assign({}, b.opts || {}, { promptId: b.promptId }) : (b.opts || {});
-    for (const t of bases) { api.pushComponent(t, b.component, opts, b.theme || 'argus', b.requires || []); note(t); }
+    for (const t of bases) { api.pushComponent(t, b.component, opts, b.theme || 'argus', b.requires || [], reached); }
     const addressed = new Set(reached);   // the BASE audience, frozen before layers widen `reached`
     // DEL-1: per-user layers. A layer with a `target` OVERRIDES the base opts for that
     // user/role (layer opts win). `when`-only layers are runner-evaluated — out of scope here.
@@ -1671,8 +1687,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       if (!L || !L.target) continue;
       if (explicit && !targets(L.target).some((lws) => addressed.has(lws))) continue;
       const lopts = Object.assign({}, b.opts || {}, L.opts || {}, (b.promptId != null) ? { promptId: b.promptId } : {});
-      api.pushComponent(L.target, b.component, lopts, b.theme || 'argus', b.requires || []);
-      note(L.target);
+      api.pushComponent(L.target, b.component, lopts, b.theme || 'argus', b.requires || [], reached);
     }
     currentBeat = i;
     serverApply({ path: 'module/current', verb: 'set', value: i });
@@ -2976,19 +2991,24 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     on: (ev, cb) => { if (listeners[ev]) listeners[ev].push(cb); },
     pushContent(target, html, contentId) {
       setDisplay(target, { kind: 'content', html, contentId });
-      const n = targets(target).map((ws) => send(ws, { t: 'content', contentId: contentId || null, html }));
-      return n.length;
+      let n = 0;   // deliveries, not address-book entries — see send()
+      for (const ws of targets(target)) { if (send(ws, { t: 'content', contentId: contentId || null, html })) n++; }
+      return n;
     },
     // Role-aware push: assemble PER channel, stamping identity + viewerRole, and
     // STRIP gm-only scene items for non-GM viewers (real OPSEC — secret content
     // never leaves the server for a player). This is the per-role-render path.
     // requires = the content module's declared plugin deps (Node-style). The
     // assembler bundles core + exactly that transitive closure; [] ⇒ pure core.
-    pushComponent(target, component, opts = {}, theme = 'argus', requires = []) {
+    // `deliveredOut` (optional Set) collects the sockets the frame ACTUALLY reached, so a caller
+    // can report delivery without re-running targets() and counting the filter a second time.
+    pushComponent(target, component, opts = {}, theme = 'argus', requires = [], deliveredOut = null) {
       const desc = { kind: 'component', component, opts, theme, requires };
       setDisplay(target, desc);                          // C6: remember for (re)connects
       let count = 0;
-      for (const ws of targets(target)) { sendComponentTo(ws, conns.get(ws), desc); count++; }
+      for (const ws of targets(target)) {
+        if (sendComponentTo(ws, conns.get(ws), desc)) { count++; if (deliveredOut) deliveredOut.add(ws); }
+      }
       return count;
     },
     openPoll({ promptId, prompt, options, target = 'participant', resultsTarget = null, resultsMode = 'control' }) {

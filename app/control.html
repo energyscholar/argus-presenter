@@ -120,7 +120,14 @@
   /* GO — the only control that ships. IDLE and ARMED must not be a subtle difference: colour,
      size, weight and glow all move, and the armed label NAMES the beat it will send, so a
      preview stolen by someone else's push still cannot make GO lie about its payload. */
-  #btn-go{font-size:12px;padding:4px 10px;background:#0d1633;border:1px solid #2a3a5a;color:var(--dim);}
+  /* IDLE is quiet, but it must still be SEEN. It previously inherited button:disabled{opacity:.4}
+     on top of a near-background fill, which composited to 2.19:1 against the panel — below the
+     4.5:1 floor, so the only control that ships a beat was invisible until it was already armed.
+     That is a discoverability DEADLOCK: you cannot learn the two-step exists until you have
+     already performed step one. Idle now carries its own opacity (never the generic .4), a
+     legible label at 10.8:1 and a border that reads against the panel at 4.9:1. */
+  #btn-go{font-size:12px;padding:4px 10px;background:#1a2547;border:1px solid #6b82ad;color:#d6e4f7;}
+  #btn-go:disabled{opacity:1;cursor:default;background:#1a2547;border-color:#6b82ad;color:#d6e4f7;}
   #btn-go.armed{font-size:15px;font-weight:700;padding:7px 16px;background:#166534;border:2px solid var(--ok);
     color:#eafff5;box-shadow:0 0 12px rgba(34,229,160,.5);opacity:1;}
   /* The delivery receipt (I5). A send that reached NOBODY is not a quieter success — it is
