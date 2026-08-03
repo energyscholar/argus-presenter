@@ -33,6 +33,9 @@ import { test, check as expect } from '../../harness/test.mjs';
 import { createServer } from '../../app/server.mjs';
 import { launch, until, wait } from '../../harness/multi.mjs';
 import { END_MARKER, beginMarker, TRUST } from '../../app/untrusted.mjs';
+// ⛓ Plan 0532 P4 — the cap is IMPORTED, not transcribed. A second copy of the number in this file
+// is a copy that can disagree with the code, and this test's whole job is to saturate the real one.
+import { SUMMARY_DEFAULTS } from '../../app/summarizer.mjs';
 import { fixtureReport } from './_0531-fixture-run.mjs';
 import { WebSocket } from 'ws';
 
@@ -210,15 +213,20 @@ test('t0529-g1-02 — a REAL browser types 21 turns under a hostile display name
  * of the bound. The bound was never exercised anywhere near its limit, so nobody noticed when plan
  * 0529 P1 began serving the summary FENCED, which duplicates its text.
  *
- * This test drives the summarizer to its actual cap. The knobs (app/summarizer.mjs:33) are
- * maxNotes:40, noteTextCap:120, textCap:4000 — so a session in which forty aged-out turns each
- * carry a hundred-odd characters saturates `text` at exactly 4000, and it takes roughly seventy
- * ordinary utterances to get there. That is not an adversarial fixture. It is a normal hour.
+ * This test drives the summarizer to its actual cap. The knobs (app/summarizer.mjs) are
+ * maxNotes:40, noteTextCap:120, textCap — so a session in which forty aged-out turns each carry a
+ * hundred-odd characters saturates `text` at exactly the cap, and it takes roughly seventy ordinary
+ * utterances to get there. That is not an adversarial fixture. It is a normal hour.
  *
  * ⛔ THE BOUND IS NOT ADJUSTED HERE. "Tests altered to accommodate code" is the named drift signal.
  * The assertion below is the SAME `< 8000` that V0473:70 makes; if the saturated payload exceeds it,
- * this test is RED and that redness is the finding. The fix — `textCap` — is a product decision
- * about how long a headline an agent reads, and it is not a Generator's to make.
+ * this test is RED and that redness is the finding.
+ *
+ * ⛓ RESOLVED BY PLAN 0532 P4, and the distinction matters. `textCap` was lowered 4000 → 3600 in
+ * app/summarizer.mjs; the 8000 assertion below was NOT touched. The only edit made to this file is
+ * that TEXT_CAP is now IMPORTED from the summarizer instead of transcribed — the fixture parameter
+ * follows the knob it exists to saturate, so this test can never again claim to have saturated a
+ * cap the code does not have. The assertion under test is unchanged.
  * ─────────────────────────────────────────────────────────────────────────────────────────────
  */
 const wsClient = (url, hello) => new Promise((resolve) => {
@@ -232,7 +240,7 @@ const wsClient = (url, hello) => new Promise((resolve) => {
 const UTTERANCE = 'the coupling manifold reports a phase excursion beyond the declared envelope and the crew requests a ruling on it now please';
 
 test('t0529-g1-03 — SATURATION: the summarizer driven to its cap, fenced, measured against the bound V0473:70 asserts', async () => {
-  const TEXT_CAP = 4000;          // app/summarizer.mjs:33 — the knob this test exists to saturate
+  const TEXT_CAP = SUMMARY_DEFAULTS.textCap;   // the LIVE knob this test exists to saturate (0532 P4)
   const BOUND = 8000;             // V0473-rolling-summary.test.mjs:70 — NOT to be raised here
   const s = await createServer({ port: 0, settlingMs: 0 });
   try {
@@ -276,9 +284,9 @@ test('t0529-g1-03 — SATURATION: the summarizer driven to its cap, fenced, meas
     // ── (4) THE BOUND. Same number V0473:70 asserts. Not raised, not softened, not skipped. ────
     expect(`the SATURATED served summary stays under the ${BOUND}-byte bound V0473:70 asserts`,
       size < BOUND, size + ' bytes — the bound is BREACHED by ' + (size - BOUND) + ' bytes at saturation. '
-      + 'The cap is textCap:4000 (app/summarizer.mjs:33) and fencing serves the text TWICE, so ~2×4000 '
-      + 'plus the envelope cannot fit under 8000 for ANY saturated summary. Lowering textCap is Bruce\'s '
-      + 'call; raising this assertion is the drift signal and is not on the table.');
+      + 'The cap is textCap:' + TEXT_CAP + ' (app/summarizer.mjs) and fencing serves the text TWICE, so '
+      + '~2×' + TEXT_CAP + ' plus the envelope cannot fit under 8000 for ANY saturated summary. Lower '
+      + 'textCap; raising this assertion is the drift signal and is not on the table.');
 
     for (const ws of conns) ws.close();
   } finally { await s.close(); }

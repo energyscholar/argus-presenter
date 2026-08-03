@@ -30,7 +30,28 @@
 //   noteTextCap — per-note verbatim text cap
 //   textCap     — hard char cap on the serialized `text` headline
 //   maxSpeakers — distinct speakers tracked by name (overflow lumped into an aggregate bucket)
-const DEFAULTS = { maxNotes: 40, noteTextCap: 120, textCap: 4000, maxSpeakers: 20 };
+//
+// ⛓ Plan 0532 P4 — WHY textCap IS 3600 AND NOT 4000.
+//
+// The summary is served FENCED (plan 0529 P1): app/untrusted.mjs annotate() writes the sanitized
+// `text` a SECOND time inside delimiters, as `fenced`. So the served object carries the headline
+// TWICE, and its size is about 2 × textCap + 337 bytes of envelope. At textCap 4000 a saturated
+// summary served 8,338 bytes against the < 8000 bound that
+// test/live/V0473-rolling-summary.test.mjs:70 has asserted since 0473 — a bound NO saturated
+// summary could satisfy at any cap above 3831. The duplication arrived with the fence; the cap
+// never moved to meet it, and the bound went on passing only because its own fixture reached
+// about 1.5 KB and never approached saturation (t0529-g1-03 is the test that finally drove it).
+//
+// 3600 rather than the measured ceiling of 3831: 2 × 3600 + 337 = 7,537, leaving ~460 bytes of
+// margin for the envelope to grow (another trust field, a longer marker) without silently
+// re-breaching a bound that only saturation reveals.
+//
+// ⚠ THE COST IS REAL AND IS NOT HIDDEN: an agent reading the situation now sees a headline up to
+// 400 characters shorter — roughly three of the forty retained notes. The note FIFO is unchanged;
+// what is trimmed is the tail of the serialized headline, i.e. the OLDEST retained detail.
+// ⛔ The alternative — raising the assertion — is the named drift signal and was not on the table.
+export const SUMMARY_DEFAULTS = { maxNotes: 40, noteTextCap: 120, textCap: 3600, maxSpeakers: 20 };
+const DEFAULTS = SUMMARY_DEFAULTS;
 
 /**
  * The DEFAULT rolling-summary updater: a cheap, incremental, heuristic accumulator. It keeps
