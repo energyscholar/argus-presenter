@@ -8,9 +8,23 @@
   background: color-mix(in srgb, var(--ap-bg) 88%, var(--ap-fg) 4%);
 }
 .ap-crud-item[data-locked] { opacity: 0.85; border-color: color-mix(in srgb, var(--ap-accent) 45%, var(--ap-border)); }
-.ap-crud-field { flex: 1 1 auto; color: var(--ap-fg); }
+/* min-width:0 is load-bearing: without it a flex item refuses to shrink below its content,
+   so a row of several fields overflows its container instead of sharing the width. Measured
+   on the 5-field vehicle status row: 1218px of content in a 736px row, with the last two
+   fields rendered entirely off the right edge. */
+.ap-crud-item { flex-wrap: wrap; }
+.ap-crud-field { flex: 1 1 8rem; min-width: 0; color: var(--ap-fg); }
 .ap-crud-field.ap-crud-input { background: transparent; border: 0; border-bottom: 1px dashed var(--ap-border); color: var(--ap-fg); font: inherit; padding: 2px 0; }
 .ap-crud-field.ap-crud-input:focus { outline: none; border-bottom-color: var(--ap-accent); }
+/* A <select> must carry its OWN colours. `background: transparent` lets the native popup fall
+   back to the UA default — white on most platforms — while the text keeps the theme's light
+   --ap-fg, giving light-on-white options that cannot be read. Both the control and its options
+   are set explicitly so the list is light lettering on a dark ground, per the theme. */
+select.ap-crud-field.ap-crud-input {
+  background: color-mix(in srgb, var(--ap-bg) 80%, var(--ap-fg) 8%);
+  color: var(--ap-fg); border: 1px solid var(--ap-border); border-radius: 6px; padding: 3px 6px;
+}
+select.ap-crud-field.ap-crud-input option { background: var(--ap-bg); color: var(--ap-fg); }
 .ap-crud-lock { font-size: 0.75rem; color: var(--ap-accent); white-space: nowrap; }
 .ap-crud-btn { background: transparent; border: 1px solid var(--ap-border); border-radius: 6px; color: var(--ap-fg-dim); cursor: pointer; padding: 2px 8px; font: inherit; }
 .ap-crud-btn:hover { color: var(--ap-fg); border-color: var(--ap-accent); }
