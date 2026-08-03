@@ -112,7 +112,7 @@ test('t0514-27 — each region publishes its active state to the store at ship/<
  *
  * t0514-28 below was named "CORE carries no machine and no domain vocabulary" and was cited as
  * proof of exactly that. It never was: its token list is MACHINE vocabulary, and it scanned five
- * directories. It has never looked for `s17`, `participant-a`, `Waypoint`, `Region` or `s15`, and it has
+ * directories. It has never looked for `s17` or `s15` (those are GENERIC_TOKENS below), and it has
  * never looked outside `app harness mcp lib components`.
  *
  * This test is the missing half. It is deliberately a SEPARATE test rather than a widening of
@@ -166,11 +166,10 @@ const GENERIC_TOKENS = [
   // session ids
   's15', 's17',
   // setting nouns and ranks
-  'waypoint', 'region', 'commander', 'traveller', 'imperium', 'subsector', 'deckplan',
+  'traveller', 'imperium', 'subsector', 'deckplan',
   // kit and factions
   'sandcaster', 'psion', 'vigil',
   // a seat placeholder, not a person
-  'participant-a',
 ];
 
 /*
@@ -195,6 +194,16 @@ const NAME_HASHES = [
   '54a30e1b44816eb4991a1e0c0815943dd084303723469682f5a1057733d99b22',
   '954be8d79f93f37ee5ac8d71302027de924f46826c8382ef36b6a2c9c9709cbb',
   '717b463f908b0d0508e3095577b040ad9363e6813e15acdeb9e687a60a3f4e99',
+  // ↻ S227 — RESTORED. The history purge substituted placeholder words into this list
+  // ('WORLD-A'->'Waypoint', 'WORLD-B'->'Region', 'SURNAME-A'->'Commander', 'SLUG-A'->'participant-a'),
+  // which are ordinary English and flagged 8 innocent files (ARIA `live region`, a fixture comment).
+  // The placeholders are gone from GENERIC_TOKENS; these are the REAL names, hashed, so a
+  // reintroduction is still caught. Recipe above.
+  '17099f1205b970dffa325fbe155244bac638be57ab669cc63da64cf7cf8a02c4',  // world A
+  'e2d1f9773085550e01ee338ef49e6dc9e65b92e9aa50d150569c5f9ca2acee3c',  // world B
+  '2cbdb141169e217398c745a0df3edde5cb28bf755717460ef51620cd8a76f988',  // surname
+  '3b12f3bfee21f830bdc6420bc94e41213d614b8057d3a39ad3fd4274367b7583',  // slug
+  '16d916ae27dc3ec6b65a3645b81772a3bcdb92164e76da5d5662192588b424a4',  // spaced form
 ];
 
 /*
