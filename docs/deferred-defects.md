@@ -271,3 +271,11 @@ Publishing the field now would put a fillable `tags` box on the authoring surfac
 anywhere consumes: **exactly the failure mode 0525 P1.3 was written to end** (`onDemand` sat inert
 in authored modules for months because a declared field had no reader). One line, and it should land
 in the same phase as its reader, not two waves ahead of it.
+
+### The `YOU` heading renders with nothing under it when no plugin declares stations (0534 W4c)
+
+Seen while screenshotting the settings panel at 800x600: `#ap-config`'s first group heading, `YOU`,
+is unconditional, but both rows it heads (`#cfg-station-row`, `#cfg-name-row`) are hidden unless a
+plugin declares stations — so a stations-less deployment gets a section title with no section. One
+line to fix (hide the heading with its rows) and NOT W4c's to fix: it predates this wave and lives
+in the station block.

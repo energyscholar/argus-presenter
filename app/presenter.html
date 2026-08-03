@@ -32,6 +32,30 @@
     padding:4px 10px;font:13px/1.4 'Courier New',monospace;letter-spacing:.06em;pointer-events:none;}
   #ap-seat-k{color:#8ab;font-size:10px;letter-spacing:.14em;text-transform:uppercase;}
   #ap-seat-v{color:#eafff6;font-weight:bold;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  /* Plan 0534 W4c — AMBIENT PEEK STATE. A peek puts a declared surface on ONE viewer's screen and
+     nothing else on the page distinguishes that from what the room is showing. This says so, on
+     the display itself rather than inside Settings, and it is also the way back: click it and you
+     return to the room's screen. AMBER, deliberately unlike the calm seat badge — "you are off on
+     your own" is a state worth noticing. Top-CENTRE because both top corners are already spoken
+     for (⧉ Control, the seat badge, the settings dot); slim, and z 56 sits under the chime pill
+     (z 80, margin-top 18px) so a bell still reads over it.
+     ⚠ CENTRED WITH left:0;right:0;margin:0 auto, NOT with left:50% + translateX. An absolutely
+     positioned shrink-to-fit box gets its available width from the OFFSETS, so left:50% leaves it
+     half the viewport — at 800x600 that wrapped the badge onto two lines and ellipsised the one
+     word that matters (the surface's name) while the boilerplate kept its space. Seen in a
+     screenshot at 800x600, not reasoned about. The hint truncates FIRST (flex:1 1 auto on -x,
+     nothing on -v), so the label is the last thing to go. */
+  #ap-peek{position:fixed;top:0;left:0;right:0;margin:0 auto;width:fit-content;max-width:94vw;
+    z-index:56;display:none;align-items:baseline;gap:9px;flex-wrap:nowrap;
+    background:rgba(44,29,4,.95);border:1px solid #f7c948;
+    border-top:0;border-radius:0 0 8px 8px;padding:3px 13px;font:12px/1.5 'Courier New',monospace;
+    letter-spacing:.06em;color:#f7c948;cursor:pointer;}
+  #ap-peek.show{display:flex;}
+  #ap-peek:hover{background:rgba(66,44,8,.98);border-color:#ffe9a8;}
+  #ap-peek-k{flex:0 0 auto;font-size:10px;letter-spacing:.14em;text-transform:uppercase;opacity:.85;white-space:nowrap;}
+  #ap-peek-v{flex:0 1 auto;color:#ffe9a8;font-weight:bold;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  #ap-peek-x{flex:1 1 auto;min-width:0;font-size:10px;letter-spacing:.1em;opacity:.7;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   #led.on{background:#22e5a0;box-shadow:0 0 8px #22e5a0;}
   /* max-height: the panel is position:fixed with no intrinsic bound — as rows accumulate it
      grew down across the echo line (#ap-echo, bottom:38px) and the input row, which it
@@ -44,6 +68,12 @@
   #ap-config button{background:#12234a;color:#cfe9ff;border:1px solid #2a3a5a;border-radius:5px;padding:3px 7px;font:inherit;cursor:pointer;}
   #ap-config button:hover{border-color:#22e5a0;}
   #ap-config button.sel{border-color:#22e5a0;color:#fff;}
+  /* W4c: a bare <select> renders in the browser's own chrome — bright white in a panel whose every
+     other control is dark. The station selector has always looked like that; the surface picker
+     sits two rows from ▣ My station screen and must not look like a different application, so the
+     rule is on `select` and both now match the buttons. Appearance only. */
+  #ap-config select{background:#12234a;color:#cfe9ff;border:1px solid #2a3a5a;border-radius:5px;padding:3px 6px;font:inherit;cursor:pointer;max-width:100%;}
+  #ap-config select:hover{border-color:#22e5a0;}
   #ap-config input{background:#0d1633;color:#cfe9ff;border:1px solid #2a3a5a;border-radius:5px;padding:3px 6px;font:inherit;flex:1 1 90px;min-width:80px;}
   #ap-config #cfg-role-msg{color:#f97;font-size:11px;flex-basis:100%;margin:0;}
   #ap-config .k{color:#8ab;}
@@ -111,6 +141,10 @@
      deployment with no stations renders nothing at all. Every string in it comes from the
      registry at runtime; core knows no label of its own. -->
 <div id="ap-seat" role="status" aria-live="polite" style="display:none"><span id="ap-seat-k"></span><span id="ap-seat-v"></span></div>
+<!-- Plan 0534 W4c — the peek badge. Ships hidden; shown only while this viewer is on a surface
+     they called up themselves, and clickable to go back. Every word here is core's own: the
+     registry supplies the LABEL and nothing else. -->
+<div id="ap-peek" role="status" aria-live="polite" title="You called this screen up yourself. Click to go back to what the room is showing."><span id="ap-peek-k">▤ You are looking at</span><span id="ap-peek-v"></span><span id="ap-peek-x">only you see this · click to go back</span></div>
 <div id="ap-config" role="dialog" aria-label="Settings">
   <!-- Plan 0514 §7 — the panel was getting cluttered, so it is GROUPED: You · Your screen ·
        Display · Presenter. The old row labelled "Role (User/Presenter)" is the PRIVILEGE axis
@@ -130,6 +164,18 @@
   <div class="row"><button id="cfg-station" title="Show your own station screen. Only you see this.">▣ My station screen</button></div>
   <div class="row" id="cfg-share-row" style="display:none"><button id="cfg-station-share" title="Put YOUR station screen on everyone's display so you can explain it.">◉ Share my screen with everyone</button></div>
   <div class="row"><button id="cfg-station-default" title="Go back to the idle display. Only you see this.">⟲ Show default</button></div>
+  <!-- Plan 0534 W4c — PEEK, the participant's own control. W4b put {t:'peek', surfaceUid} on the
+       wire and nothing on this page could send it, so a screen the deployment declared open to
+       viewers was reachable only from a raw websocket client. It sits here, under "Your screen",
+       beside ▣ My station screen, because it is the same KIND of thing: self-scoped, private,
+       and it changes nothing for anybody else.
+       Shape follows the station selector above deliberately — options carry the INTEGER uid
+       (naming canon §3), grouped and ordered by the registry's own group/sortOrder, so one edit
+       to a manifest cannot desync the picker from what exists.
+       ⛔ HIDDEN ENTIRELY when no plugin declares a peekable surface: an empty picker is worse
+       than no picker. The Back row is hidden until there is something to come back from. -->
+  <div class="row" id="cfg-surface-row" style="display:none"><select id="cfg-surface-select" title="Call up a shared screen on your own display. Only you see this."><option value="">▤ Shared screens…</option></select></div>
+  <div class="row" id="cfg-surface-back-row" style="display:none"><button id="cfg-surface-back" title="Stop looking at the shared screen and go back to what the room is showing.">⤺ Back to the room</button></div>
   <div class="row"><span id="cfg-station-msg" style="font-size:11px;color:#8fe6a8"></span></div>
   <h4>Display</h4>
   <div class="row"><span class="k">Zoom</span> <button data-scale="0.9">90%</button><button data-scale="1">100%</button><button data-scale="1.25">125%</button><button data-scale="1.5">150%</button></div>
@@ -359,14 +405,20 @@
       // The registry + this seat's station + its spotlight grant ride the welcome, so a reconnect
       // RESTORES the client's own state instead of losing it (the 0508 D1 class of bug).
       if (typeof window.__apOnStationWelcome === 'function') window.__apOnStationWelcome(m);
+      // W4c: the surface registry rides the welcome too, and is read SEPARATELY — a deployment can
+      // declare surfaces and no stations, and __apOnStationWelcome returns early on that one.
+      if (typeof window.__apOnSurfaceWelcome === 'function') window.__apOnSurfaceWelcome(m);
       updateGotoControl(); }
     else if (m.t === 'snapshot') { lastSnapshot = m; if (typeof m.version === 'number') lastVersion = m.version; if (frame && frame.contentWindow) frame.contentWindow.postMessage({ source:'argus-host', type:'snapshot', state:m.state, version:m.version }, '*'); }
-    else if (m.t === 'content') showContent(m.html);
-    else if (m.t === 'clear') showIdle();
+    // W4c: a render that is NOT the answer to a peek we just sent is the room taking the screen
+    // back (server.mjs peekTo — "the room still wins", and it sends no notice when it does).
+    else if (m.t === 'content') { if (typeof window.__apRoomPushed === 'function') window.__apRoomPushed(); showContent(m.html); }
+    else if (m.t === 'clear') { if (typeof window.__apRoomPushed === 'function') window.__apRoomPushed(); showIdle(); }
     else if (m.t === 'reload') setTimeout(function(){ location.reload(); }, m.delay || 0);
     else if (m.t === 'chime') { onChime(m); }
     else if (m.t === 'attendance') { onAttendance(m); }
     else if (m.t === 'station') { if (typeof window.__apOnStation === 'function') window.__apOnStation(m); }   // Plan 0508
+    else if (m.t === 'surface') { if (typeof window.__apOnSurface === 'function') window.__apOnSurface(m); }   // Plan 0534 W4c
     /* AP-VOICE:BEGIN */
     else if (m.t === 'voice_enable') {
       // Plan 0470 (RT-9): a REQUEST only. enable() triggers the browser mic-permission prompt
@@ -765,6 +817,98 @@
               'no-stations': 'this session has no stations',
               'not-granted': 'sharing is not enabled for your seat',
               'too-fast': 'wait a moment before sharing again' }[m.reason] || 'unavailable', true);
+    };
+    // ---- Plan 0534 W4c: PEEK — the participant calls up a shared screen themselves ------------
+    // W4b built {t:'peek', surfaceUid} / {t:'unpeek'} and no control could send either, so the
+    // verb existed only for a raw websocket client. Everything below is CLIENT state: the server
+    // deliberately keeps none (peek is stateless so the room can always overwrite it), which is
+    // precisely why this page has to say when it is peeking — see __apRoomPushed at the end.
+    var sfSel = document.getElementById('cfg-surface-select');
+    var sfRow = document.getElementById('cfg-surface-row');
+    var sfBackRow = document.getElementById('cfg-surface-back-row');
+    var peekEl = document.getElementById('ap-peek');
+    var peekV = document.getElementById('ap-peek-v');
+    var sfReg = null;         // the PEEKABLE surfaces the welcome relayed — the ONLY source of a label
+    var peekUid = null;       // what this viewer is peeking at right now, or null for "the room"
+    var peekPending = 0;      // >0 while a peek/unpeek we sent has not been answered yet
+    function sfLabel(uid){
+      if (!Array.isArray(sfReg) || uid == null) return null;
+      for (var i = 0; i < sfReg.length; i++) if (sfReg[i] && sfReg[i].surfaceUid === uid) return sfReg[i].surfaceLabel;
+      return null;
+    }
+    // ONE painter for all three renderings — badge, Back row, picker — so they cannot disagree
+    // about whether this viewer is on a surface or on the room. A uid with no label in the
+    // registry paints as "the room" rather than as a blank badge (the paintSeat rule).
+    function paintPeek(){
+      var label = sfLabel(peekUid);
+      if (label == null) peekUid = null;
+      if (peekEl) {
+        if (peekUid == null) peekEl.classList.remove('show');
+        else { if (peekV) peekV.textContent = label; peekEl.classList.add('show'); }
+      }
+      if (sfBackRow) sfBackRow.style.display = (peekUid == null) ? 'none' : '';
+      if (sfSel) sfSel.value = (peekUid == null) ? '' : String(peekUid);
+    }
+    function sendPeek(uid){ if (ws && ws.readyState === 1) { peekPending++; ws.send(JSON.stringify({ t:'peek', surfaceUid: uid })); } }
+    function sendUnpeek(){ if (ws && ws.readyState === 1) { peekPending++; ws.send(JSON.stringify({ t:'unpeek' })); } }
+    if (sfSel) sfSel.addEventListener('change', function(){
+      var v = sfSel.value;
+      if (!v) { sendUnpeek(); return; }           // choosing the placeholder row IS "go back"
+      sendPeek(parseInt(v, 10));                  // canon §3 — an INTEGER uid reaches the wire
+    });
+    var sfBack = document.getElementById('cfg-surface-back');
+    if (sfBack) sfBack.addEventListener('click', function(e){ e.stopPropagation(); sendUnpeek(); });
+    // The badge is the return path a viewer can find without opening Settings at all.
+    if (peekEl) peekEl.addEventListener('click', function(e){ e.stopPropagation(); sendUnpeek(); });
+    window.__apOnSurfaceWelcome = function(m){
+      var reg = m && m.surfaceRegistry;
+      // DEFAULT-DENY, mirrored client-side: only `peekable === true` is offered. Listing a surface
+      // this viewer would be refused by name is a control that lies.
+      var peekable = Array.isArray(reg) ? reg.filter(function(s){ return s && s.peekable === true; }) : [];
+      sfReg = peekable.length ? peekable : null;
+      peekUid = null;                             // a (re)connect lands on the room: no peek survives it
+      if (!sfReg || !sfSel) { if (sfRow) sfRow.style.display = 'none'; paintPeek(); return; }
+      if (sfRow) sfRow.style.display = '';
+      sfSel.innerHTML = '';
+      var ph = document.createElement('option'); ph.value = ''; ph.textContent = '▤ Shared screens…';
+      sfSel.appendChild(ph);
+      var groups = {}, order = [];
+      sfReg.slice().sort(function(a,b){ return (a.sortOrder||0) - (b.sortOrder||0); }).forEach(function(sf){
+        var g = sf.group || '';
+        if (!groups[g]) { groups[g] = []; order.push(g); }
+        groups[g].push(sf);
+      });
+      order.forEach(function(g){
+        var parent = sfSel;
+        if (g) { parent = document.createElement('optgroup'); parent.label = g; sfSel.appendChild(parent); }
+        groups[g].forEach(function(sf){
+          var o = document.createElement('option');
+          o.value = String(sf.surfaceUid);
+          o.textContent = (sf.icon ? sf.icon + ' ' : '') + sf.surfaceLabel;
+          parent.appendChild(o);
+        });
+      });
+      paintPeek();
+    };
+    window.__apOnSurface = function(m){
+      if (peekPending > 0) peekPending--;
+      if (m.ok && m.unpeeked) { peekUid = null; paintPeek();
+        stSay(m.restored ? 'back to what the room is showing' : 'the room has nothing on your screen'); return; }
+      if (m.ok) { peekUid = (typeof m.surfaceUid === 'number') ? m.surfaceUid : null; paintPeek();
+        stSay(m.hasScreen === false ? 'that screen has nothing on it yet' : 'only you can see this'); return; }
+      paintPeek();          // a refusal changed nothing — put the picker back on the truth
+      stSay({ 'no-surfaces': 'this session has no shared screens',
+              'no-such-surface': 'that screen is not in this session',
+              'not-peekable': 'that screen is not open to viewers',
+              'not-a-uid': 'unavailable' }[m.reason] || 'unavailable', true);
+    };
+    // ⚠ THE ROOM WINS (server.mjs peekTo). A push from the presenter overwrites a peek on this
+    // socket and the server sends NO notice that it did, so the badge would otherwise go on
+    // claiming a surface the viewer can no longer see — a state indicator that lies is worse than
+    // none. Any content/clear that is not the answer to a peek we just sent means the room is back.
+    window.__apRoomPushed = function(){
+      if (peekPending > 0 || peekUid == null) return;
+      peekUid = null; paintPeek(); stSay('the presenter changed what is on your screen');
     };
     if (attEl) attEl.addEventListener('click', function(e){ e.stopPropagation(); });   // don't let clicks bubble to the config click-away closer
     document.addEventListener('keydown', function(e){ if (e.key === 'Escape' && attEl.classList.contains('open')) closeAttendance(); });
