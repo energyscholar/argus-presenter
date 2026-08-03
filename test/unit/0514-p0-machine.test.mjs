@@ -13,6 +13,7 @@ import { test, expect } from '../../harness/test.mjs';
 import { createServer } from '../../app/server.mjs';
 import { WebSocket } from 'ws';
 import { execSync } from 'child_process';
+import { createHash } from 'crypto';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
@@ -122,33 +123,142 @@ test('t0514-27 — each region publishes its active state to the store at ship/<
  */
 
 /*
- * Bare word-boundary tokens, case-insensitive. Anything that names a session, a place, a person
- * or a setting belongs here. This list is a LOWER BOUND on what P2–P4 must remove, never a
- * ceiling: if you find campaign vocabulary the list misses, ADD IT, do not work around it.
+ * ── 0532 P7 — THE TOKEN SET IS STORED AS SALTED SHA-256 HASHES, NOT PLAINTEXT ─────────────────
+ *
+ * Until P7 this guard was the single largest privacy exposure in a PUBLIC repo, because the only
+ * way it knew what to hunt for was to publish it: the handles it exists to keep out were listed
+ * here, in the clear, in the current tree. Purging them from history while the tree still carried
+ * the list would have been theatre. So the scan now compares HASHES. Every capability the guard
+ * had it still has; the handles are simply no longer written down.
+ *
+ * TO ADD A HANDLE — one shell command. The salt is the literal prefix `guard-v1:`:
+ *
+ *     printf '%s' 'guard-v1:some-handle' | sha256sum
+ *
+ * Paste the hex into NAME_HASHES. Rules for the plaintext you feed it:
+ *   - LOWERCASE it. The scan lowercases each file first, which is where case-insensitivity went.
+ *   - Hash the LITERAL text to be caught, punctuation and internal single spaces included
+ *     (`some name`, `some-name`). It is matched whole and bounded by non-word characters — the
+ *     same boundary `grep -w` used to apply.
+ *   - A token with an optional or alternative spelling gets ONE HASH PER SPELLING.
+ *   - To stand in for exactly one arbitrary character (what `.` did in the old regexes), put
+ *     U+0001 (`ANY_CHAR` below) at that position before hashing.
+ *
+ * The salt is public and these are short words, so this is not secrecy. It is the whole of the
+ * difference between a handle that is greppable and indexable in a public repo and one that is
+ * not present in it at all.
  */
-const CAMPAIGN_TOKENS = [
+const HASH_SALT = 'guard-v1:';
+const ANY_CHAR = String.fromCharCode(1);  // U+0001 — never a real separator, so it is safe as a wildcard
+const digest = (s) => createHash('sha256').update(HASH_SALT + s, 'utf8').digest('hex');
+
+/*
+ * GENERIC vocabulary, deliberately left in PLAINTEXT. Session ids, the published name of a game
+ * system, ordinary setting nouns and an obvious seat placeholder are nobody's handle, and hashing
+ * them would cost readability for no privacy gain whatever. (Same call as the register list in
+ * t0532-03, `0532-neutral-register-guard.test.mjs`, and for the same reason.)
+ *
+ * This list is a LOWER BOUND on what must stay out of the repo, never a ceiling: if you find
+ * campaign vocabulary it misses, ADD IT — here if it is generic, to NAME_HASHES if it names
+ * someone or somewhere real.
+ */
+const GENERIC_TOKENS = [
   // session ids
   's15', 's17',
-  // places and setting
-  'waypoint', 'region', 'typhon', 'flammarion', 'commander',
-  'traveller', 'imperium', 'subsector', 'deckplan',
-  // ships, kit, factions
-  'astral dawn', "dragon.?s world", 'sandcaster', 'psion', 'vigil',
-  // people: player seat slugs and the characters behind them
-  'james', 'marina', 'asao', 'cassian',
-  'von ?sydo', 'participant-a', 'sydo',
-  'deveillter', 'planck', 'elara', 'holt',
+  // setting nouns and ranks
+  'waypoint', 'region', 'commander', 'traveller', 'imperium', 'subsector', 'deckplan',
+  // kit and factions
+  'sandcaster', 'psion', 'vigil',
+  // a seat placeholder, not a person
+  'participant-a',
 ];
 
 /*
- * `max` is a player slug AND an ordinary identifier. A bare \bmax\b matches 129 tracked lines,
- * nearly all of them legitimate — `Math.max`, `max-width`, `maxOccupants`, the slider's `max`
- * option, `{ name: 'max', type: 'number' }` in the component manifest. Even a QUOTED 'max' is
- * ambiguous for that last reason. So the slug is matched only in the compound forms the campaign
- * actually uses. This is narrower than the other tokens by necessity, and it is the one token a
- * reviewer should re-check by eye rather than trust.
+ * NAMES — people, places, ships. 14 tokens, expanded to 22 literal forms: two of them have two
+ * spellings each and one carries the ANY_CHAR wildcard. Nothing here is readable, by design; the
+ * recipe above is how you verify or extend it.
  */
-const MAX_SLUG_FORMS = ['max planck', 'st-max', 'max-anomaly', 'max only', '[?&]u=max'];
+const NAME_HASHES = [
+  '644b580b034e0e0a0b9de6fa6b6877ed4ab9e6c10c23353b6602ebebd5ce2952',
+  'e648c2f90407fc5c80f50f7069ddf2d8f08015fc80385de3e836e0b5084a4898',
+  'bccc334b81ee5adc782b36b9d36be2eb311537dd2299363b2963d76aed8656e0',
+  'ae92bc5eec065a07a62602c6b83a0e0870401c274c8fbf3c1017d15ca38d8b99',
+  '8598be76b060bb884c03ad8ca89bd84bf33e71efef19c742586b5f894b019ae5',
+  '5100bf7026c622fa3bdaf746d23444b1693cff1740674a517f0255060f698a0d',
+  'da0893dc92788c08b4dc8b49719e4819f3636ef86a9123d1f15d6c8dcd2d1258',
+  '6ad935b42cf8bf2c890a92b5adacf475938430ab8c05049339b799f672e46a47',
+  '315317489867c72c721963d51d8d0aeefc82d579bcaf5027e92a76963341921f',
+  '16d916ae27dc3ec6b65a3645b81772a3bcdb92164e76da5d5662192588b424a4',
+  '3b12f3bfee21f830bdc6420bc94e41213d614b8057d3a39ad3fd4274367b7583',
+  '6b1370fa54983df17d2da53f5b43f4ad141dc56bee2f790b8dbeb97046540b7c',
+  '231a10b0cb6bb6ae8f5e71312f312dad05fb6179afd43961025ae34ab16aa292',
+  '54a30e1b44816eb4991a1e0c0815943dd084303723469682f5a1057733d99b22',
+  '954be8d79f93f37ee5ac8d71302027de924f46826c8382ef36b6a2c9c9709cbb',
+  '717b463f908b0d0508e3095577b040ad9363e6813e15acdeb9e687a60a3f4e99',
+];
+
+/*
+ * One guarded name is also an ordinary programming identifier. As a bare word it matches 129
+ * tracked lines, effectively all of them legitimate — a numeric helper, a CSS width property, an
+ * occupancy cap, a slider bound, a typed field in the component manifest — and even the QUOTED
+ * form is ambiguous for that last reason. So it is guarded ONLY in the compound forms the content
+ * repo actually uses, never bare. This is narrower than every other token by necessity. It is
+ * unchanged from the pre-P7 guard: five forms in, five forms out.
+ */
+const AMBIGUOUS_SLUG_HASHES = [
+  '81776c8f8e0e13233f753778155b139ea74a56c1d51a9dab0dcd7c68fed0049e',
+  'b7a7370b073d1b695fbc1cd57bf79d0973b87059ae1b1c99ea0b4acfcd529a3f',
+  'ac332d43fad355ed70b0117e21ad1d39930d80755797c1b261edd7144d70ac93',
+  '3b431a3e991a25cb83824e79b410affe83232ba7882ce6fa41cc4ad24352d37c',
+  // the query-string form, anchored on its leading punctuation — one hash per anchor character
+  'b07d23b3e67c08bb955be0c31b3956017c54ae418be461cf2ba3e8822d4d6c96',
+  '157f896118ab733b3141ee5b8bd729f04e140c8c4c6a4ab67a6e73f6a80da418',
+];
+
+/*
+ * ── Candidate generation: the exact shape `grep -wiE` matched, minus the plaintext ────────────
+ *
+ * Lowercase the text and take every maximal run of [a-z0-9]. Those runs ARE grep's word
+ * boundaries. Emit the RAW substring spanned by each window of 1..3 consecutive runs, plus:
+ *   - the same window with one preceding non-word character attached, so a pattern may be
+ *     anchored on punctuation the way the query-string form is;
+ *   - for a 3-run window whose FIRST gap is exactly one character, the window with that character
+ *     replaced by ANY_CHAR — this is the old `.` wildcard, and grep's `.` never crossed a newline
+ *     either, because grep is line-based.
+ *
+ * Separators are carried through VERBATIM, which is what keeps this from widening. A hyphenated
+ * token is only ever compared against the same hyphen: if `oo-ban` were guarded, `foo-ban` would
+ * still not match it, exactly as `grep -w` refused. `participant-authored` and
+ * `probe-participant-ack` still do not look like `participant-a` — both appear in tracked files
+ * today, and both were correctly ignored before. A window spanning a newline still cannot match a
+ * single-line pattern, because grep was line-based and would not have matched it either.
+ */
+const WORD_RUN = /[a-z0-9]+/g;
+function* candidates(text) {
+  const s = text.toLowerCase();
+  const runs = [];
+  let m;
+  WORD_RUN.lastIndex = 0;
+  while ((m = WORD_RUN.exec(s)) !== null) runs.push([m.index, m.index + m[0].length]);
+  for (let i = 0; i < runs.length; i++) {
+    const start = runs[i][0];
+    const anchored = start > 0 && !/[a-z0-9]/.test(s[start - 1]);
+    for (let n = 1; n <= 3 && i + n <= runs.length; n++) {
+      const end = runs[i + n - 1][1];
+      yield s.slice(start, end);
+      if (anchored) yield s.slice(start - 1, end);
+      if (n === 3 && runs[i + 1][0] - runs[i][1] === 1) {
+        yield s.slice(start, runs[i][1]) + ANY_CHAR + s.slice(runs[i + 1][0], end);
+      }
+    }
+  }
+}
+
+/** The first candidate in `text` whose hash is in `hashes`, or null. Returns the HIT, not a name. */
+function firstHit(text, hashes) {
+  for (const c of candidates(text)) if (hashes.has(digest(c))) return c;
+  return null;
+}
 
 /*
  * ALLOW-LIST — invented, obviously-fictional fixture names ONLY.
@@ -162,31 +272,49 @@ const ALLOW_LIST = [
   GUARD_SELF,   // the guard's own token list
 ];
 
-/** Every real player seat slug. The allow-list must never contain one of these. */
-const REAL_PLAYER_SLUGS = ['james', 'marina', 'asao', 'max', 'cassian', 'participant-a'];
+/*
+ * Every real player seat slug, hashed. The allow-list must never contain one of these. The bare
+ * ambiguous slug IS in this set — the 129-line collision above only matters when scanning source,
+ * and this set is only ever run against an allow-list FILENAME.
+ */
+const PLAYER_SLUG_HASHES = new Set([
+  '5100bf7026c622fa3bdaf746d23444b1693cff1740674a517f0255060f698a0d',
+  'da0893dc92788c08b4dc8b49719e4819f3636ef86a9123d1f15d6c8dcd2d1258',
+  '6ad935b42cf8bf2c890a92b5adacf475938430ab8c05049339b799f672e46a47',
+  '8dec150ca68b331f206b0bc88b5945868c96035fb7cae31dc3b6567874f652c0',
+  '315317489867c72c721963d51d8d0aeefc82d579bcaf5027e92a76963341921f',
+  digest('participant-a'),   // plaintext above: a placeholder, hashed here only for one code path
+]);
+
+/** Everything the tree scan hunts for: the hashed names, plus the generic words hashed at load. */
+const TOKEN_HASHES = new Set([
+  ...NAME_HASHES, ...AMBIGUOUS_SLUG_HASHES, ...GENERIC_TOKENS.map(digest),
+]);
 
 test('t0531-01 — NO campaign vocabulary in ANY tracked file (the public repo is domain-free)', () => {
   // The allow-list is itself under guard: an exemption that smuggles a player slug back in would
   // defeat the whole test, so assert it before using it.
   for (const entry of ALLOW_LIST) {
     const bare = entry.split('/').pop().replace(/\.(mjs|js|md|html|json)$/, '');
-    for (const slug of REAL_PLAYER_SLUGS) {
-      expect(!new RegExp(`(^|[^a-z0-9])${slug}([^a-z0-9]|$)`, 'i').test(bare),
-        `allow-list entry "${entry}" must not contain the real player slug "${slug}"`, entry);
-    }
+    const hit = firstHit(bare, PLAYER_SLUG_HASHES);
+    expect(hit === null,
+      `allow-list entry "${entry}" must not contain a real player seat slug`, `${entry} -> ${hit}`);
   }
 
-  // Scan EVERY TRACKED FILE — `git ls-files`, not a hand-picked set of directories. -I skips
-  // binaries; -w keeps `s15` from matching inside a longer word.
-  const pattern = [...CAMPAIGN_TOKENS, ...MAX_SLUG_FORMS].join('|');
-  let out = '';
-  try {
-    out = execSync(`git ls-files -z | xargs -0 grep -IlnwiE '${pattern}' || true`,
-      { cwd: ROOT, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
-  } catch (e) { out = e.stdout || ''; }
+  // Scan EVERY TRACKED FILE — `git ls-files`, not a hand-picked set of directories. Files are read
+  // here rather than piped through grep because the patterns no longer exist in plaintext to pipe.
+  // A NUL byte in the first 8 KB means binary, which is the same heuristic `grep -I` applies.
+  const tracked = execSync('git ls-files -z', { cwd: ROOT, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })
+    .split('\0').filter(Boolean);
 
-  const files = out.split('\n').map((l) => l.trim()).filter(Boolean)
-    .filter((f) => !ALLOW_LIST.includes(f));
+  const files = [];
+  for (const rel of tracked) {
+    if (ALLOW_LIST.includes(rel)) continue;
+    let buf;
+    try { buf = readFileSync(join(ROOT, rel)); } catch { continue; }          // deleted / unreadable
+    if (buf.subarray(0, 8192).includes(0)) continue;                          // binary, as -I skips
+    if (firstHit(buf.toString('utf8'), TOKEN_HASHES) !== null) files.push(rel);
+  }
 
   expect(files.length === 0,
     `${files.length} tracked file(s) carry campaign vocabulary — move or neutralise them (plan 0531 P2–P4)`,
