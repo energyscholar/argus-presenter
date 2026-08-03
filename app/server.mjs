@@ -22,7 +22,7 @@ import { dirname, join } from 'path';
 import { tmpdir } from 'os';
 import { WebSocketServer } from 'ws';
 import { assemble } from '../harness/assemble.mjs';
-import { loadManifests, pluginDir, buildStationRegistry, pluginServerModule } from '../harness/plugins.mjs';
+import { loadManifests, pluginDir, buildStationRegistry, buildSurfaceRegistry, pluginServerModule } from '../harness/plugins.mjs';
 import * as log from './log.mjs';
 import { createStore, isEphemeral, validOp } from './state.mjs';
 import { ALL as ALL_READ_ROLES } from './permissions.mjs';
@@ -305,7 +305,16 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // Validation throws HERE, at load, so a malformed registry stops the server starting instead
   // of surprising a live session. No plugin declares stations ⇒ an empty registry ⇒ every
   // station surface below is inert and a teaching deployment sees no change whatsoever.
-  const stationRegistry = buildStationRegistry(loadManifests(), { log });
+  // ONE manifest read, two registries built from it — a plugin's declaration must not be able to
+  // differ between them because the disk changed in between.
+  const bootManifests = loadManifests();
+  const stationRegistry = buildStationRegistry(bootManifests, { log });
+  // ── Plan 0526 P1 §5 — the SURFACE REGISTRY. Same footing, same loader, same failure posture.
+  // A surface is a screen a viewer may CALL UP; it is declared by the deployment and loaded HERE,
+  // once, so that it outlives every `present_module`. Nothing below ever writes to it: `setModule`
+  // replaces `contentModule` and cannot reach this binding, which is the whole point of the phase
+  // (0514 §13.1 is the same class of bug, one layer down).
+  const surfaceRegistry = buildSurfaceRegistry(bootManifests, { log });
   // Plan 0514 §4.2a — the SEAT RESOLVER. Core stores NO seat→station map (§13.2): it asks the
   // plugin at the moment it needs a value and forgets it. Null until a plugin registers one, in
   // which case stations are inert.
@@ -1798,6 +1807,78 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     return { ok: true, stationUid: uid, stationLabel: st.stationLabel, projected, targets: bases };
   }
 
+  // ── Plan 0526 P1 — SURFACES ──────────────────────────────────────────────────────────────
+  // A SURFACE is a declared screen a viewer may be shown on request. THE PHASE IS THE REGISTRY,
+  // NOT THE VERB: everything here holds and ADDRESSES a surface (does it exist, may it be
+  // summoned, what does it render as). Nothing here puts one on anybody's screen — the summoning
+  // verb (`peek`/`unpeek`, 0526 P4) is deliberately a separate change, so that a defect in the
+  // verb cannot cost the registry and vice versa.
+  //
+  // ⚠ WHY THERE IS NO `renderSurfaceTo` HERE. `renderStationTo(ws, c, seat)` reads
+  // `seat.descriptor` — it is SEAT-shaped: it takes the row a plugin's seat resolver answered
+  // with, and there is no seat behind a surface, so it cannot be handed a surfaceId as written.
+  // Rather than widen a function three station call sites depend on, the registry OWNS the
+  // descriptor: `surfaceDescriptor(id, c)` returns something `renderDisplay` already accepts, so
+  // P4's peek is one call to the existing renderer and `renderStationTo` is left untouched.
+
+  /** Surfaces are live only when some plugin declared one. Empty registry ⇒ every surface refuses. */
+  function surfacesActive() { return !surfaceRegistry.isEmpty(); }
+
+  /**
+   * The CORE GENERIC PLACEHOLDER for a declared surface with no screen — the sibling of
+   * `stationPlaceholder`, and built from REGISTRY VALUES ONLY, so core still contains no
+   * deployment's vocabulary. A declared-but-undrawn surface says so; it never renders blank.
+   */
+  function surfacePlaceholder(surfaceId, c) {
+    const sf = surfaceRegistry.get(surfaceId);
+    return {
+      kind: 'component', component: 'card', theme: 'argus', requires: [],
+      opts: {
+        title: (sf && sf.icon ? sf.icon + ' ' : '') + (sf ? sf.surfaceLabel : ''),
+        subtitle: (c && c.userName) || '',
+        body: 'no screen declared for this surface yet',
+      },
+    };
+  }
+
+  /**
+   * A surface's screen as a descriptor, or null when no such surface is declared.
+   *
+   * ⛓ THE SURVIVAL PROPERTY, and the reason this function is two lines instead of a lookup into
+   * the loaded module: it reads `surfaceRegistry` and NOTHING ELSE. It does not consult
+   * `contentModule`, `currentBeat`, `displayByRole` or `displayByUser`, so `setModule` — which
+   * replaces the module wholesale and resets the beat — cannot change what it answers.
+   * `requires` carries the DECLARING PLUGIN, so a surface drawn with a plugin's own component
+   * still assembles when it is called up from a session running someone else's module.
+   */
+  function surfaceDescriptor(surfaceId, c = null) {
+    const sf = surfaceRegistry.get(surfaceId);
+    if (!sf) return null;
+    if (!sf.screen) return surfacePlaceholder(surfaceId, c);
+    return {
+      kind: 'component', component: sf.screen.component, theme: 'argus',
+      requires: sf.pluginName ? [sf.pluginName] : [],
+      opts: Object.assign({}, sf.screen.opts),
+    };
+  }
+
+  /**
+   * Resolve a surfaceId for a caller. REFUSES BY NAME — `no-surfaces` (none declared anywhere),
+   * `no-such-surface` (undeclared id), `not-peekable` (declared, but not offered to viewers).
+   * A silent no-op here would be I5's silent wrong answer: the viewer asks for a screen, gets
+   * whatever was already there, and has no way to tell the two apart.
+   */
+  function resolveSurface(surfaceId, c = null) {
+    if (!surfacesActive()) return { ok: false, reason: 'no-surfaces', surfaceId: surfaceId == null ? null : String(surfaceId) };
+    const sf = surfaceRegistry.get(surfaceId);
+    if (!sf) return { ok: false, reason: 'no-such-surface', surfaceId: surfaceId == null ? null : String(surfaceId) };
+    if (!sf.peekable) return { ok: false, reason: 'not-peekable', surfaceId: sf.surfaceId, surfaceLabel: sf.surfaceLabel };
+    return {
+      ok: true, surfaceId: sf.surfaceId, surfaceLabel: sf.surfaceLabel, peekable: true,
+      hasScreen: !!sf.screen, descriptor: surfaceDescriptor(sf.surfaceId, c),
+    };
+  }
+
   /**
    * Plan 0514 §4.2 — load each plugin's optional server module and hand it the NEUTRAL
    * registration context. Core knows only that a plugin may have server-side code: it has no
@@ -1856,6 +1937,8 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       },
       // The station rows this deployment declared, so the plugin can resolve uid → screen.
       stations: stationRegistry,
+      // Plan 0526 P1 — the surface rows this deployment declared, read-only, same shape.
+      surfaces: surfaceRegistry,
       // §4.2a — request/response, not fire-and-forget. Core calls select() on join and on
       // {t:'station-select'}, get() whenever it builds welcome/presence, release() on disconnect.
       provideSeatResolver: (r) => {
@@ -2856,6 +2939,20 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         seats: presence().map((p) => ({ userId: p.userId, userName: p.userName, stationUid: p.stationUid })),
       };
     },
+    // ── Plan 0526 P1 — the DECLARED SURFACES ─────────────────────────────────────────────
+    /**
+     * Every surface this deployment declared, in wire form. Deployment DATA: it is the same
+     * answer before, during and after a `present_module`, because a surface is not part of a
+     * module. Empty list ⇒ nobody declared any, and every `surfaceScreen` call refuses.
+     */
+    surfaces() { return { surfaces: surfaceRegistry.wire() }; },
+    /**
+     * Address ONE surface: does it exist, may a viewer be shown it, and what does it render as.
+     * `{ok:true, descriptor}` or `{ok:false, reason}` — never a silent null. This is the
+     * addressing half of the capability; the verb that puts it on a viewer's screen without
+     * disturbing the room's beat is 0526 P4.
+     */
+    surfaceScreen: (surfaceId) => resolveSurface(surfaceId, null),
     /**
      * Seat a player who cannot manage the dropdown. Unresolvable uid ⇒ the default, never an error.
      *

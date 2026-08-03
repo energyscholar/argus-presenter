@@ -226,3 +226,21 @@ for W2 — the deck itself fits at both ratios with reveals closed.
 neither of which that glob reaches. After one `resolve-refs --out`, `git status` shows
 `?? modules/.resolve-refs/` indefinitely. One line in `.gitignore` fixes it. Found in 0534 W2;
 the tool is W1-A's, so this is recorded rather than patched.
+
+### `docs/naming-canon.md` §7 lists five lints (N-1…N-5) and the file that holds them does not exist
+
+The canon says "Lints in `test/unit/naming-canon.test.mjs`" and names N-1 (`no SELECT *`) through N-5
+(collision scan). There is no such file, and `grep -rl 'N-3' test/` is empty — the canon has been
+self-enforcing on paper only. Found while checking 0526 P1's `surfaceId` against §3; recorded, not
+fixed, because writing five lints is its own phase.
+
+### `surfaceId` is a STRING lookup key, which naming-canon §3 forbids and plan 0526 mandates
+
+§3: "a human-readable code may exist … purely for authoring … never a foreign key, runtime lookup
+key, push target, or wire identifier", and identity is an integer UID. Plan 0526 P1/P4 specify
+`{surfaceId, surfaceLabel, peekable}` and `{t:'peek', surfaceId}` — a string on the wire. 0526 P1
+followed the plan (the registry keys by string, `[a-z][a-z0-9-]*`, unique across plugins, and
+refuses an unknown id BY NAME rather than resolving it to a default the way `stationRegistry.get`
+does). The precedent cuts both ways: beat ids and module ids are already strings; station uids are
+integers precisely because a misspelled code silently seated the wrong person. Someone should rule
+before P4 puts the string on the wire.

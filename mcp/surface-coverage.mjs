@@ -134,6 +134,11 @@ export const API_COVERAGE = {
   // built to find it. Exposed rather than declined: putting a station's screen on the room is an
   // AI-in-the-loop narration move, and it writes nothing, so there is nothing to protect.
   stationProject:      { tool: 'presenter_station_project' },
+  // Plan 0526 P1 — the SURFACE REGISTRY. Deployment DATA, read-only, and (unlike a station) with
+  // no occupancy and no seat behind it: there is nothing here an agent could corrupt, and — until
+  // the summoning verb exists — nothing it could DO with them either.
+  surfaces:            { declined: 'NOT YET EXPOSED, and deliberately: 0526 P1 is the REGISTRY only. A list of screens nobody can yet be shown is deployment configuration, not a session capability — the agent-facing tool lands with the verb (peek/unpeek, 0526 P4) so that the tool and the thing it drives ship together rather than the tool arriving first and reporting nothing.' },
+  surfaceScreen:       { declined: 'NOT YET EXPOSED — same reason as `surfaces` above. It answers "does this surface exist, may a viewer be shown it, what does it render as"; the acting-on-that-answer half is 0526 P4, and an agent that can resolve a surface but not summon one has been handed a question with no verb.' },
   pluginTools:         { tool: 'presenter_plugin_tool' },
   callPluginTool:      { tool: 'presenter_plugin_tool' },
   spotlightHolders:    { declined: 'NOT YET EXPOSED — owed. Who currently holds a share grant is READ-only state; it belongs on presenter_status/attendance alongside the roster rather than in its own tool. Grant/revoke is already reachable via presenter_spotlight.' },

@@ -213,6 +213,143 @@ function resolveStationScreen(pluginName, row, log) {
   return { component, opts };
 }
 
+// ── Plan 0526 P1 — the SURFACE REGISTRY ─────────────────────────────────────────────────
+// A SURFACE is a named screen a viewer may be shown ON REQUEST, declared by the DEPLOYMENT and
+// loaded ONCE at startup — deliberately NOT part of a content module. A beat exists only inside
+// the module that is currently loaded, so anything sourced from a beat dies on the next
+// `present_module`; that is 0514 §13.1's failure, where every seat's screen vanished on a module
+// load, in a second place. A surface is registry DATA on the same footing as a station row: core
+// holds it, core never rewrites it, and no display or module code path can reach it.
+//
+// ⚠ HOW THIS DIFFERS FROM THE STATION REGISTRY, deliberately:
+//   · MANY plugins may declare surfaces. A seating chart is exclusive — two of them is an
+//     incoherent deployment — but a screen somebody can call up is additive, so surfaces MERGE
+//     across plugins and only a COLLIDING id or label throws.
+//   · `peekable` is DEFAULT-DENY. A surface that has not said it may be summoned may not be
+//     summoned; the verb that does the summoning (0526 P4) refuses it BY NAME.
+// The registry deliberately holds no per-surface CODE — a row resolves to a plain descriptor at
+// load, exactly like `stationScreen`, so "add a surface" stays a data change forever.
+
+const SURFACE_ID_RE = /^[a-z][a-z0-9-]*$/;       // on the wire, so: lowercase, stable, typeable
+
+/** The registry every deployment has when no plugin declares surfaces: empty, and inert. */
+function emptySurfaceRegistry() {
+  return {
+    plugins: [],
+    list: [],
+    isEmpty: () => true,
+    get: () => null,
+    wire: () => [],
+  };
+}
+
+/**
+ * Build the surface registry from a manifest map. Returns an (empty) registry when no plugin
+ * declares surfaces — a deployment that has never heard of them is untouched.
+ * THROWS on: a malformed row, a duplicate surfaceId or surfaceLabel (across ALL plugins), or a
+ * non-boolean `peekable`. As with stations, a registry that is wrong stops the server starting
+ * rather than surprising a live session.
+ *
+ * `log` is optional and is used only for non-fatal reports: a `screenFile` that is missing or
+ * unparseable degrades that ONE surface to "no screen" (⇒ the caller's placeholder) — art that
+ * has not been drawn must never take the server down.
+ */
+export function buildSurfaceRegistry(manifests = loadManifests(), { log = null } = {}) {
+  const declaring = Object.keys(manifests).filter((n) => manifests[n] && manifests[n].surfaces !== undefined).sort();
+  if (declaring.length === 0) return emptySurfaceRegistry();
+
+  const byId = new Map();
+  const labelOwner = new Map();
+  const list = [];
+  for (const pluginName of declaring) {
+    const rows = manifests[pluginName].surfaces;
+    if (!Array.isArray(rows)) throw new Error(`surface registry: ${pluginName}.surfaces must be an array`);
+    for (const row of rows) {
+      if (!row || typeof row !== 'object') throw new Error(`surface registry: each surface must be an object (${pluginName})`);
+      const { surfaceId, surfaceLabel } = row;
+      if (typeof surfaceId !== 'string' || !SURFACE_ID_RE.test(surfaceId)) {
+        throw new Error(`surface registry: surfaceId must match [a-z][a-z0-9-]* (got ${JSON.stringify(surfaceId)} in ${pluginName})`);
+      }
+      if (byId.has(surfaceId)) {
+        throw new Error(`surface registry: duplicate surfaceId ${JSON.stringify(surfaceId)} (${byId.get(surfaceId).pluginName} and ${pluginName}) — an id means one screen`);
+      }
+      if (typeof surfaceLabel !== 'string' || !surfaceLabel.trim()) {
+        throw new Error(`surface registry: surfaceLabel must be a non-empty string (surfaceId ${JSON.stringify(surfaceId)})`);
+      }
+      if (labelOwner.has(surfaceLabel)) {
+        throw new Error(`surface registry: duplicate surfaceLabel ${JSON.stringify(surfaceLabel)} (${labelOwner.get(surfaceLabel)} and ${surfaceId}) — two rows a viewer cannot tell apart`);
+      }
+      if (row.peekable !== undefined && typeof row.peekable !== 'boolean') {
+        throw new Error(`surface registry: peekable must be a boolean (surfaceId ${JSON.stringify(surfaceId)})`);
+      }
+      const sortOrder = Number.isInteger(row.sortOrder) ? row.sortOrder : list.length + 1;
+      const surface = {
+        surfaceId, surfaceLabel,
+        // DEFAULT-DENY (see the note above): silence is "no", never "yes".
+        peekable: row.peekable === true,
+        group: typeof row.group === 'string' ? row.group : null,
+        icon: typeof row.icon === 'string' ? row.icon : null,
+        sortOrder,
+        pluginName,
+        screen: resolveSurfaceScreen(pluginName, row, log),
+      };
+      byId.set(surfaceId, surface);
+      labelOwner.set(surfaceLabel, surfaceId);
+      list.push(surface);
+    }
+  }
+  list.sort((a, b) => a.sortOrder - b.sortOrder || (a.surfaceId < b.surfaceId ? -1 : 1));
+
+  return {
+    plugins: declaring,
+    list,
+    isEmpty: () => list.length === 0,
+    /** The ONLY surface lookup there is. Unknown ⇒ null, and every caller refuses BY NAME. */
+    get: (id) => (typeof id === 'string' && byId.has(id) ? byId.get(id) : null),
+    /** The WIRE form: what a client may be told exists. Never the plugin's file layout. */
+    wire: () => list.map((sf) => ({
+      surfaceId: sf.surfaceId, surfaceLabel: sf.surfaceLabel, peekable: sf.peekable,
+      group: sf.group, icon: sf.icon, sortOrder: sf.sortOrder, hasScreen: !!sf.screen,
+    })),
+  };
+}
+
+/**
+ * Turn a manifest `screen` into a ready-to-render component descriptor ONCE, at load.
+ *
+ * Two sources, both DATA: inline `{component, opts}`, and `screenFile` — a plugin-relative JSON
+ * file holding the same two keys, read behind the same path guard as `stationScreen.svgFile`,
+ * because a screen worth calling up is usually far too big to sit inside plugin.json. Inline opts
+ * are merged OVER the file's, so a deployment can override one field without copying the artwork.
+ * Missing or unparseable file ⇒ LOGGED, and that one surface has no screen.
+ */
+function resolveSurfaceScreen(pluginName, row, log) {
+  const s = row.screen;
+  if (!s || typeof s !== 'object') return null;
+  let fileOpts = null;
+  let component = typeof s.component === 'string' && s.component ? s.component : null;
+  if (s.screenFile) {
+    const raw = readPluginFile(pluginName, s.screenFile);
+    if (raw == null) {
+      log && log.warn && log.warn('surface', 'screen-file-missing', { plugin: pluginName, surfaceId: row.surfaceId, screenFile: String(s.screenFile) });
+      return null;
+    }
+    let parsed = null;
+    try { parsed = JSON.parse(raw); } catch (e) {
+      log && log.warn && log.warn('surface', 'screen-file-unparseable', { plugin: pluginName, surfaceId: row.surfaceId, screenFile: String(s.screenFile), err: String(e && e.message || e) });
+      return null;
+    }
+    if (!parsed || typeof parsed !== 'object') {
+      log && log.warn && log.warn('surface', 'screen-file-not-an-object', { plugin: pluginName, surfaceId: row.surfaceId, screenFile: String(s.screenFile) });
+      return null;
+    }
+    if (!component && typeof parsed.component === 'string' && parsed.component) component = parsed.component;
+    fileOpts = (parsed.opts && typeof parsed.opts === 'object') ? parsed.opts : {};
+  }
+  if (!component) component = 'card';
+  return { component, opts: Object.assign({}, fileOpts || {}, s.opts || {}) };
+}
+
 /** Does this plugin declare a server-side module (0514 §4.2)? Returns its relative file or null. */
 export function pluginServerModule(manifest) {
   const s = manifest && manifest.server;
