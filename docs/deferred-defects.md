@@ -244,3 +244,20 @@ refuses an unknown id BY NAME rather than resolving it to a default the way `sta
 does). The precedent cuts both ways: beat ids and module ids are already strings; station uids are
 integers precisely because a misspelled code silently seated the wrong person. Someone should rule
 before P4 puts the string on the wire.
+
+**⚖ RULED, 0534 W4b (0526 P4).** Naming canon §3 wins; the plan was wrong. `surfaceUid` INTEGER is
+assigned by `buildSurfaceRegistry()` at load, is the only lookup key, and is what `{t:'peek'}`
+carries; `surfaceId` stays in `plugin.json` as the authoring code and does not appear in `wire()`.
+A code sent where a uid belongs is refused `not-a-uid` — loudly, never searched for. **The §7 lint
+gap above is still open**, so nothing but review stops the next plan doing this again.
+
+### Two shells edited this working tree at the same time (observed, 0534 W4b)
+
+While W4b was running, `app/validate.mjs` and `test/unit/0525-p5-core-schema-coverage.test.mjs`
+changed under it and `test/unit/0526-p2-component-registration.test.mjs` appeared — 0526 P2, live in
+another shell. Consequences seen, both real: a unit-tier run showed 5 failures that belonged to the
+other shell's in-flight break-test (`phantom-gone`), and the shared index held the other shell's
+staged file, so W4b had to commit by explicit pathspec. **An executed-test count measured while a
+second shell is adding tests is not attributable**, which is why W4b reports its own 257 → 263 from
+the one run where the tree was quiet rather than from the final one. GENERATOR-BRIEF §1 says phases
+are strictly serial; the guard 0521 added is for two shells on one *repo*, and it did not fire here.

@@ -135,10 +135,11 @@ export const API_COVERAGE = {
   // AI-in-the-loop narration move, and it writes nothing, so there is nothing to protect.
   stationProject:      { tool: 'presenter_station_project' },
   // Plan 0526 P1 — the SURFACE REGISTRY. Deployment DATA, read-only, and (unlike a station) with
-  // no occupancy and no seat behind it: there is nothing here an agent could corrupt, and — until
-  // the summoning verb exists — nothing it could DO with them either.
-  surfaces:            { declined: 'NOT YET EXPOSED, and deliberately: 0526 P1 is the REGISTRY only. A list of screens nobody can yet be shown is deployment configuration, not a session capability — the agent-facing tool lands with the verb (peek/unpeek, 0526 P4) so that the tool and the thing it drives ship together rather than the tool arriving first and reporting nothing.' },
-  surfaceScreen:       { declined: 'NOT YET EXPOSED — same reason as `surfaces` above. It answers "does this surface exist, may a viewer be shown it, what does it render as"; the acting-on-that-answer half is 0526 P4, and an agent that can resolve a surface but not summon one has been handed a question with no verb.' },
+  // no occupancy and no seat behind it: there is nothing here an agent could corrupt.
+  // ⚠ 0526 P4 HAS NOW LANDED THE VERB, and these two are still declined — the earlier text said
+  // the tool would ship WITH the verb, so here is the honest correction rather than a stale note.
+  surfaces:            { declined: 'NOT EXPOSED. The reason CHANGED at 0526 P4 (plan 0534 W4b) and this entry is the correction: the verb now exists, but it is `{t:\'peek\'}` on the WEBSOCKET, not on `api`. Peek renders down ONE socket and its whole point is that it disturbs nobody else; an in-process MCP caller has no socket, so an exposed tool could only ever peek on somebody ELSE\'S behalf — which is `presenter_station_project`, a different capability that already exists. The read-only list is declined with it: a catalogue whose only verb is a participant\'s own is deployment configuration, not an agent capability.' },
+  surfaceScreen:       { declined: 'NOT EXPOSED — same reason as `surfaces` above, restated at 0526 P4. It answers "does this surface exist, may a viewer be shown it, what does it render as"; the acting-on-that-answer half is self-scoped and lives on the participant\'s own connection. An agent that wants the room to see a screen has push_component and presenter_station_project; peek is deliberately not an agent\'s to press.' },
   pluginTools:         { tool: 'presenter_plugin_tool' },
   callPluginTool:      { tool: 'presenter_plugin_tool' },
   spotlightHolders:    { declined: 'NOT YET EXPOSED — owed. Who currently holds a share grant is READ-only state; it belongs on presenter_status/attendance alongside the roster rather than in its own tool. Grant/revoke is already reachable via presenter_spotlight.' },

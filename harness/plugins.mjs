@@ -300,15 +300,40 @@ export function buildSurfaceRegistry(manifests = loadManifests(), { log = null }
   }
   list.sort((a, b) => a.sortOrder - b.sortOrder || (a.surfaceId < b.surfaceId ? -1 : 1));
 
+  // ── naming canon §3 — IDENTITY IS AN INTEGER UID, ASSIGNED HERE, AT LOAD ────────────────────
+  // `surfaceId` is the AUTHORING code: a plugin author writes it in plugin.json, it is validated
+  // and de-duplicated above, and it stops there. Everything downstream — the wire, `peek`, any
+  // push target — addresses a surface by `surfaceUid`, exactly as stations address by
+  // `stationUid` and never by `stationCode`. A mistyped code finds nothing and SAYS nothing,
+  // which is the failure mode that left thirteen station screens blank for months; an integer
+  // either resolves or is refused by name.
+  //
+  // ⚠ THE UID IS PER-BOOT, DELIBERATELY, and nothing may persist it. It is assigned from the
+  // SORTED list, so it is a pure function of the manifests on disk — the same deployment always
+  // numbers the same way — but installing another plugin renumbers, and that is fine because a
+  // uid is only ever handed to a client that received THIS registry in its `welcome`. A surface
+  // is not a database row; there is nothing to be a foreign key to.
+  list.forEach((sf, i) => { sf.surfaceUid = i + 1; });
+  const byUid = new Map(list.map((sf) => [sf.surfaceUid, sf]));
+
   return {
     plugins: declaring,
     list,
     isEmpty: () => list.length === 0,
-    /** The ONLY surface lookup there is. Unknown ⇒ null, and every caller refuses BY NAME. */
-    get: (id) => (typeof id === 'string' && byId.has(id) ? byId.get(id) : null),
-    /** The WIRE form: what a client may be told exists. Never the plugin's file layout. */
+    /**
+     * The ONLY surface lookup there is — BY UID (canon §3). A non-integer, or a uid this
+     * deployment never assigned, is null, and every caller refuses BY NAME rather than falling
+     * back to some other surface. A string is not accepted here at all: an authoring code that
+     * reaches a runtime lookup is the bug this signature exists to make impossible.
+     */
+    get: (surfaceUid) => (Number.isInteger(surfaceUid) && byUid.has(surfaceUid) ? byUid.get(surfaceUid) : null),
+    /**
+     * The WIRE form: what a client may be told exists. Carries `surfaceUid` and the LABEL — the
+     * uid is what a control sends back, the label is what a human reads. `surfaceId` is NOT here:
+     * it is authoring vocabulary and never leaves the server (canon §3, the stationCode rule).
+     */
     wire: () => list.map((sf) => ({
-      surfaceId: sf.surfaceId, surfaceLabel: sf.surfaceLabel, peekable: sf.peekable,
+      surfaceUid: sf.surfaceUid, surfaceLabel: sf.surfaceLabel, peekable: sf.peekable,
       group: sf.group, icon: sf.icon, sortOrder: sf.sortOrder, hasScreen: !!sf.screen,
     })),
   };

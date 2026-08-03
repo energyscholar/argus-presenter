@@ -1034,7 +1034,12 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
             stationSelectorLabel: stationRegistry.selectorLabel,
             stationUid: seat && seat.uid != null ? seat.uid : stationRegistry.defaultUid,
             spotlightGranted: spotlight.has(c.userId),
-          } : {}) });
+          } : {}),
+          // Plan 0526 P4 — the surfaces this viewer may call up, so a client can OFFER them
+          // without asking. Wire form only: uid + label + flags, never a plugin's file layout and
+          // never the author's `surfaceId`. Absent entirely when no plugin declared any, so a
+          // deployment that has never heard of surfaces sees no change in its welcome at all.
+          ...(surfacesActive() ? { surfaceRegistry: surfaceRegistry.wire() } : {}) });
         // C4/X1: converge the (re)connecting client. If it reports a lastVersion we
         // can still replay from the op-log, send only the MISSED ops (resync);
         // otherwise a full role-filtered snapshot (Memento).
@@ -1096,6 +1101,26 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         a.by.set(c.userId, { userName: c.userName, at: c.eyesOn });
         log.info('ack', 'eyes-on', { ackId, userId: c.userId });
         pushPresence();                                    // control user-list reflects eyes-on immediately
+        // ── ⛓ THE SIX MESSAGES THAT PUT SOMETHING ON A SCREEN (0526 P4's naming seam) ─────────
+        // Rule zero says a name means one thing, and this chain now holds six verbs that all end
+        // in "somebody sees something". They are NOT synonyms; each answers a different question,
+        // and the next person to add a seventh should have to say which of these it is not:
+        //
+        //   station-select  WRITES the caller's seat (seatResolver.select), then renders it.
+        //                   The only one of the six that changes durable state.
+        //   station-show    renders the caller's OWN SEAT's station. Source: the seat. No write.
+        //   station-default renders the idle branding to the caller. Source: nothing. No write.
+        //   station-share   renders the caller's own station TO EVERYONE. Escalation ⇒ granted,
+        //                   throttled. The only one of the six that reaches other people.
+        //   peek            renders a DECLARED SURFACE to the caller. Source: the registry, which
+        //                   no module can touch. No seat, no write, nobody else affected.
+        //   unpeek          renders whatever the ROOM is currently showing the caller. Source: the
+        //                   live display maps. No write.
+        //
+        // ⚠ `station-show` IS "peek my own station" and the overlap is real — it is not folded in
+        // because the two read DIFFERENT SOURCES (a seat the plugin owns vs a registry core owns)
+        // and folding them would put the seat resolver behind the surface verb. Two sources, two
+        // verbs, one sentence each: that is the seam, stated rather than left to be rediscovered.
       } else if (m.t === 'station-select') {
         // Plan 0514 §8 — SELF-SCOPED and UNGATED, by the same zero-privilege argument as
         // station-show: it changes only what the caller sees. Core hands the request to the
@@ -1177,6 +1202,21 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
           send(ws, { t: 'station', ok: true, shared: n });
           emit('presence', presence());
         }
+      } else if (m.t === 'peek') {
+        // Plan 0526 P4 — SELF-SERVICE NAVIGATION. A participant calls up a declared surface on
+        // their own screen. Self-scoped and ungated by the same zero-privilege argument as
+        // station-show; DEFAULT-DENY on the surface row is what decides whether they may.
+        // ⛓ THE WIRE TAKES A UID: {t:'peek', surfaceUid:<int>} (canon §3 — the author's
+        // `surfaceId` never reaches this line). A refusal always names its reason.
+        const peeked = peekTo(ws, c, m.surfaceUid);
+        if (peeked.ok) send(ws, { t: 'surface', ok: true, surfaceUid: peeked.surfaceUid, surfaceLabel: peeked.surfaceLabel, hasScreen: peeked.hasScreen });
+        else send(ws, { t: 'surface', ok: false, reason: peeked.reason, surfaceUid: peeked.surfaceUid == null ? null : peeked.surfaceUid, ...(peeked.surfaceLabel ? { surfaceLabel: peeked.surfaceLabel } : {}) });
+      } else if (m.t === 'unpeek') {
+        // Plan 0526 P4 — BACK TO THE ROOM. Renders the room's CURRENT display to this socket, so
+        // a beat that moved during the peek is the beat the viewer rejoins (see unpeekTo).
+        // Stateless: always safe to send, even when the caller was not peeking.
+        const back = unpeekTo(ws, c);
+        send(ws, { t: 'surface', ok: true, surfaceUid: null, unpeeked: true, restored: back.restored });
       } else if (m.t === 'attendance-request') {
         // ATT (Plan 0466 §2.5): request/reply — NO standing push. Redaction is SERVER-SIDE,
         // keyed on the CONNECTION's authoritative role. Control/ai always get the full roster;
@@ -1553,10 +1593,18 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       send(ws, { t: 'content', contentId: desc.promptId + ':results', html: assemble({ component: 'poll-results', opts: { ...poll.spec, promptId: desc.promptId, tally: t.tally, count: t.count } }) });
     }
   }
-  // On (re)connect: re-push the current content module (GAP fix, C6).
+  /**
+   * On (re)connect: re-push the current content module (GAP fix, C6).
+   *
+   * This is also the ONE definition of "what the room is currently showing THIS viewer", read
+   * LIVE from the display maps — 0526 P4's `unpeek` is the same question asked by a viewer
+   * instead of by a reconnect, so it calls this rather than growing a second copy of the rule.
+   * Returns the descriptor it sent, or null when the room has nothing on this viewer's screen.
+   */
   function redisplayFor(ws, c) {
     const desc = displayByUser.get(c.userId) || displayByRole[c.role];
     if (desc) renderDisplay(ws, c, desc);
+    return desc || null;
   }
 
   // ── Plan 0522 P4 — BEAT RESOLUTION, DESCRIPTION, PUBLICATION ────────────────────────────────
@@ -1816,10 +1864,17 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   //
   // ⚠ WHY THERE IS NO `renderSurfaceTo` HERE. `renderStationTo(ws, c, seat)` reads
   // `seat.descriptor` — it is SEAT-shaped: it takes the row a plugin's seat resolver answered
-  // with, and there is no seat behind a surface, so it cannot be handed a surfaceId as written.
+  // with, and there is no seat behind a surface, so it cannot be handed a surfaceUid as written.
   // Rather than widen a function three station call sites depend on, the registry OWNS the
-  // descriptor: `surfaceDescriptor(id, c)` returns something `renderDisplay` already accepts, so
+  // descriptor: `surfaceDescriptor(uid, c)` returns something `renderDisplay` already accepts, so
   // P4's peek is one call to the existing renderer and `renderStationTo` is left untouched.
+  //
+  // ⛓ ADDRESSED BY UID, NEVER BY CODE (naming canon §3, ruling in plan 0534 W4). Every function
+  // below takes `surfaceUid` — an integer the registry assigned at load. `surfaceId` is the
+  // author's word for the row and does not appear in any lookup, any wire frame, or any push
+  // target here, for the same reason `stationCode` does not: a typo'd string resolves to nothing
+  // and reports nothing, and that silence is the expensive failure this project has already paid
+  // for once.
 
   /** Surfaces are live only when some plugin declared one. Empty registry ⇒ every surface refuses. */
   function surfacesActive() { return !surfaceRegistry.isEmpty(); }
@@ -1829,8 +1884,8 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
    * `stationPlaceholder`, and built from REGISTRY VALUES ONLY, so core still contains no
    * deployment's vocabulary. A declared-but-undrawn surface says so; it never renders blank.
    */
-  function surfacePlaceholder(surfaceId, c) {
-    const sf = surfaceRegistry.get(surfaceId);
+  function surfacePlaceholder(surfaceUid, c) {
+    const sf = surfaceRegistry.get(surfaceUid);
     return {
       kind: 'component', component: 'card', theme: 'argus', requires: [],
       opts: {
@@ -1851,10 +1906,10 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
    * `requires` carries the DECLARING PLUGIN, so a surface drawn with a plugin's own component
    * still assembles when it is called up from a session running someone else's module.
    */
-  function surfaceDescriptor(surfaceId, c = null) {
-    const sf = surfaceRegistry.get(surfaceId);
+  function surfaceDescriptor(surfaceUid, c = null) {
+    const sf = surfaceRegistry.get(surfaceUid);
     if (!sf) return null;
-    if (!sf.screen) return surfacePlaceholder(surfaceId, c);
+    if (!sf.screen) return surfacePlaceholder(surfaceUid, c);
     return {
       kind: 'component', component: sf.screen.component, theme: 'argus',
       requires: sf.pluginName ? [sf.pluginName] : [],
@@ -1863,20 +1918,77 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   }
 
   /**
-   * Resolve a surfaceId for a caller. REFUSES BY NAME — `no-surfaces` (none declared anywhere),
-   * `no-such-surface` (undeclared id), `not-peekable` (declared, but not offered to viewers).
-   * A silent no-op here would be I5's silent wrong answer: the viewer asks for a screen, gets
-   * whatever was already there, and has no way to tell the two apart.
+   * Resolve a surfaceUid for a caller. REFUSES BY NAME — `no-surfaces` (none declared anywhere),
+   * `not-a-uid` (something that is not an integer at all — canon §3's loud failure), then
+   * `no-such-surface` (an integer nobody declared) and `not-peekable` (declared, but not offered
+   * to viewers). A silent no-op here would be I5's silent wrong answer: the viewer asks for a
+   * screen, gets whatever was already there, and has no way to tell the two apart.
+   *
+   * ⚠ `not-a-uid` is separate from `no-such-surface` on purpose. They are different mistakes: one
+   * is a caller that sent the author's code (or a label, or a string of digits) where the wire
+   * takes an integer; the other is a caller addressing a surface this deployment does not have.
+   * Collapsing them would tell a plugin author "no such surface" about a surface that exists.
    */
-  function resolveSurface(surfaceId, c = null) {
-    if (!surfacesActive()) return { ok: false, reason: 'no-surfaces', surfaceId: surfaceId == null ? null : String(surfaceId) };
-    const sf = surfaceRegistry.get(surfaceId);
-    if (!sf) return { ok: false, reason: 'no-such-surface', surfaceId: surfaceId == null ? null : String(surfaceId) };
-    if (!sf.peekable) return { ok: false, reason: 'not-peekable', surfaceId: sf.surfaceId, surfaceLabel: sf.surfaceLabel };
+  function resolveSurface(surfaceUid, c = null) {
+    if (!surfacesActive()) return { ok: false, reason: 'no-surfaces', surfaceUid: null };
+    if (!Number.isInteger(surfaceUid)) return { ok: false, reason: 'not-a-uid', surfaceUid: null };
+    const sf = surfaceRegistry.get(surfaceUid);
+    if (!sf) return { ok: false, reason: 'no-such-surface', surfaceUid };
+    if (!sf.peekable) return { ok: false, reason: 'not-peekable', surfaceUid: sf.surfaceUid, surfaceLabel: sf.surfaceLabel };
     return {
-      ok: true, surfaceId: sf.surfaceId, surfaceLabel: sf.surfaceLabel, peekable: true,
-      hasScreen: !!sf.screen, descriptor: surfaceDescriptor(sf.surfaceId, c),
+      ok: true, surfaceUid: sf.surfaceUid, surfaceLabel: sf.surfaceLabel, peekable: true,
+      hasScreen: !!sf.screen, descriptor: surfaceDescriptor(sf.surfaceUid, c),
     };
+  }
+
+  /**
+   * ── Plan 0526 P4 — PEEK: a viewer summons a declared surface onto their OWN screen ─────────
+   *
+   * ⛓ THE ONE PROPERTY THIS FUNCTION EXISTS TO HAVE: it touches exactly one socket. It writes no
+   * seat, no display map, no store op, no module and no beat — it renders straight down `ws`,
+   * exactly as `projectStation` and `station-share` do and for the same reason (0508 T7:
+   * `setDisplay`/`pushComponent` would clear `displayByUser` for EVERYBODY, so a peek would wipe
+   * every other viewer's per-seat push). So `peek` cannot change what anyone else sees, and it
+   * cannot change what the facilitator sees, BY CONSTRUCTION rather than by discipline.
+   *
+   * Zero-privilege, so it is ungated for participants: it shows a screen the deployment already
+   * declared peekable, to one person, changing nothing. DEFAULT-DENY does the gating — a surface
+   * that never said `peekable: true` is refused by name (`resolveSurface` above).
+   *
+   * ⚠ THE ROOM STILL WINS. Nothing here marks the connection as "peeking", so a room push during a
+   * peek lands on this socket like any other — the presenter can always reach a viewer, and the
+   * peek is simply overwritten. That is 0526 P4's declared precedence, and it costs no code
+   * because there is no peek STATE to give precedence to.
+   */
+  function peekTo(ws, c, surfaceUid) {
+    const r = resolveSurface(surfaceUid, c);
+    if (!r.ok) return r;
+    renderDisplay(ws, c, r.descriptor);
+    c.lastActive = Date.now();
+    log.info('surface', 'peeked', { userId: c.userId, surfaceUid: r.surfaceUid });
+    return r;
+  }
+
+  /**
+   * ── Plan 0526 P4 — UNPEEK: go back to the room ─────────────────────────────────────────────
+   *
+   * ⛓ RULING (0526 P4): unpeek returns the viewer to WHAT THE ROOM IS SHOWING NOW, not to what it
+   * was showing when they peeked. There is deliberately no saved descriptor: `redisplayFor` reads
+   * the LIVE `displayByUser`/`displayByRole`, which is the same path a reconnect takes, so a beat
+   * that moved during the peek is the beat they come back to. Restoring a snapshot would drop one
+   * person back onto a beat nobody else is on — which is precisely the desync `peek` exists to
+   * avoid, and it would be invisible to the presenter.
+   *
+   * It is also STATELESS, so it is always safe to call: "show me what the room is showing me" is a
+   * meaningful request whether or not the caller was peeking, and there is no flag to go stale.
+   * `restored:false` means the room has nothing on this viewer's screen (no beat, no branding) —
+   * an honest answer, not a silent no-op.
+   */
+  function unpeekTo(ws, c) {
+    const desc = redisplayFor(ws, c);
+    c.lastActive = Date.now();
+    log.info('surface', 'unpeeked', { userId: c.userId, restored: !!desc });
+    return { ok: true, unpeeked: true, restored: !!desc };
   }
 
   /**
@@ -2947,12 +3059,19 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
      */
     surfaces() { return { surfaces: surfaceRegistry.wire() }; },
     /**
-     * Address ONE surface: does it exist, may a viewer be shown it, and what does it render as.
-     * `{ok:true, descriptor}` or `{ok:false, reason}` — never a silent null. This is the
-     * addressing half of the capability; the verb that puts it on a viewer's screen without
-     * disturbing the room's beat is 0526 P4.
+     * Address ONE surface BY UID: does it exist, may a viewer be shown it, what does it render as.
+     * `{ok:true, descriptor}` or `{ok:false, reason}` — never a silent null. The reasons are
+     * `no-surfaces` · `not-a-uid` · `no-such-surface` · `not-peekable`.
+     *
+     * ⛓ `surfaceUid` is an INTEGER (canon §3), the one the registry assigned at load and the one
+     * `surfaces()` reports. Passing the author's `surfaceId` string is refused as `not-a-uid`,
+     * loudly, rather than searched for — that refusal IS the reason the uid exists.
+     *
+     * This is the addressing half. The verb that puts a surface on a viewer's own screen is
+     * `{t:'peek'}` on that viewer's socket (0526 P4); it is deliberately not on `api`, because it
+     * renders down one connection and an in-process caller does not have one.
      */
-    surfaceScreen: (surfaceId) => resolveSurface(surfaceId, null),
+    surfaceScreen: (surfaceUid) => resolveSurface(surfaceUid, null),
     /**
      * Seat a player who cannot manage the dropdown. Unresolvable uid ⇒ the default, never an error.
      *

@@ -8,8 +8,8 @@
  * down, and it is the failure these tests are here to make impossible to reintroduce.
  *
  *   t0526-01  no plugin declares surfaces ⇒ empty, inert, and every lookup refuses `no-surfaces`
- *   t0526-02  a declared surface is ADDRESSABLE by id, and resolves to a renderable descriptor
- *   t0526-03  refusals fire BY NAME — `no-such-surface`, and `not-peekable` by DEFAULT-DENY
+ *   t0526-02  a declared surface is ADDRESSABLE by UID, and resolves to a renderable descriptor
+ *   t0526-03  refusals fire BY NAME — `no-such-surface`, `not-a-uid`, `not-peekable` (DEFAULT-DENY)
  *   t0526-04  a malformed registry THROWS AT LOAD (five ways), never at the first viewer
  *   t0526-05  `screenFile` is read once at load; a missing one degrades to the placeholder
  *   t0526-06  ⛓ THE SURVIVAL PROOF — a surface renders BEFORE, and again AFTER, `present_module`
@@ -57,6 +57,18 @@ const ONE_BEAT_MODULE = {
 /** Build the registry from a bare manifest map — no server, no disk beyond the fixture tree. */
 const registryOf = (manifests, log = null) => buildSurfaceRegistry(manifests, { log });
 
+/*
+ * ⛓ HOW A CALLER FINDS A SURFACE (naming canon §3, ruling in plan 0534 W4).
+ * The registry assigns an INTEGER `surfaceUid` at load; the author's `surfaceId` stays in
+ * plugin.json and never reaches the wire, exactly as `stationCode` never does. So a client — and
+ * therefore a test — resolves a surface the way a human does: read the LABEL off the list it was
+ * given, address it by the uid that came with it. Nothing below ever names a surface by its code.
+ */
+const uidOf = (server, surfaceLabel) => {
+  const row = server.surfaces().surfaces.find((s) => s.surfaceLabel === surfaceLabel);
+  return row ? row.surfaceUid : null;
+};
+
 /** Run `fn` against a server booted over a throwaway plugin tree, and always close it. */
 async function withServer(dir, fn) {
   return withPlugins(dir, async () => {
@@ -69,12 +81,12 @@ test('t0526-01 — a deployment that declares no surfaces has an empty registry,
   const empty = registryOf({ alpha: { name: 'alpha' } });
   expect(empty.isEmpty(), 'no `surfaces` key anywhere ⇒ the registry is empty');
   expect(empty.wire().length === 0, 'and its wire form is the empty list');
-  expect(empty.get('roster') === null, 'and it resolves nothing');
+  expect(empty.get(1) === null, 'and it resolves nothing');
 
   const dir = makePluginsDir({ alpha: { 'plugin.json': { name: 'alpha', requires: [] } } });
   await withServer(dir, (server) => {
     expect(server.surfaces().surfaces.length === 0, 'the api reports no surfaces');
-    const r = server.surfaceScreen('roster');
+    const r = server.surfaceScreen(1);
     expect(r.ok === false && r.reason === 'no-surfaces',
       'and a lookup refuses by name rather than returning null', JSON.stringify(r));
   });
@@ -85,14 +97,16 @@ test('t0526-02 — a declared surface is addressable by id and resolves to a ren
   await withServer(dir, (server) => {
     const listed = server.surfaces().surfaces;
     expect(listed.length === 2, 'both declared rows are listed', JSON.stringify(listed));
-    expect(listed[0].surfaceId === 'roster' && listed[0].surfaceLabel === 'The roster',
-      'the wire row carries the id and the label', JSON.stringify(listed[0]));
+    expect(listed[0].surfaceUid === 1 && listed[0].surfaceLabel === 'The roster',
+      'the wire row carries the UID and the label', JSON.stringify(listed[0]));
+    expect(listed.every((s) => Number.isInteger(s.surfaceUid)) && listed.every((s) => s.surfaceId === undefined),
+      'and NEVER the authoring code — surfaceId does not reach the wire (canon §3)', JSON.stringify(listed));
     expect(listed[0].hasScreen === true && listed[0].peekable === true, 'and its two flags');
     // The wire form must be DATA — a JSON round-trip loses nothing, so no closure can hide in it.
     expect(JSON.stringify(JSON.parse(JSON.stringify(listed))) === JSON.stringify(listed),
       'the registry is data-only: its wire form survives a JSON round-trip unchanged');
 
-    const r = server.surfaceScreen('roster');
+    const r = server.surfaceScreen(uidOf(server, 'The roster'));
     expect(r.ok === true && r.surfaceLabel === 'The roster', 'the surface resolves', JSON.stringify(r));
     expect(r.descriptor && r.descriptor.kind === 'component' && r.descriptor.component === 'card',
       'to a component descriptor the existing renderer accepts', JSON.stringify(r.descriptor));
@@ -106,16 +120,20 @@ test('t0526-02 — a declared surface is addressable by id and resolves to a ren
 test('t0526-03 — refusals fire by name: an undeclared id, and a surface that never said it was peekable', async () => {
   const dir = makePluginsDir({ alpha: { 'plugin.json': alphaManifest() } });
   await withServer(dir, (server) => {
-    const absent = server.surfaceScreen('no-such-thing');
+    const absent = server.surfaceScreen(9999);
     expect(absent.ok === false && absent.reason === 'no-such-surface',
-      'an undeclared id refuses BY NAME', JSON.stringify(absent));
-    const denied = server.surfaceScreen('private-notes');
+      'an undeclared uid refuses BY NAME', JSON.stringify(absent));
+    // canon §3's loud failure: the AUTHORING code, sent where a uid belongs, is not searched for.
+    const code = server.surfaceScreen('roster');
+    expect(code.ok === false && code.reason === 'not-a-uid',
+      'and the authoring code is refused as not-a-uid, never resolved', JSON.stringify(code));
+    const denied = server.surfaceScreen(uidOf(server, 'Private notes'));
     expect(denied.ok === false && denied.reason === 'not-peekable',
       'a declared surface with no `peekable` key is DEFAULT-DENY, and says so', JSON.stringify(denied));
     expect(denied.surfaceLabel === 'Private notes',
       'the refusal still names the surface it refused', JSON.stringify(denied));
     // Refusing is not the same as hiding: it is listed, with the flag that explains the refusal.
-    const row = server.surfaces().surfaces.find((s) => s.surfaceId === 'private-notes');
+    const row = server.surfaces().surfaces.find((s) => s.surfaceLabel === 'Private notes');
     expect(row && row.peekable === false, 'and the list shows why', JSON.stringify(row));
   });
 });
@@ -148,9 +166,14 @@ test('t0526-04 — a malformed registry throws AT LOAD, never at the first viewe
     a: { name: 'a', surfaces: [{ surfaceId: 'x', surfaceLabel: 'X', peekable: true, sortOrder: 2 }] },
     b: { name: 'b', surfaces: [{ surfaceId: 'y', surfaceLabel: 'Y', peekable: true, sortOrder: 1 }] },
   });
-  expect(merged.wire().map((s) => s.surfaceId).join(',') === 'y,x',
+  expect(merged.list.map((s) => s.surfaceId).join(',') === 'y,x',
     'surfaces from different plugins merge into one registry, ordered by sortOrder',
-    JSON.stringify(merged.wire()));
+    JSON.stringify(merged.list.map((s) => s.surfaceId)));
+  expect(merged.wire().map((s) => s.surfaceUid).join(',') === '1,2',
+    'and the UID is assigned from that sorted order, at load', JSON.stringify(merged.wire()));
+  expect(merged.get(1).surfaceId === 'y' && merged.get(2).surfaceId === 'x',
+    'so the uid lookup resolves the row the author wrote', JSON.stringify(merged.wire()));
+  expect(merged.get('y') === null, 'and the authoring code is NOT a lookup key (canon §3)');
 });
 
 test('t0526-05 — a screen too big for plugin.json is read from a file at load; a missing file degrades to the placeholder', async () => {
@@ -170,12 +193,12 @@ test('t0526-05 — a screen too big for plugin.json is read from a file at load;
     },
   });
   await withServer(dir, (server) => {
-    const big = server.surfaceScreen('big');
+    const big = server.surfaceScreen(uidOf(server, 'Big'));
     expect(big.ok === true && big.descriptor.opts.body === MARK,
       'the file supplies the screen', JSON.stringify(big.descriptor && big.descriptor.opts));
     expect(big.descriptor.opts.subtitle === 'overridden',
       'and inline opts override the file rather than the other way round');
-    const undrawn = server.surfaceScreen('undrawn');
+    const undrawn = server.surfaceScreen(uidOf(server, 'Undrawn'));
     expect(undrawn.ok === true && undrawn.hasScreen === false,
       'a missing screen file does NOT take the server down — the surface is declared and screenless',
       JSON.stringify(undrawn));
@@ -191,7 +214,8 @@ test('t0526-06 — ⛓ a surface SURVIVES present_module: same id, same bytes, s
       { userId: 'viewer-1', userName: 'Viewer One' });
     try {
       // ── BEFORE. The surface resolves, and its descriptor really does render at a client.
-      const before = server.surfaceScreen('roster');
+      const rosterUid = uidOf(server, 'The roster');
+      const before = server.surfaceScreen(rosterUid);
       expect(before.ok === true, 'the surface resolves before any module is loaded');
       const push = (d) => server.pushComponent('all', d.component, d.opts, d.theme, d.requires);
       push(before.descriptor);
@@ -211,7 +235,7 @@ test('t0526-06 — ⛓ a surface SURVIVES present_module: same id, same bytes, s
         beat && beat.html.slice(0, 120));
 
       // ── AFTER. Byte-identical, still addressable, still renders.
-      const after = server.surfaceScreen('roster');
+      const after = server.surfaceScreen(rosterUid);
       expect(after.ok === true, 'the surface is STILL addressable after present_module', JSON.stringify(after));
       expect(JSON.stringify(after.descriptor) === JSON.stringify(before.descriptor),
         'and its descriptor is byte-identical to the one from before the load',
@@ -229,11 +253,11 @@ test('t0526-06 — ⛓ a surface SURVIVES present_module: same id, same bytes, s
       server.setModule({ title: 'Another', manifest: { title: 'Another' }, beats: [{ id: 'x', component: 'card', opts: { title: 'x' } }] });
       server.showBeat(0);
       await wait(60);
-      const third = server.surfaceScreen('roster');
+      const third = server.surfaceScreen(rosterUid);
       expect(JSON.stringify(third.descriptor) === JSON.stringify(before.descriptor),
         'still byte-identical after a second module load', JSON.stringify(third.descriptor));
       // ...and the refusals did not drift either.
-      expect(server.surfaceScreen('private-notes').reason === 'not-peekable', 'and the refusals still fire');
+      expect(server.surfaceScreen(uidOf(server, 'Private notes')).reason === 'not-peekable', 'and the refusals still fire');
     } finally { viewer.ws.close(); }
   });
 });
