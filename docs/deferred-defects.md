@@ -197,3 +197,13 @@ a bug fix, which is why it stopped here.
 `X5-raf.test.mjs` is red right now on `expect failed: five ops logged` (actual **8**) — the same 3
 boot ops. Fixing the denominator would not make it green; the test asserts `totalOps === 5`, and
 `totalOps` is the raw op-log count by design.
+
+### `/api/modules` warns on every PLUGIN component — `validate()` is called without `knownComponents`
+
+`moduleSummary()` (`app/server.mjs:394`) calls `summarize(validate(module))` with no context, so the
+known-component set is `DEFAULT_COMPONENTS` — core only. Any module using a plugin-registered
+component is reported as `V3-unknown-component` in the picker forever: `s15-full` shows `warn: 5`,
+all five of them `ship-status`, on a module that is fine. `validate()` already accepts
+`{ knownComponents }`; the plugin registry already knows the names. Found while building
+`repertory/tools/resolve-refs.mjs` (0534 W1-A) — out of scope there. ⚠ Anything whose acceptance is
+"zero warnings" must therefore avoid plugin components, or fix this first.
