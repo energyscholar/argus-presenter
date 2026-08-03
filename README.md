@@ -104,6 +104,16 @@ module's declared `requires` — no `requires` means zero plugin bytes. See
 `plugins/example/` for a reference plugin (a `weather` component + a `city-grid`
 map preset).
 
+**Installing a plugin is a copy plus a proof.** `plugins/` is gitignored, so a
+partial install leaves no trace in `git status` and looks exactly like a complete
+one — this deployment ran for months with 8 of one plugin's 24 files present, its
+thirteen declared station artworks silently absent and degrading to placeholders.
+Install from the repo that versions the bundle, using that repo's installer
+(`tools/install-system-plugins.sh` in the content repo), which copies and then
+verifies file sets, md5s, and every file the manifest declares. `t0532-02` holds
+the same line from this side: an installed plugin missing a file its own
+`plugin.json` names is a **red test**, not a warning in a log nobody reads.
+
 ## Security posture
 - **No telemetry egress.** The server makes no outbound network calls. The only
   sockets are the local HTTP page server and its WebSocket. Telemetry is an

@@ -14,7 +14,7 @@
  */
 import { mkdtempSync, mkdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import { dirname, join } from 'path';
 
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -57,6 +57,49 @@ export function stationManifest(over = {}) {
       { stationUid: 2, stationCode: 'beta', stationLabel: 'Beta', group: 'Two', icon: 'B', color: '#222', maxOccupants: null, sortOrder: 2 },
     ],
   }, over);
+}
+
+/*
+ * ── The DRAWN / UNDRAWN fixture (0532 P1) ────────────────────────────────────────────────────
+ *
+ * A two-station plugin: uid 1 has an artwork on disk, uid 2 names one that does not exist. Every
+ * test that needs "a station with a screen" or "a station WITHOUT one" builds it here.
+ *
+ * ⚠ WHY THIS EXISTS AT ALL. Until 0532 P1 the installed deployment had thirteen stations and
+ * ZERO artworks, so three tests took their screenless station from the real registry — they
+ * passed because production was broken, and they went red the moment the artworks were
+ * installed. A test may not depend on the deployment's state. The fixture is under this repo's
+ * control and states the condition it needs; the deployment is free to be complete.
+ *
+ * The seat resolver is the real installed machine, re-exported: a station is only live when some
+ * plugin answers "who is sitting where", and re-implementing that here would test a stub.
+ */
+export const DRAWN_MARK = 'DRAWN-MARK';
+export const DRAWN_SVG =
+  `<svg viewBox="-400 -400 800 800" preserveAspectRatio="xMidYMid slice"><text x="0" y="0">${DRAWN_MARK}</text></svg>`;
+
+export function artManifest(over = {}) {
+  return Object.assign({
+    name: 'art', requires: [], components: [], presets: {}, fieldSchemas: {},
+    stationSelectorLabel: 'Post', stationDefaultUid: 2,
+    stations: [
+      { stationUid: 1, stationCode: 'drawn', stationLabel: 'Drawn', group: 'G', icon: '#', sortOrder: 1,
+        stationScreen: { component: 'map', svgFile: 'stations/drawn.svg', opts: { fit: 'cover' } } },
+      { stationUid: 2, stationCode: 'undrawn', stationLabel: 'Undrawn', group: 'G', icon: '@', sortOrder: 2,
+        stationScreen: { component: 'map', svgFile: 'stations/undrawn.svg', opts: { fit: 'cover' } } },
+    ],
+    server: 'noop.mjs',
+  }, over);
+}
+
+/** Build the drawn/undrawn plugin tree and return its directory. */
+export function makeArtPluginsDir(over = {}) {
+  return makePluginsDir({ art: {
+    'plugin.json': artManifest(over),
+    'stations/drawn.svg': DRAWN_SVG,
+    // stations/undrawn.svg is DELIBERATELY absent — that absence is the fixture's whole point.
+    'noop.mjs': `import { register as real } from ${JSON.stringify(pathToFileURL(join(REAL_PLUGINS, 'starship-ops', 'ship-machine.mjs')).href)};\nexport const register = real;\n`,
+  } });
 }
 
 // ── live websocket helpers ────────────────────────────────────────────────────────────────────

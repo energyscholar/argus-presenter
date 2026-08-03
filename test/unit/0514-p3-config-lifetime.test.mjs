@@ -18,7 +18,7 @@ import { WebSocket } from 'ws';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
-import { ROOT, REAL_PLUGINS, makePluginsDir, withPlugins, wait, connect, last } from './_0514-fixtures.mjs';
+import { ROOT, REAL_PLUGINS, makePluginsDir, makeArtPluginsDir, DRAWN_MARK, withPlugins, wait, connect, last } from './_0514-fixtures.mjs';
 
 const PRESENTER_HTML = readFileSync(join(ROOT, 'app', 'presenter.html'), 'utf8');
 const CONTROL_HTML = readFileSync(join(ROOT, 'app', 'control.html'), 'utf8');
@@ -72,51 +72,58 @@ test('t0514-13 — options carry value={stationUid}, grouped by `group`, ordered
 });
 
 test('t0514-14 / t0514-15 — a station with no screen renders the CORE generic placeholder, built from registry values only', async () => {
-  const server = await createServer({ port: 0 });
-  const url = server.url().replace('http', 'ws');
-  try {
-    const withoutScreen = server.stations().stations.find((s) => !s.hasScreen);
-    expect(withoutScreen, 'the fixture deployment has at least one screenless station (the artworks are Phase 4)');
-    const c = await connect(WebSocket, url, { userId: 'u', userName: 'Solo' });
-    c.clear();
-    c.send({ t: 'station-select', stationUid: withoutScreen.stationUid }); await wait(180);
-    const html = last(c, 'content').html;
-    expect(html.includes('no active screen for this station yet'), 'the placeholder text is rendered');
-    expect(html.includes(withoutScreen.stationLabel), 'carrying THIS station\'s label from the registry', withoutScreen.stationLabel);
-    expect(html.includes('Solo'), 'and the occupant\'s name');
-    c.ws.close();
-  } finally { await server.close(); }
+  /*
+   * 0532 P1 — REWRITTEN, and the rewrite is the point.
+   *
+   * This test used to open the INSTALLED deployment and take the first station whose `hasScreen`
+   * was false, asserting "the fixture deployment has at least one screenless station (the
+   * artworks are Phase 4)". At the time all thirteen were screenless, so the search always found
+   * one. That assertion was not describing core's behaviour — it was describing an unfinished
+   * install, and it went red the moment P1 installed the thirteen artworks. ⇒ A test that passes
+   * because production is broken is not a test.
+   *
+   * The condition it actually needs is "a station whose screen is not on disk". That is now
+   * STATED, in a fixture this repo owns (uid 2 names `stations/undrawn.svg`, which is not there),
+   * so the deployment is free to be complete and core is still held to the same contract.
+   */
+  const dir = makeArtPluginsDir();
+  await withPlugins(dir, async () => {
+    const server = await createServer({ port: 0 });
+    const url = server.url().replace('http', 'ws');
+    try {
+      const withoutScreen = server.stations().stations.find((s) => !s.hasScreen);
+      expect(withoutScreen, 'the FIXTURE declares a station whose artwork is not on disk — stated here, not borrowed from the deployment');
+      expect(withoutScreen.stationUid === 2, 'and it is the one the fixture meant', String(withoutScreen && withoutScreen.stationUid));
+      const c = await connect(WebSocket, url, { userId: 'u', userName: 'Solo' });
+      c.clear();
+      c.send({ t: 'station-select', stationUid: withoutScreen.stationUid }); await wait(180);
+      const html = last(c, 'content').html;
+      expect(html.includes('no active screen for this station yet'), 'the placeholder text is rendered');
+      expect(html.includes(withoutScreen.stationLabel), 'carrying THIS station\'s label from the registry', withoutScreen.stationLabel);
+      expect(html.includes('Solo'), 'and the occupant\'s name');
+      c.ws.close();
+    } finally { await server.close(); }
+  });
 
   // t0514-15 — and NONE of those labels is hardcoded in core. Core must be able to render a
-  // registry it has never seen; a literal here would mean it can only render this one.
+  // registry it has never seen; a literal here would mean it can only render this one. This half
+  // reads the REAL manifest on purpose: it is a claim about core's source, not about a fixture.
   const coreSrc = ['app/server.mjs', 'app/presenter.html', 'app/control.html'].map((f) => readFileSync(join(ROOT, f), 'utf8')).join('\n');
   for (const st of MANIFEST.stations) {
     expect(!coreSrc.includes(st.stationLabel), `core contains no literal "${st.stationLabel}"`, st.stationLabel);
   }
+  // …and the fixture's labels too, which core has genuinely never seen.
+  for (const label of ['Drawn', 'Undrawn']) {
+    expect(!coreSrc.includes(`'${label}'`) && !coreSrc.includes(`"${label}"`), `core contains no literal "${label}"`, label);
+  }
 });
 
 test('t0514-14b — a station WITH an svgFile renders that artwork; a MISSING one degrades to the placeholder', async () => {
-  // The artworks are Phase 4 and belong to another author, so this exercises the resolution path
-  // against a throwaway plugin. The tolerance half matters most: at the moment plugin.json names
-  // thirteen files and none of them exists yet, and a missing artwork must never break the server.
-  const man = {
-    name: 'art', requires: [], components: [], presets: {}, fieldSchemas: {},
-    stationSelectorLabel: 'Post', stationDefaultUid: 2,
-    stations: [
-      { stationUid: 1, stationCode: 'drawn', stationLabel: 'Drawn', group: 'G', sortOrder: 1,
-        stationScreen: { component: 'map', svgFile: 'stations/drawn.svg', opts: { fit: 'cover' } } },
-      { stationUid: 2, stationCode: 'undrawn', stationLabel: 'Undrawn', group: 'G', sortOrder: 2,
-        stationScreen: { component: 'map', svgFile: 'stations/undrawn.svg', opts: { fit: 'cover' } } },
-    ],
-    server: 'noop.mjs',
-  };
-  const SVG = '<svg viewBox="-400 -400 800 800" preserveAspectRatio="xMidYMid slice"><text x="0" y="0">DRAWN-MARK</text></svg>';
-  const dir = makePluginsDir({ art: {
-    'plugin.json': man,
-    'stations/drawn.svg': SVG,
-    // A resolver so the stations are live, borrowed straight from the real machine.
-    'noop.mjs': `import { register as real } from ${JSON.stringify(pathToFileURL(join(REAL_PLUGINS, 'starship-ops', 'ship-machine.mjs')).href)};\nexport const register = real;\n`,
-  } });
+  // Both halves against a throwaway plugin (0532 P1 moved the tree into _0514-fixtures so the two
+  // tests that need it cannot drift apart). The tolerance half is the one that matters: a station
+  // whose artwork has not been drawn yet must degrade to the placeholder and never take the
+  // server down — which is what kept thirteen missing files invisible for months.
+  const dir = makeArtPluginsDir();
   await withPlugins(dir, async () => {
     const server = await createServer({ port: 0 });
     const url = server.url().replace('http', 'ws');
@@ -206,25 +213,39 @@ test('t0514-20 — station-default restores branding for the CALLER only and lea
 // ── §13.5 — the lifetime table, which IS the specification ────────────────────────────────────
 
 test('t0514-31 — station → present_module → THE STATION STILL RESOLVES (the live failure)', async () => {
-  const server = await createServer({ port: 0 });
-  const url = server.url().replace('http', 'ws');
-  try {
-    const c = await connect(WebSocket, url, { userId: 'sensor-op', userName: 'Op' });
-    c.send({ t: 'station-select', stationUid: 4 }); await wait(180);
-    expect(server.stations().seats.find((s) => s.userId === 'sensor-op').stationUid === 4, 'seated');
+  /*
+   * 0532 P1 — REWRITTEN. The old form ran against the installed deployment, seated at uid 4, and
+   * closed with `html.includes('Sensors') || html.includes('no active screen')`. The first
+   * disjunct never fired — that station's artwork was not installed and, once it was, its text is
+   * the SVG's own upper-case wordmark, not the registry label — so what actually passed the test
+   * was `no active screen`: THE ABSENCE. It went red the moment the artwork arrived, while the
+   * behaviour it names (a station surviving a module load) had not changed at all.
+   *
+   * Now fixture-based, and asserted on the DRAWN station, so "resolves" means the artwork came
+   * back — a strictly stronger claim than the placeholder it used to accept.
+   */
+  const dir = makeArtPluginsDir();
+  await withPlugins(dir, async () => {
+    const server = await createServer({ port: 0 });
+    const url = server.url().replace('http', 'ws');
+    try {
+      const c = await connect(WebSocket, url, { userId: 'seat-op', userName: 'Op' });
+      c.send({ t: 'station-select', stationUid: 1 }); await wait(180);
+      expect(server.stations().seats.find((s) => s.userId === 'seat-op').stationUid === 1, 'seated');
 
-    // The exact call that used to erase every seat's station: target 'all' → setDisplay('all') →
-    // displayByUser.clear().
-    server.setModule(MODULE); server.showBeat(0); await wait(160);
+      // The exact call that used to erase every seat's station: target 'all' → setDisplay('all') →
+      // displayByUser.clear().
+      server.setModule(MODULE); server.showBeat(0); await wait(160);
 
-    expect(server.stations().seats.find((s) => s.userId === 'sensor-op').stationUid === 4, 'the station SURVIVED the module load');
-    expect((server.store.get('ship/stations/4/occupants') || []).includes('sensor-op'), 'occupancy is intact in the machine');
-    c.clear();
-    c.send({ t: 'station-show' }); await wait(180);
-    const html = last(c, 'content')?.html || '';
-    expect(html.includes('Sensors') || html.includes('no active screen'), 'and ▣ My station screen resolves it again', html.slice(0, 120));
-    c.ws.close();
-  } finally { await server.close(); }
+      expect(server.stations().seats.find((s) => s.userId === 'seat-op').stationUid === 1, 'the station SURVIVED the module load');
+      expect((server.store.get('ship/stations/1/occupants') || []).includes('seat-op'), 'occupancy is intact in the machine');
+      c.clear();
+      c.send({ t: 'station-show' }); await wait(180);
+      const html = last(c, 'content')?.html || '';
+      expect(html.includes(DRAWN_MARK), 'and ▣ My station screen resolves it again — to the ARTWORK, not to a placeholder', html.slice(0, 120));
+      c.ws.close();
+    } finally { await server.close(); }
+  });
 });
 
 test('t0514-32 — station + a transient per-seat push → module load → the station resolves, the transient push is GONE', async () => {
