@@ -218,3 +218,11 @@ so no amount of scrolling brings it back; `maxScroll` is 294 and all of it is do
 flex container (`align-items:center`) around content that can exceed the viewport; the fix is the
 standard `margin:auto` on the child, or `justify-content:flex-start` past a threshold. Out of scope
 for W2 — the deck itself fits at both ratios with reveals closed.
+
+### `modules/.resolve-refs/` is not gitignored, so every emit leaves `git status` dirty
+
+`.gitignore:14` covers `modules/*.json`; the emitter's build records live at
+`modules/.resolve-refs/<id>.sha256` and its backups at `modules/.resolve-refs/backup/<id>.*.json`,
+neither of which that glob reaches. After one `resolve-refs --out`, `git status` shows
+`?? modules/.resolve-refs/` indefinitely. One line in `.gitignore` fixes it. Found in 0534 W2;
+the tool is W1-A's, so this is recorded rather than patched.
