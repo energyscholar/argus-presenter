@@ -110,7 +110,7 @@ throws `ReferenceError` at boot, and it will throw at **module load**, not under
 4. **⚠ A live defect that collides with P2's acceptance** (`docs/deferred-defects.md`, 0534 W1-A):
    `moduleSummary()` (`server.mjs:394`) calls `summarize(validate(module))` **with no
    `knownComponents`**, so every **plugin-registered** component is reported `V3-unknown-component`
-   forever — `s15-full` shows 5 such warnings on a module that is fine. **Any acceptance criterion
+   forever — one 53-beat authored module shows 5 such warnings though it is fine. **Any acceptance criterion
    phrased as "zero warnings" cannot be met until this is fixed.**
 5. **⚠ `sectionId` is genuinely absent from `KNOWN_BEAT_KEYS`** (`validate.mjs:37`) — P2.4 stands.
 6. **⚠ `peek` / `unpeek` / `surfaceId` do not exist anywhere** in `app/`, `lib/` or `components/`

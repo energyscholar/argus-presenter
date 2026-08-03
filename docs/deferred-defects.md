@@ -202,8 +202,19 @@ boot ops. Fixing the denominator would not make it green; the test asserts `tota
 
 `moduleSummary()` (`app/server.mjs:394`) calls `summarize(validate(module))` with no context, so the
 known-component set is `DEFAULT_COMPONENTS` — core only. Any module using a plugin-registered
-component is reported as `V3-unknown-component` in the picker forever: `s15-full` shows `warn: 5`,
-all five of them `ship-status`, on a module that is fine. `validate()` already accepts
+component is reported as `V3-unknown-component` in the picker forever: one 53-beat authored module
+shows `warn: 5`, all five of them `ship-status`, on a module that is fine. `validate()` already accepts
 `{ knownComponents }`; the plugin registry already knows the names. Found while building
 `repertory/tools/resolve-refs.mjs` (0534 W1-A) — out of scope there. ⚠ Anything whose acceptance is
 "zero warnings" must therefore avoid plugin components, or fix this first.
+
+### A beat taller than the viewport loses its top, unreachably — the content page is flex-centred
+
+Measured 0534 W2 with the crew deck at 1280x720: closed, the page fits (`scrollHeight == clientHeight`).
+Open one `card.reveal` and `scrollHeight` becomes 1014 while `window.scrollY` is already **0** and the
+scene title's `getBoundingClientRect().top` is **-246** — the overflow goes *above* the scroll origin,
+so no amount of scrolling brings it back; `maxScroll` is 294 and all of it is downward. Still true at
+1920x1080 (`titleTop: -66`) and marginal at 1920x1200 (`-6`). The usual cause is a vertically-centred
+flex container (`align-items:center`) around content that can exceed the viewport; the fix is the
+standard `margin:auto` on the child, or `justify-content:flex-start` past a threshold. Out of scope
+for W2 — the deck itself fits at both ratios with reveals closed.
