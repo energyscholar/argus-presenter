@@ -14,10 +14,25 @@
  *             layers?:[{target|when,opts}],durationSec?,onDemand?}] }
  */
 
-// The 14 real components in components/, plus 'clear' as a recognised terminal pseudo-beat.
+/*
+ * The 16 real components in components/, plus 'clear' as a recognised terminal pseudo-beat.
+ *
+ * ⛓ THIS IS THE THIRD OF THREE LISTS THAT MUST AGREE, and it is the one that drifted.
+ * The other two are the `components/` directory listing (the server-side registry) and
+ * `harness/core-schemas.mjs` (from which `docs/component-manifest.json` is GENERATED —
+ * do not hand-edit the JSON, it is rewritten by `harness/gen-manifest.mjs`).
+ *
+ * `navmap` (S210) and `prose` (0493) joined `components/` and were added to `core-schemas.mjs`
+ * by plan 0525 P5 — which never touched this file. The result: for months, every authored beat
+ * using either one was reported `V3-unknown-component` by any caller that did not pass its own
+ * `knownComponents`, and neither appeared in the authoring pick-list built off this default.
+ * The test that was written to catch exactly this drift (`t80`) compared the OTHER TWO lists and
+ * not this one, so a 14-vs-16 disagreement survived its own guard. `t80` now compares all three.
+ * ⇒ Adding a directory under `components/` means editing `core-schemas.mjs` AND this list.
+ */
 export const DEFAULT_COMPONENTS = [
-  'card', 'choice', 'crud', 'dice', 'form', 'image', 'map',
-  'narration', 'poll-results', 'scene', 'slider', 'stepper', 'svg-reactive', 'text-input',
+  'card', 'choice', 'crud', 'dice', 'form', 'image', 'map', 'narration', 'navmap',
+  'poll-results', 'prose', 'scene', 'slider', 'stepper', 'svg-reactive', 'text-input',
 ];
 /*
  * Plan 0525 P1.3 — THE DECLARED BEAT KEYS.
@@ -40,6 +55,18 @@ export const KNOWN_BEAT_KEYS = [
   // Read by presenter_beats (the MCP cue sheet) and beatRow() (the GM outline) — 0525 P1.1/P1.2.
   // It informs the presenter and changes NO navigation: R5.
   'onDemand',
+  /*
+   * `sectionId` — a beat's back-reference to the `sections[].id` it belongs to, the inverse of the
+   * `sections[].beatIds[]` edge the schema already carries. DECLARED AHEAD OF ITS USE, on purpose:
+   * 0527 P2 renames the existing authored key `phase` → `sectionId` across 29 modules. V21 reports
+   * every distinct beat key outside this list as `info`, so landing that rename first would have
+   * made all 29 modules announce an undeclared key on load — a seam shipping as noise, in the very
+   * mechanism 0525 P1.3 added to make new fields VISIBLE rather than silent. Listing the name here
+   * costs one line and means the rename arrives quiet.
+   * ⚠ Like every entry in this list, this declares only that the name is KNOWN. Nothing reads it
+   * yet; V21's contract is "the product will not act on this", and that remains true until it does.
+   */
+  'sectionId',
 ];
 
 const TERMINAL_PSEUDO = 'clear';

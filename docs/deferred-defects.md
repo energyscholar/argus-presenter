@@ -261,3 +261,13 @@ staged file, so W4b had to commit by explicit pathspec. **An executed-test count
 second shell is adding tests is not attributable**, which is why W4b reports its own 257 → 263 from
 the one run where the tree was quiet rather than from the final one. GENERATOR-BRIEF §1 says phases
 are strictly serial; the guard 0521 added is for two shells on one *repo*, and it did not fire here.
+
+### 0526 P2.3 (`tags` on the `card` schema) NOT done in 0534 W5-A — deliberately, with a reason
+
+Plan 0526 P2 item 3 says *"Add `tags: []` to the `card` schema in the manifest (P3 needs it)."*
+W5-A implemented items 1, 2 and 4 and **left item 3 undone**. `components/card/card.js` does not
+read `tags` (grepped), and P3 — the facet filter that would give it a reader — is not in this wave.
+Publishing the field now would put a fillable `tags` box on the authoring surface that nothing
+anywhere consumes: **exactly the failure mode 0525 P1.3 was written to end** (`onDemand` sat inert
+in authored modules for months because a declared field had no reader). One line, and it should land
+in the same phase as its reader, not two waves ahead of it.
