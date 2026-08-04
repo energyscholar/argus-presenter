@@ -1582,8 +1582,15 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     ro.innerHTML='<span class="k">you</span> '+identity.userName+' ('+identity.userId+')<br>'
       +'<span class="k">role</span> '+(effRole||identity.role)+' · <span class="k">link</span> '+(linked?'connected':'offline')
       +(authGated?' · <span class="k">gated</span> yes':'');
-    // Show the unlock group only when the server is gated AND we were downgraded (not presenter).
-    var needUnlock = authGated && effRole && effRole!=='presenter';
+    // Show the unlock group whenever the server is GATED and we are not already presenter.
+    // Plan 0537 P1.1 — this used to also require a non-null `effRole`, which is only set from the
+    // server's `welcome`. Open Settings before the socket lands (or after it drops) and effRole is
+    // null, so the readout said "gated yes" and the password field was NOT rendered: told you a
+    // credential was required and gave you nowhere to type it. `null` now means "not known to be
+    // presenter" and gets the unlock group, which is the state in which you most need it. The
+    // hint text and the field it names are governed by this ONE condition — they live in the same
+    // container, so they can never again disagree about whether unlocking is possible.
+    var needUnlock = authGated && effRole !== 'presenter';
     $('cfg-authgroup').style.display = needUnlock ? '' : 'none';
   }
   function toggleConfig(open){ var p=$('ap-config'); var show=(open===undefined)?!p.classList.contains('open'):open; p.classList.toggle('open',show); if(show) renderConfig(); }

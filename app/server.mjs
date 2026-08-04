@@ -222,7 +222,18 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // hello token — plaintext never leaves the client. NULL password ⇒ this gate is
   // inactive (so createServer() with no credential stays UNGATED for existing tests).
   const ROLE_SEED = roleSeed || process.env.PRESENTER_ROLE_SEED || 'argus-presenter';
-  const ROLE_PW = rolePassword || process.env.PRESENTER_ROLE_PASSWORD || null;
+  // Plan 0537 P1.2 (SECURITY) — an EMPTY password must never silently disable this gate.
+  // `rolePassword || env || null` treated '' as "absent": an operator who set the password to an
+  // empty string (a blank config field, `PRESENTER_ROLE_PASSWORD=`) got ROLE_HASH=null and an
+  // UNGATED server — while `gated` still reported true if a control token happened to exist, so
+  // the readout agreed with them and the room was open. Fail LOUDLY instead: a credential that
+  // was explicitly supplied and is unusable is an error, not a default.
+  const ROLE_PW_SUPPLIED = (rolePassword !== null && rolePassword !== undefined) ? rolePassword
+    : (process.env.PRESENTER_ROLE_PASSWORD !== undefined ? process.env.PRESENTER_ROLE_PASSWORD : null);
+  if (typeof ROLE_PW_SUPPLIED === 'string' && ROLE_PW_SUPPLIED.trim() === '') {
+    throw new Error('rolePassword was supplied but is empty (or whitespace). An empty password cannot gate anything, and accepting it would start an UNGATED server that reports itself as gated. Set a real password, or omit rolePassword entirely to run open on purpose.');
+  }
+  const ROLE_PW = ROLE_PW_SUPPLIED;
   const ROLE_HASH = ROLE_PW ? sha256hex(ROLE_SEED + ROLE_PW) : null;
   // Plan 0472 P4 (SECURITY): the HMAC secret for permissioned GUEST capability links (/?cap=…).
   // From the option or PRESENTER_CAP_SECRET. There is NO insecure default and an empty string is

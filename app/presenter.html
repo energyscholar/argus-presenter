@@ -51,6 +51,14 @@
     border-top:0;border-radius:0 0 8px 8px;padding:3px 13px;font:12px/1.5 'Courier New',monospace;
     letter-spacing:.06em;color:#f7c948;cursor:pointer;}
   #ap-peek.show{display:flex;}
+  /* Plan 0537 P1.4 — the badge is position:fixed at top:0 and #stage is inset:0, so while a peek
+     is up the badge SITS ON the first ~25px of the peeked surface. On the air/raft that is
+     exactly seat 1's row: the one screen you summoned to read, with its first line covered by
+     the label telling you that you summoned it. Yield the strip instead of floating over it —
+     the stage starts BELOW the badge for as long as (and only while) the badge is shown.
+     Sibling selector, not a JS toggle: #ap-peek precedes #stage in the body and .show is already
+     the single source of truth for "a peek is up", so there is no second state to keep in sync. */
+  #ap-peek.show ~ #stage{top:28px;}
   #ap-peek:hover{background:rgba(66,44,8,.98);border-color:#ffe9a8;}
   #ap-peek-k{flex:0 0 auto;font-size:10px;letter-spacing:.14em;text-transform:uppercase;opacity:.85;white-space:nowrap;}
   #ap-peek-v{flex:0 1 auto;color:#ffe9a8;font-weight:bold;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
