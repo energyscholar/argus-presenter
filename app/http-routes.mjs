@@ -73,6 +73,12 @@ export function createHttpHandler(ctx) {
       // AUT-3: serve the SINGLE-SOURCE validator so the Content Creator imports the SAME
       // validate()/summarize() the server uses (no duplication) for in-browser validation.
       sendStatic(res, req, join(__dirname, 'validate.mjs'), 'text/javascript; charset=utf-8');
+    } else if (req.url === '/lib/breakdown.js') {
+      // Plan 0539 P1.7 — the SHARED "show the arithmetic" renderer. Served to the host page here and
+      // INLINED into every component page by harness/assemble.mjs, so a non-dice caller (the station
+      // skill of roadmap 0541) reaches the identical renderer from either side of the iframe.
+      // ⛔ NOT under the voice fence: this is not voice, and the fence is deleted when voice is off.
+      sendStatic(res, req, join(LIB, 'breakdown.js'), 'text/javascript; charset=utf-8');
     } else if (req.url === '/lib/voice-stub.js') {
       // Plan 0470 Tier 0: the sub-1KB always-on voice stub (dynamic-imports Tier 1 on enable()).
       sendStatic(res, req, join(LIB, 'voice-stub.js'), 'text/javascript; charset=utf-8');

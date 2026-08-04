@@ -109,12 +109,36 @@
     border-radius:8px 0 0 8px;font:11px/1 'Courier New',monospace;letter-spacing:.16em;cursor:pointer;
     writing-mode:vertical-rl;text-orientation:mixed;opacity:.55;transition:opacity .15s ease;}
   #ap-chat-tab:hover,#ap-chat-tab:focus{opacity:1;outline:none;}
+  /* Plan 0539 P1.2 — WIDER AND TALLER WHEN OPEN. Bruce: "can be a bit bigger when folded out."
+     ⛓ The cost of this is ZERO WHILE CLOSED, which is the entire argument for the summon pattern:
+     the always-present inventory is the 20×85 tab and nothing else, so the panel can afford to be
+     a real reading surface. 320 → 420 wide, and it now has a height budget instead of hugging its
+     content. Re-measured after the change: still SEVEN always-present elements. */
   #ap-chat{position:fixed;right:0;top:50%;transform:translateY(-50%) translateX(102%);
     visibility:hidden;opacity:0;transition:transform .16s ease,opacity .16s ease,visibility .16s;
-    display:flex;flex-direction:column;gap:6px;width:320px;max-width:78vw;padding:10px;
+    display:flex;flex-direction:column;gap:6px;width:420px;max-width:88vw;max-height:82vh;padding:10px;
     background:rgba(6,10,24,.96);border:1px solid #1c2a44;border-right:0;border-radius:8px 0 0 8px;z-index:42;}
   #ap-chat.open{transform:translateY(-50%) translateX(0);visibility:visible;opacity:1;}
   #ap-chat-why{font:11px/1.4 'Courier New',monospace;color:#e0a94a;opacity:.9;}
+  /* Plan 0539 P1.1 — THE READER. 0537 shipped a way to speak into a room with no way to hear it.
+     Newest at the bottom, scrollback above, and the view is never yanked while someone reads up. */
+  #ap-chat-log{flex:1 1 auto;min-height:140px;max-height:52vh;overflow-y:auto;overflow-x:hidden;
+    font:12px/1.45 'Courier New',monospace;color:#cfe9ff;background:#080e20;border:1px solid #1c2a44;
+    border-radius:6px;padding:6px 8px;overscroll-behavior:contain;word-break:break-word;}
+  #ap-chat-log:focus{outline:1px solid #2a3a5a;}
+  #ap-chat-log .ap-cl-empty{opacity:.5;font-style:italic;}
+  #ap-chat-log .ap-cl-row{margin:0 0 5px;}
+  #ap-chat-log .ap-cl-who{color:#8fd6ff;font-weight:700;}
+  #ap-chat-log .ap-cl-who::after{content:": ";color:#8fd6ff;font-weight:400;}
+  /* ⚠ The aside is the one line whose AUDIENCE differs from every other line in the log. It is
+     marked by colour AND by a text tag — colour alone is not a message, and 1.3's requirement is
+     that the sender can SEE which of their lines the room could read. */
+  #ap-chat-log .ap-cl-row.aside{color:#e0a94a;border-left:2px solid #e0a94a;padding-left:6px;}
+  #ap-chat-log .ap-cl-row.aside .ap-cl-who{color:#e0a94a;}
+  #ap-chat-log .ap-cl-tag{font-size:10px;letter-spacing:.08em;opacity:.85;}
+  #ap-chat-log .ap-cl-row.roll{color:#9fe6b8;border-left:2px solid #2f6b47;padding-left:6px;}
+  #ap-chat-log .ap-cl-row.roll .ap-cl-who{color:#9fe6b8;}
+  #ap-chat-log .ap-cl-row.mine .ap-cl-who{text-decoration:underline;}
   /* Plan 0476 P4: echo line — one line of the speaker's own recognized words. It sat at bottom:38px
      to clear the old input row; with that row gone it drops to the floor, clearing only #who. */
   #ap-echo{position:fixed;bottom:6px;left:0;right:0;padding:3px 10px 3px 180px;z-index:41;font:12px/1.35 'Courier New',monospace;color:#8fd6ff;background:linear-gradient(rgba(6,10,24,0),rgba(6,10,24,.72));white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:0;transition:opacity .18s ease;pointer-events:none;}
@@ -248,7 +272,14 @@
      act on: "disabled until a listener is attached" describes the code's condition, not the human
      one, and Bruce read it as "not yet built". -->
 <button id="ap-chat-tab" type="button" aria-controls="ap-chat" aria-expanded="false" title="Open the message panel">MESSAGE</button>
-<div id="ap-chat"><div id="ap-chat-why"></div><input id="ap-chat-input" disabled placeholder="type a message…"><button id="ap-chat-send" disabled>Send</button></div>
+<!-- Plan 0539 P1.1 — the LOG is the first child, so the room's talk sits ABOVE the box you talk
+     into, which is where every other messaging surface in the world puts it. -->
+<div id="ap-chat"><div id="ap-chat-log" role="log" aria-live="polite" aria-label="messages" tabindex="0"></div><div id="ap-chat-why"></div><input id="ap-chat-input" disabled placeholder="type a message…"><button id="ap-chat-send" disabled>Send</button></div>
+<!-- Plan 0539 P1.7 — the shared, domain-neutral "show the arithmetic" renderer. ⛔ Loaded OUTSIDE
+     the voice fence below: it is not voice, and the server deletes that whole region when voice is
+     off (which is the default). A handler written inside it is stripped from every ordinary
+     deployment — the exact trap recorded on the chat_private branch. -->
+<script src="/lib/breakdown.js"></script>
 <!-- AP-VOICE:BEGIN -->
 <!-- Plan 0470 Tier 0: the ONLY voice code loaded by default (~sub-1KB). It does nothing until
      enable(), which dynamic-imports the Tier-1 capture engine on demand (T-LAZY).
@@ -457,6 +488,9 @@
           pe.__apT = setTimeout(function(){ pe.classList.remove('show'); }, 6000);
         }
       } catch(e){}
+      // Plan 0539 P1.3 — and it goes into the LOG as well as the echo strip. The echo is an 8-second
+      // flash; the log is where "which of my lines could the room read?" is answerable a minute later.
+      try { chatLogPrivateReceipt(m); } catch(e){}
       try { window.__apPrivate = { ok: !!m.ok, text: m.text || '' }; } catch(e){}   // test hook
       return;
     }
@@ -493,7 +527,8 @@
       // declare surfaces and no stations, and __apOnStationWelcome returns early on that one.
       if (typeof window.__apOnSurfaceWelcome === 'function') window.__apOnSurfaceWelcome(m);
       updateGotoControl(); }
-    else if (m.t === 'snapshot') { lastSnapshot = m; if (typeof m.version === 'number') lastVersion = m.version; if (frame && frame.contentWindow) frame.contentWindow.postMessage({ source:'argus-host', type:'snapshot', state:m.state, version:m.version }, '*'); }
+    else if (m.t === 'snapshot') { lastSnapshot = m; if (typeof m.version === 'number') lastVersion = m.version; try { chatLogSnapshot(m.state); } catch(e){}   /* 0539 P1.1 */
+      if (frame && frame.contentWindow) frame.contentWindow.postMessage({ source:'argus-host', type:'snapshot', state:m.state, version:m.version }, '*'); }
     // W4c: a render that is NOT the answer to a peek we just sent is the room taking the screen
     // back (server.mjs peekTo — "the room still wins", and it sends no notice when it does).
     else if (m.t === 'content') { if (typeof window.__apRoomPushed === 'function') window.__apRoomPushed(); showContent(m.html); }
@@ -592,6 +627,7 @@
           if (!lastSnapshot) lastSnapshot = { state: {}, version: (typeof m.msg.version === 'number' ? m.msg.version : lastVersion) };
           mergeDiffInto(lastSnapshot.state, m.msg.diff);
           if (typeof m.msg.version === 'number') lastSnapshot.version = m.msg.version;
+          try { chatLogDiff(m.msg.diff); } catch(e){}   // 0539 P1.1 — the reader reads STORE RECORDS, never prose
         }
       }
       if (frame && frame.contentWindow) frame.contentWindow.postMessage(m.msg, '*');
@@ -1045,6 +1081,237 @@
     i.addEventListener('keydown', function(e){ if (e.key === 'Enter') go(); });
   })();
   window.__apChat = { enabled: function(){ return !document.getElementById('ap-chat-input').disabled; } };
+
+  /* ═════════════ Plan 0539 P1 — THE READER ═══════════════════════════════════════════════════
+   *
+   * ⛓ HOW THIS CAME TO BE MISSING, because the lesson is sharper than the bug. Plan 0537 asked what
+   * READS the `chat` slice, as a safety check before widening its read permission. The answer was
+   * "no component renders chat at all", and that was taken to mean "nothing will break". It equally
+   * meant "there is nowhere to read chat" — and the permission shipped without a reader. A probe
+   * that says nothing consumes X is also telling you something SHOULD.
+   *
+   * ── WHERE THE LINES COME FROM (P1.4, decided and stated) ──────────────────────────────────────
+   * FOUR sources, all of them STRUCTURED STORE RECORDS or a server receipt. ⛔ Nothing here parses
+   * prose, and in particular the roll rows do NOT read the pre-rendered `m.line` string — they read
+   * the `rolls` slice, which is the machine-readable representation. `rollLine` is for humans.
+   *
+   *   `chat/<id>`        the room's talk        — world-readable since 0537 P2.1
+   *   `gm/asides/<id>`   private asides         — controller-only by default-deny; a participant
+   *                                               NEVER receives these, which is the point
+   *   {t:'chat_private'} the sender's receipt   — the ONLY way the sender of an aside can see their
+   *                                               own line, since they cannot read `gm`
+   *   `rolls/<id>`       the roll log           — ⭐ P1.4: YES, rolls appear in the reader. 0537 kept
+   *                                               `/roll` out of the CHAT SLICE and that stays true;
+   *                                               this is one reader over several slices, not one
+   *                                               slice with two meanings. A roll everyone made in
+   *                                               the room but nobody can scroll back to is half a
+   *                                               feature, and the P1.7 breakdown needs somewhere
+   *                                               durable to live — an 8-second echo flash is not it.
+   *
+   * ── ⚠ P1.5 — EVERY STRING BELOW IS UNTRUSTED, AND NOTHING UPSTREAM FENCES IT FOR A BROWSER ────
+   * `emitInbox` stamps `trust` and the agent paths call `annotateTrust`; both of those fence the text
+   * FOR THE AGENT'S INSTRUCTION CHANNEL. Neither is an HTML escape, and neither ran on this path.
+   * Worse, as of 0537 this text reaches EVERY PARTICIPANT rather than only the facilitator, so the
+   * blast radius of one missed escape is the whole room. ⛔ THIS RENDERER TOUCHES `innerHTML`
+   * NOWHERE. Every user-supplied string reaches the DOM through `textContent` and nothing else.
+   * Proven by t0539-p1 with a hostile string, in a real browser, screenshotted.
+   */
+  var CHAT_LOG_MAX = 300;                 // bounded: the store's own collection cap is 1000
+  var chatEntries = Object.create(null);  // id -> {id, kind, ts, name, userId, text, roll}
+  var chatRowEls = Object.create(null);   // id -> the rendered element (kept, so <details> state survives)
+
+  function chatLogEl(){ return document.getElementById('ap-chat-log'); }
+
+  /** Ingest one path→value pair out of a diff (or a snapshot walk). Returns true if it was ours. */
+  function chatIngestPath(pth, val){
+    var parts = String(pth).split('/').filter(Boolean);
+    if (parts[0] === 'chat'){
+      if (parts.length === 1) { chatDropKind('say'); if (val && typeof val === 'object') chatIngestCollection(val, 'say'); return true; }
+      if (parts.length === 2) { return chatPut('say', parts[1], val); }
+      return false;
+    }
+    if (parts[0] === 'gm' && parts[1] === 'asides'){
+      if (parts.length === 2) { chatDropKind('aside'); if (val && typeof val === 'object') chatIngestCollection(val, 'aside'); return true; }
+      if (parts.length === 3) { return chatPut('aside', parts[2], val); }
+      return false;
+    }
+    if (parts[0] === 'rolls'){
+      if (parts.length === 1) { chatDropKind('roll'); if (val && typeof val === 'object') chatIngestCollection(val, 'roll'); return true; }
+      if (parts.length === 2) { return chatPut('roll', parts[1], val); }
+      return false;
+    }
+    return false;
+  }
+  function chatIngestCollection(obj, kind){
+    for (var k in obj){ if (Object.prototype.hasOwnProperty.call(obj, k)) chatPut(kind, k, obj[k]); }
+  }
+  function chatDropKind(kind){
+    for (var id in chatEntries){ if (chatEntries[id] && chatEntries[id].kind === kind) chatRemove(id); }
+  }
+
+  /** Upsert one record. `val === null` is a removal (eviction by the store's collection cap). */
+  function chatPut(kind, id, val){
+    if (val === null || val === undefined) { chatRemove(kind + ':' + id); return true; }
+    if (typeof val !== 'object') return true;
+    var key = kind + ':' + id;
+    var e;
+    if (kind === 'roll'){
+      e = { id: key, kind: 'roll', ts: Number(val.ts) || 0, name: val.whoName || val.who || '', userId: val.who || null, text: '', roll: val };
+    } else {
+      e = { id: key, kind: kind, ts: Number(val.ts) || 0, name: val.name || val.userId || '', userId: val.userId || null,
+            text: typeof val.text === 'string' ? val.text : '', roll: null };
+    }
+    // An id we have already rendered is the SAME event arriving twice (a controller sees its own
+    // aside both as a `gm/asides` diff and as its `chat_private` receipt; X1 can redeliver a diff).
+    // Replace the record, but do not paint a second row.
+    var had = !!chatEntries[key];
+    chatEntries[key] = e;
+    if (had) chatRepaint(key); else chatInsert(e);
+    return true;
+  }
+  function chatRemove(key){
+    if (!chatEntries[key]) return;
+    delete chatEntries[key];
+    var el = chatRowEls[key];
+    if (el && el.parentNode) el.parentNode.removeChild(el);
+    delete chatRowEls[key];
+  }
+
+  /* ⛓ P1.1 — AUTO-SCROLL ONLY WHEN ALREADY AT THE BOTTOM. Yanking the view while somebody is
+   * reading back through the log is the single most-hated behaviour a chat pane can have: it steals
+   * the line you were on and there is no way to ask for it back. Measured BEFORE the insert, applied
+   * after — the insert itself changes scrollHeight, so testing afterwards always says "not at the
+   * bottom" and the pane would never follow at all. */
+  function chatAtBottom(log){ return (log.scrollHeight - log.scrollTop - log.clientHeight) < 24; }
+
+  function chatInsert(e){
+    var log = chatLogEl(); if (!log) return;
+    var stick = chatAtBottom(log);
+    var empty = log.querySelector('.ap-cl-empty'); if (empty) log.removeChild(empty);
+    var el = chatRow(e);
+    chatRowEls[e.id] = el;
+    // Insert by timestamp. Almost always an append; the walk exists because a snapshot replays a
+    // keyed OBJECT whose iteration order is not a history, and a resync can interleave slices.
+    var n = log.lastElementChild;
+    while (n && (n.__apTs || 0) > e.ts) n = n.previousElementSibling;
+    if (n) { if (n.nextSibling) log.insertBefore(el, n.nextSibling); else log.appendChild(el); }
+    else log.insertBefore(el, log.firstChild);
+    while (log.children.length > CHAT_LOG_MAX && log.firstElementChild){
+      var drop = log.firstElementChild; if (drop.__apId) delete chatRowEls[drop.__apId];
+      log.removeChild(drop);
+    }
+    if (stick) log.scrollTop = log.scrollHeight;
+  }
+  function chatRepaint(key){
+    var old = chatRowEls[key], e = chatEntries[key];
+    if (!old || !old.parentNode || !e) return;
+    var log = chatLogEl(); var stick = log ? chatAtBottom(log) : false;
+    var el = chatRow(e);
+    old.parentNode.replaceChild(el, old);
+    chatRowEls[key] = el;
+    if (log && stick) log.scrollTop = log.scrollHeight;
+  }
+
+  /** Build one row. ⛔ textContent ONLY — see the P1.5 note above. */
+  function chatRow(e){
+    var row = document.createElement('div');
+    row.className = 'ap-cl-row ' + e.kind + (e.userId && e.userId === identity.userId ? ' mine' : '');
+    row.__apTs = e.ts; row.__apId = e.id;
+    var who = document.createElement('span');
+    who.className = 'ap-cl-who';
+    who.textContent = e.name || 'someone';
+    row.appendChild(who);
+    if (e.kind === 'aside'){
+      // ⚠ "facilitator", never the uppercase prose form of the role — this is user-visible page text
+      // and the 0532 neutral-register guard scans it.
+      var tag = document.createElement('span');
+      tag.className = 'ap-cl-tag';
+      tag.textContent = '🔒 private to the facilitator — ';
+      row.appendChild(tag);
+    }
+    if (e.kind === 'roll' && e.roll && window.ArgusBreakdown){
+      row.appendChild(window.ArgusBreakdown.render(rollBreakdown(e.roll), { summary: rollSummary(e.roll) }));
+    } else {
+      var txt = document.createElement('span');
+      txt.className = 'ap-cl-txt';
+      txt.textContent = e.text;
+      row.appendChild(txt);
+    }
+    return row;
+  }
+
+  /* P1.7 — the ONLY dice-aware code in the reader: a 6-line adapter from the roll RECORD onto the
+   * generic breakdown model. The renderer itself (lib/breakdown.js) knows nothing about dice, so the
+   * station-skill work of roadmap 0541 reuses it by writing an adapter of its own — not a second
+   * format. ⛔ Read from the record's fields; never from `line`. */
+  function rollBreakdown(r){
+    return {
+      label: r.label || null,
+      parts: Array.isArray(r.rolls) ? r.rolls : [],
+      partsLabel: r.entry === 'manual' ? 'entered by hand' : 'generated',
+      modifiers: Array.isArray(r.modifiers) ? r.modifiers : [],
+      total: r.total,
+      note: (r.target === null || r.target === undefined) ? null
+          : ('vs ' + r.target + '+  —  ' + (r.success ? 'SUCCESS' : 'FAILURE'))
+    };
+  }
+  function rollSummary(r){
+    return '🎲 ' + (r.label ? r.label + ' ' : '') + String(r.spec || '') + ' = ' + r.total
+         + ((r.target === null || r.target === undefined) ? '' : ('  vs ' + r.target + '+  ' + (r.success ? 'SUCCESS' : 'FAILURE')));
+  }
+
+  /** A whole snapshot: rebuild from scratch (a snapshot REPLACES state, it does not amend it). */
+  function chatLogSnapshot(state){
+    var log = chatLogEl();
+    chatEntries = Object.create(null); chatRowEls = Object.create(null);
+    if (log) log.textContent = '';
+    if (state && typeof state === 'object'){
+      if (state.chat && typeof state.chat === 'object') chatIngestCollection(state.chat, 'say');
+      if (state.gm && state.gm.asides && typeof state.gm.asides === 'object') chatIngestCollection(state.gm.asides, 'aside');
+      if (state.rolls && typeof state.rolls === 'object') chatIngestCollection(state.rolls, 'roll');
+    }
+    chatLogPlaceholder();
+    if (log) log.scrollTop = log.scrollHeight;
+  }
+  function chatLogDiff(diff){
+    if (!diff) return;
+    for (var pth in diff){ if (Object.prototype.hasOwnProperty.call(diff, pth)) chatIngestPath(pth, diff[pth]); }
+    chatLogPlaceholder();
+  }
+  /* An EMPTY log must say it is empty. A blank rectangle is the "is this built?" failure P4.2 was
+   * written to fix, one panel over. */
+  function chatLogPlaceholder(){
+    var log = chatLogEl(); if (!log) return;
+    var has = log.querySelector('.ap-cl-row');
+    var ph = log.querySelector('.ap-cl-empty');
+    if (has && ph) log.removeChild(ph);
+    else if (!has && !ph){
+      var d = document.createElement('div'); d.className = 'ap-cl-empty';
+      d.textContent = 'nothing said yet — messages from the room appear here';
+      log.appendChild(d);
+    }
+  }
+  /** The sender's own aside, from the server's receipt — their only source for it. */
+  function chatLogPrivateReceipt(m){
+    if (!m || !m.ok || !m.id) return;
+    chatPut('aside', m.id, { id: m.id, text: m.text || '', name: m.name || identity.userName, userId: identity.userId, ts: Number(m.ts) || Date.now() });
+    chatLogPlaceholder();
+  }
+  (function(){
+    if (window.ArgusBreakdown) window.ArgusBreakdown.injectCss(document);
+    chatLogPlaceholder();
+    // Test hook: the log as TEXT plus its structure, so a probe can assert what a human would read
+    // without reaching into markup. `html` is exposed ONLY so the escaping test can prove no element
+    // was created from a message — ⛔ nothing in the product reads it.
+    window.__apChatLog = {
+      text: function(){ var l = chatLogEl(); return l ? l.textContent : ''; },
+      rows: function(){ var l = chatLogEl(); return l ? [].map.call(l.querySelectorAll('.ap-cl-row'), function(r){
+              return { kind: r.className.replace('ap-cl-row','').trim(), text: r.textContent }; }) : []; },
+      html: function(){ var l = chatLogEl(); return l ? l.innerHTML : ''; },
+      atBottom: function(){ var l = chatLogEl(); return l ? chatAtBottom(l) : true; },
+      scrollTop: function(){ var l = chatLogEl(); return l ? l.scrollTop : 0; }
+    };
+  })();
 
   // X3: report client render errors to the telemetry sink.
   window.addEventListener('error', function(){ try { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t:'telemetry', kind:'render-error' })); } catch(e){} });

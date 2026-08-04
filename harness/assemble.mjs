@@ -49,6 +49,10 @@ export function assemble({ component = 'choice', opts = {}, theme = 'argus', tit
   const log_js = read('lib/log.mjs');
   const a11y_js = read('lib/a11y.js');
   const registry_js = read('lib/registry.js');
+  // Plan 0539 P1.7 (R2) — the shared breakdown renderer rides into every component page, so a
+  // component that computes `base + rank + equipment − damage` renders it with the SAME code the
+  // host chrome uses on a roll. Without this the next caller writes a second format.
+  const breakdown_js = read('lib/breakdown.js');
   const pluginSet = resolveClosure(requires);
   const { css: comp_css, js: comp_js } = bundle(pluginSet);
 
@@ -79,6 +83,7 @@ ${label}
 <script>${log_js}</script>
 <script>${a11y_js}</script>
 <script>${registry_js}</script>
+<script>${breakdown_js}</script>
 <script>${comp_js}</script>
 <script>
 (function(){

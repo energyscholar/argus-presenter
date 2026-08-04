@@ -1282,7 +1282,15 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         // it is recorded as `entry:'manual'` so the log can always tell a roll from a claim.
         if (c && c.isGuest && !(c.capScope || []).includes('type')) { log.warn('cap', 'roll-out-of-scope', { socketId: c.id }); return; }
         if (c) {
-          const res = doRoll(c, { spec: m.spec, target: m.target, label: m.label, manualTotal: m.total });
+          // Plan 0539 P1.7 — labelled modifiers are CONTROLLER-ONLY on the wire. A participant may
+          // still ask for `+2` through the spec (it is part of the request, like the target), but it
+          // may not attach a REASON to a number: a skill name appearing in the room's log as though
+          // the session had established it is an assertion, and 0537's rule is that the client asks
+          // and the server answers. The skill-aware caller this field exists for is a plugin/agent,
+          // which holds a control role. A participant's `modifiers` are dropped, not refused —
+          // the roll itself is perfectly valid without them.
+          const supplied = CONTROL_ROLES.has(c.role) ? m.modifiers : null;
+          const res = doRoll(c, { spec: m.spec, target: m.target, label: m.label, manualTotal: m.total, modifiers: supplied });
           if (!res.ok) send(ws, { t: 'roll_refused', reason: res.reason, text: 'expected {spec:"<count>d<sides>[+mod]", target?, label?, total?}' });
         }
       } else if (m.t === 'chat') {
@@ -1307,10 +1315,17 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
             // is the invisible-GO defect wearing a new coat: the sender assumes it landed, and the
             // only evidence either way is its absence. Both branches below answer.
             if (!body) { send(ws, { t: 'chat_private', ok: false, reason: 'empty', text: '' }); return; }
+            const asideTs = Date.now();
             emitInbox({ kind: 'text', userId: c.userId, userName: c.userName, role: c.role, text: body, conf: null, final: true, isGuest: !!c.isGuest, private: true });
-            handleOp(c, { path: 'gm/asides/' + id, verb: 'set', value: { id, text: body, name: c.userName, userId: c.userId, ts: Date.now() } },
+            handleOp(c, { path: 'gm/asides/' + id, verb: 'set', value: { id, text: body, name: c.userName, userId: c.userId, ts: asideTs } },
               { userId: c.userId, role: 'system' });   // sender's id, lifted role — see handleOp
-            send(ws, { t: 'chat_private', ok: true, text: body });
+            // Plan 0539 P1.3 — the receipt now carries `id` + `ts`. THE SENDER IS THE ONLY PERSON
+            // WHO CANNOT READ THEIR OWN ASIDE: it lives in the controller-only `gm` slice, so a
+            // participant's reader has no other source for it. Without an id the sender's log
+            // cannot dedupe it against the copy a CONTROLLER does receive over `gm/asides`, and a
+            // facilitator would see their own aside twice. Without a ts it cannot be ordered
+            // against the room's talk, which is the whole point of showing it at all.
+            send(ws, { t: 'chat_private', ok: true, text: body, id, ts: asideTs, name: c.userName });
             return;
           }
           // Plan 0537 P3 — `/roll …` from the chat input. It routes into the SAME doRoll() the
@@ -1326,7 +1341,13 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
             return;
           }
           emitInbox({ kind: 'text', userId: c.userId, userName: c.userName, role: c.role, text: m.text, conf: null, final: true, isGuest: !!c.isGuest });
-          handleOp(c, { path: 'chat', verb: 'add', value: { id, text: m.text, name: c.userName } });   // display slice (best-effort; perm-gated)
+          // Plan 0539 P1.1 — `ts` and `userId` are ADDED to the record, and both are load-bearing for
+          // the reader. `chat` is a keyed collection, not a list: a client rebuilding the log from a
+          // snapshot gets an OBJECT, whose key order is an implementation detail and not a history.
+          // Without a server-stamped `ts` there is nothing to sort by, and "newest at the bottom"
+          // becomes "whatever order V8 felt like". `userId` is what lets a reader tell YOUR line from
+          // a line by someone who typed the same display name.
+          handleOp(c, { path: 'chat', verb: 'add', value: { id, text: m.text, name: c.userName, userId: c.userId, ts: Date.now() } });   // display slice (best-effort; perm-gated)
         }
       }
       } catch (e) { try { log.warn('ws', 'dispatch-error', { err: String(e && e.message || e) }); } catch {} }   // Plan 0471 C2: defense-in-depth
@@ -1455,6 +1476,37 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   /** One die, from the CSPRNG — `randomInt` is uniform, unlike `Math.random()*n|0`. */
   function rollDie(sides) { return 1 + randomInt(sides); }
 
+  /* ── Plan 0539 P1.7 — `modifiers: [{label, value}]`. A SCHEMA CHANGE, NOT A UI CHANGE. ──────────
+   * 0537 collapsed every adjustment into the `spec` string, so by the time the record was written
+   * the REASONS were already gone. `+2` can never be turned back into "skill 2" or "long range −1", and
+   * a client that tried would be parsing prose to recover numbers — the exact failure `rollLine` was
+   * written to prevent, in a smaller coat.
+   *
+   * ⛓ THE SHAPE IS DELIBERATELY GENERIC AND DELIBERATELY NOT CALLED `rollModifiers` (R2 amendment).
+   * A capability level assembled from several named sources is the same stack as a roll's, and the
+   * next caller must find
+   * this shape already here rather than invent a second one. The renderer lives in lib/breakdown.js,
+   * which knows nothing about dice, for the same reason.
+   *
+   * ⚠ `label: null` means "no reason was recorded". That is honest, and it is NOT the same as
+   * inventing a reason. The bare modifier in a spec (`+2`) lands here with a null label so the shown
+   * arithmetic still ADDS UP — a breakdown that omits a real contribution is worse than none.
+   */
+  const MODIFIERS_MAX = 24;
+  function normalizeModifiers(mods) {
+    if (!Array.isArray(mods)) return [];
+    const out = [];
+    for (const m of mods) {
+      if (!m || typeof m !== 'object') continue;
+      const value = Number(m.value);
+      if (!Number.isFinite(value) || Math.abs(value) > 10000) continue;   // same bound as a spec modifier
+      const label = (typeof m.label === 'string' && m.label.trim()) ? m.label.trim().slice(0, 80) : null;
+      out.push({ label, value });
+      if (out.length >= MODIFIERS_MAX) break;
+    }
+    return out;
+  }
+
   /**
    * Perform (or record) a roll. `c` is the requesting connection.
    * `manualTotal != null` ⇒ the human rolled physical dice and typed the number in: it is recorded
@@ -1462,25 +1514,31 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
    * so the distinction is a FIELD, not a convention — and `success` is still computed by the server
    * from the total it was given, so the target comparison is never the client's opinion either.
    */
-  function doRoll(c, { spec, target = null, label = null, manualTotal = null }) {
+  function doRoll(c, { spec, target = null, label = null, manualTotal = null, modifiers = null }) {
     const parsed = parseDice(spec);
     if (!parsed) return { ok: false, reason: 'bad-spec' };
     const tgt = (target === null || target === undefined) ? null : Number(target);
     if (tgt !== null && !Number.isFinite(tgt)) return { ok: false, reason: 'bad-target' };
-    let rolls = [], total;
+    let rolls = [], total, mods = [];
     if (manualTotal !== null && manualTotal !== undefined) {
       if (!Number.isFinite(Number(manualTotal))) return { ok: false, reason: 'bad-total' };
       total = Number(manualTotal);
+      // ⛔ A HAND-ENTERED TOTAL GETS AN EMPTY BREAKDOWN, deliberately. The human typed the finished
+      // number; every adjustment they applied is already inside it. Listing the spec's `+2` beside it
+      // would double-count on screen and claim an arithmetic the server never performed.
+      mods = [];
     } else {
       for (let i = 0; i < parsed.count; i++) rolls.push(rollDie(parsed.sides));
-      total = rolls.reduce((a, b) => a + b, 0) + parsed.mod;
+      // Spec modifier first (it is part of what was asked for), then any labelled ones.
+      mods = (parsed.mod ? [{ label: null, value: parsed.mod }] : []).concat(normalizeModifiers(modifiers));
+      total = rolls.reduce((a, b) => a + b, 0) + mods.reduce((a, m) => a + m.value, 0);
     }
     const rec = {
       id: c.userId + '-' + Date.now() + '-' + randomInt(1e6),
       who: c.userId, whoName: c.userName || c.userId,
       label: (typeof label === 'string' && label.trim()) ? label.trim().slice(0, 120) : null,
       spec: `${parsed.count}d${parsed.sides}${parsed.mod ? (parsed.mod > 0 ? '+' + parsed.mod : String(parsed.mod)) : ''}`,
-      rolls, total, target: tgt,
+      rolls, modifiers: mods, total, target: tgt,
       success: tgt === null ? null : total >= tgt,
       entry: (manualTotal !== null && manualTotal !== undefined) ? 'manual' : 'rolled',
       ts: Date.now(),
@@ -1497,7 +1555,12 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   function rollLine(r) {
     const dice = r.entry === 'manual' ? '(entered by hand)' : '[' + r.rolls.join(' ') + ']';
     const vs = r.target === null ? '' : `  vs ${r.target}+  —  ${r.success ? 'SUCCESS' : 'FAILURE'}`;
-    return `🎲 ${r.whoName} ${r.label ? r.label + ' ' : ''}${r.spec} ${dice} = ${r.total}${vs}`;
+    // Plan 0539 P1.7 — LABELLED modifiers appear in the one-line form too, or the readable line
+    // stops adding up the moment a skill-aware caller supplies one (the spec carries only the bare
+    // number). Unlabelled ones are already inside `spec` and are not repeated.
+    const named = (r.modifiers || []).filter((m) => m.label);
+    const why = named.length ? ' ' + named.map((m) => `${m.value < 0 ? '−' : '+'}${Math.abs(m.value)} ${m.label}`).join(' ') : '';
+    return `🎲 ${r.whoName} ${r.label ? r.label + ' ' : ''}${r.spec} ${dice}${why} = ${r.total}${vs}`;
   }
   /**
    * `/roll <spec> [target] [= total] [label…]` — the human affordance, routed into the SAME doRoll.
