@@ -38,6 +38,16 @@ test('P3 — chat disabled with no listener, enabled + delivered when a listener
     expect((await part.evaluate(() => window.__apChat.enabled())) === true, 'chat ENABLED when a listener is present');
 
     // Participant sends a chat message.
+    // Plan 0537 P4.1 — the reply channel moved off the bottom bar to a summoned right-edge panel,
+    // so the input is no longer on screen until you ask for it. Open it the way a participant does.
+    // ⚠ This is the affordance changing, not the behaviour: everything asserted below is unchanged.
+    // ⚠ Opened through the API, NOT by clicking the tab. Clicking raced the handler attach
+    // under full-suite load and made both these files flaky (green alone, red in the suite).
+    // What the tab CLICK does is 0537 P4's business and is tested there; what these files
+    // need is simply for the input to be on screen.
+    await part.waitForFunction(() => window.__apChatPanel && typeof window.__apChatPanel.set === 'function');
+    await part.evaluate(() => window.__apChatPanel.set(true));
+    await until(async () => (await part.evaluate(() => window.__apChatPanel.open())) === true, { label: 'message panel open', timeout: 5000 });
     await part.type('#ap-chat-input', 'hello team');
     await part.click('#ap-chat-send');
 

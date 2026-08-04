@@ -94,9 +94,30 @@
   #ap-control-bar button:hover{border-color:#22e5a0;}
   #ap-control-frame{flex:1;width:100%;border:0;background:#040814;}
   #who{position:fixed;bottom:8px;left:12px;font-size:.65rem;opacity:.4;letter-spacing:.1em;}
-  #ap-chat{position:fixed;bottom:0;left:0;right:0;display:flex;gap:6px;padding:6px 10px 6px 130px;background:rgba(6,10,24,.85);border-top:1px solid #1c2a44;z-index:40;}
-  /* Plan 0476 P4: echo line — one line of the speaker's own recognized words, above the input. */
-  #ap-echo{position:fixed;bottom:38px;left:0;right:0;padding:3px 10px 3px 130px;z-index:41;font:12px/1.35 'Courier New',monospace;color:#8fd6ff;background:linear-gradient(rgba(6,10,24,0),rgba(6,10,24,.72));white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:0;transition:opacity .18s ease;pointer-events:none;}
+  /* ── Plan 0537 P4.1 — THE REPLY CHANNEL MOVES TO THE RIGHT EDGE ─────────────────────────────
+     Bruce, S229: "we did have it as just the green dot, no other always-present controls. Clean."
+     The bottom bar was 4 of the 8 always-present elements and 44px of permanent full-width
+     furniture, paid by every participant in every session including the ones who never type.
+     The reply channel still EARNS permanence (docs/display-chrome-budget.md: "a participant with
+     nothing to say back is an audience") — so what stays is the smallest thing that keeps that
+     promise: a slim edge tab. The input itself is SUMMONED.
+     ⛓ Collapsed state is `visibility:hidden`, not an off-screen transform alone: a box parked
+     outside the viewport is still laid out, still tabbable, and still counts as chrome by any
+     honest inventory. Hiding it means hiding it. */
+  #ap-chat-tab{position:fixed;right:0;top:50%;transform:translateY(-50%);z-index:41;
+    padding:12px 4px;background:rgba(6,10,24,.85);color:#8fd6ff;border:1px solid #1c2a44;border-right:0;
+    border-radius:8px 0 0 8px;font:11px/1 'Courier New',monospace;letter-spacing:.16em;cursor:pointer;
+    writing-mode:vertical-rl;text-orientation:mixed;opacity:.55;transition:opacity .15s ease;}
+  #ap-chat-tab:hover,#ap-chat-tab:focus{opacity:1;outline:none;}
+  #ap-chat{position:fixed;right:0;top:50%;transform:translateY(-50%) translateX(102%);
+    visibility:hidden;opacity:0;transition:transform .16s ease,opacity .16s ease,visibility .16s;
+    display:flex;flex-direction:column;gap:6px;width:320px;max-width:78vw;padding:10px;
+    background:rgba(6,10,24,.96);border:1px solid #1c2a44;border-right:0;border-radius:8px 0 0 8px;z-index:42;}
+  #ap-chat.open{transform:translateY(-50%) translateX(0);visibility:visible;opacity:1;}
+  #ap-chat-why{font:11px/1.4 'Courier New',monospace;color:#e0a94a;opacity:.9;}
+  /* Plan 0476 P4: echo line — one line of the speaker's own recognized words. It sat at bottom:38px
+     to clear the old input row; with that row gone it drops to the floor, clearing only #who. */
+  #ap-echo{position:fixed;bottom:6px;left:0;right:0;padding:3px 10px 3px 180px;z-index:41;font:12px/1.35 'Courier New',monospace;color:#8fd6ff;background:linear-gradient(rgba(6,10,24,0),rgba(6,10,24,.72));white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:0;transition:opacity .18s ease;pointer-events:none;}
   #ap-echo.show{opacity:.92;}
   #ap-chat input{flex:1 1 auto;background:#0d1633;color:#cfe9ff;border:1px solid #2a3a5a;border-radius:6px;padding:5px 8px;font:inherit;}
   #ap-chat input:disabled{opacity:.5;}
@@ -222,7 +243,12 @@
 <div id="who"></div>
 <!-- Plan 0476 P4: single-line echo of the local speaker's OWN recognized words, just above the input. -->
 <div id="ap-echo" aria-live="polite"></div>
-<div id="ap-chat"><input id="ap-chat-input" disabled placeholder="chat (disabled until a listener is attached)"><button id="ap-chat-send" disabled>Send</button></div>
+<!-- Plan 0537 P4.1 — the tab is the ONLY always-present part of the reply channel; the panel it
+     opens is summoned. P4.2 — #ap-chat-why says WHY the input is off, in words a facilitator can
+     act on: "disabled until a listener is attached" describes the code's condition, not the human
+     one, and Bruce read it as "not yet built". -->
+<button id="ap-chat-tab" type="button" aria-controls="ap-chat" aria-expanded="false" title="Open the message panel">MESSAGE</button>
+<div id="ap-chat"><div id="ap-chat-why"></div><input id="ap-chat-input" disabled placeholder="type a message…"><button id="ap-chat-send" disabled>Send</button></div>
 <!-- AP-VOICE:BEGIN -->
 <!-- Plan 0470 Tier 0: the ONLY voice code loaded by default (~sub-1KB). It does nothing until
      enable(), which dynamic-imports the Tier-1 capture engine on demand (T-LAZY).
@@ -974,7 +1000,42 @@
 
   // P3: bottom chat input — always present, enabled only when a listener is attached.
   function sendOp(path, verb, value){ if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t:'op', path:path, verb:verb, value:value, opId: identity.userId + ':' + Date.now() })); }
-  function updateChat(n){ var en = (n|0) > 0; var i = document.getElementById('ap-chat-input'), b = document.getElementById('ap-chat-send'); if (i){ i.disabled = !en; i.placeholder = en ? 'type a message…' : 'chat (disabled until a listener is attached)'; } if (b) b.disabled = !en; }
+  // Plan 0537 P4.2 — the input is CONDITIONAL, not unbuilt, and the old copy did not say so. "chat
+  // (disabled until a listener is attached)" names the code's condition; a facilitator reading it
+  // cannot tell whether the feature exists, whether they broke it, or what to do next — Bruce read
+  // it as "not yet enabled". The replacement names the CAUSE and the ACTION, and lives in a line
+  // above the box rather than in placeholder text that vanishes the moment anyone types.
+  function updateChat(n){
+    var en = (n|0) > 0;
+    var i = document.getElementById('ap-chat-input'), b = document.getElementById('ap-chat-send'),
+        w = document.getElementById('ap-chat-why'), tab = document.getElementById('ap-chat-tab');
+    // ⚠ No dice NOTATION in user-visible page text — t0532-04's register list matches `\d*d(4|6|…)`
+    // and an example like "2d6" trips it. Name the commands, not their syntax.
+    if (i){ i.disabled = !en; i.placeholder = en ? 'type a message…  ·  /gm private  ·  /roll' : 'nobody is listening yet'; }
+    if (b) b.disabled = !en;
+    if (w){ w.textContent = en ? '' : '⚠ Messages are off because nobody is listening yet. They turn on by themselves as soon as the facilitator (or an assistant) joins the session — nothing is broken and there is nothing to switch on.'; w.style.display = en ? 'none' : ''; }
+    if (tab) tab.title = en ? 'Open the message panel' : 'Message panel — nobody is listening yet';
+  }
+  (function(){
+    // P4.1 — summon/dismiss. ESC closes, so the panel never becomes something you are stuck in.
+    var tab = document.getElementById('ap-chat-tab'), panel = document.getElementById('ap-chat');
+    if (!tab || !panel) return;
+    function setOpen(open){
+      panel.classList.toggle('open', open);
+      tab.setAttribute('aria-expanded', open ? 'true' : 'false');
+      tab.textContent = open ? 'CLOSE' : 'MESSAGE';
+      // ⚠ The panel is at right:0 and outranks the tab, so when open it SAT ON TOP of the control
+      // that opened it: the tab was unclickable and ESC was the only way out. Slide the tab clear
+      // by the panel's MEASURED width — the panel is 320px or 78vw, whichever is smaller, so a
+      // hardcoded offset would be wrong on a narrow screen. Seen in a screenshot, not reasoned about.
+      tab.style.right = open ? (Math.round(panel.getBoundingClientRect().width) + 'px') : '';
+      if (open) { var i = document.getElementById('ap-chat-input'); if (i && !i.disabled) i.focus(); }
+    }
+    tab.addEventListener('click', function(e){ e.stopPropagation(); setOpen(!panel.classList.contains('open')); });
+    panel.addEventListener('click', function(e){ e.stopPropagation(); });
+    document.addEventListener('keydown', function(e){ if (e.key === 'Escape' && panel.classList.contains('open')) setOpen(false); });
+    window.__apChatPanel = { open: function(){ return panel.classList.contains('open'); }, set: setOpen };   // test hook
+  })();
   // Plan 0472: typed text is FIRST-CLASS input — a {t:'chat'} message the server lands in the unified
   // inbox with the connection's server-authoritative identity (and dual-writes the display slice).
   function sendChat(text){ if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t:'chat', text: text, id: identity.userId + '-' + Date.now() })); }

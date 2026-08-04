@@ -1283,7 +1283,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         if (c && c.isGuest && !(c.capScope || []).includes('type')) { log.warn('cap', 'roll-out-of-scope', { socketId: c.id }); return; }
         if (c) {
           const res = doRoll(c, { spec: m.spec, target: m.target, label: m.label, manualTotal: m.total });
-          if (!res.ok) send(ws, { t: 'roll_refused', reason: res.reason, text: 'expected {spec:"2d6+1", target?, label?, total?}' });
+          if (!res.ok) send(ws, { t: 'roll_refused', reason: res.reason, text: 'expected {spec:"<count>d<sides>[+mod]", target?, label?, total?}' });
         }
       } else if (m.t === 'chat') {
         // Plan 0472: typed text is FIRST-CLASS input. Land it in the unified inbox attributed to the
@@ -1320,9 +1320,9 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
           const rollCmd = /^\/roll(?:\s+([\s\S]*))?$/.exec(m.text.trim());
           if (rollCmd) {
             const args = parseRollCommand(rollCmd[1]);
-            if (!args) { send(ws, { t: 'roll_refused', reason: 'usage', text: '/roll 2d6+1 [target] [= total] [label]' }); return; }
+            if (!args) { send(ws, { t: 'roll_refused', reason: 'usage', text: '/roll <count>d<sides>[+mod] [target] [= total] [label]' }); return; }
             const res = doRoll(c, args);
-            if (!res.ok) send(ws, { t: 'roll_refused', reason: res.reason, text: '/roll 2d6+1 [target] [= total] [label]' });
+            if (!res.ok) send(ws, { t: 'roll_refused', reason: res.reason, text: '/roll <count>d<sides>[+mod] [target] [= total] [label]' });
             return;
           }
           emitInbox({ kind: 'text', userId: c.userId, userName: c.userName, role: c.role, text: m.text, conf: null, final: true, isGuest: !!c.isGuest });

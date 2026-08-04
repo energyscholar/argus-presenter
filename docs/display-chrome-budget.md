@@ -22,6 +22,40 @@ Clean. Now we also have other components beginning to clutter the display. Caref
 ⇒ **8 always-present elements occupying all four edges, ~44 px of permanent furniture across the
 full width at the bottom.** This is the FLOOR — before a single plugin, surface or content module.
 
+### ⛳ RE-MEASURED after plan 0537 P4.1 — **8 → 7, and the bottom bar is gone**
+
+Same page, same 1280×800 bare deployment, measured with the same method (every laid-out element in
+the fixed chrome layer, excluding the stage). **The rule says a rising count must be said out loud;
+this one FELL, which is worth saying just as plainly.**
+
+| element | position | size | change |
+|---|---|---|---|
+| `led-btn` | fixed, top-right | 26×26 | — |
+| `led` | top-right | 10×10 | — |
+| `ap-seat-k` | top-left | 30×14 | — |
+| `ap-seat-v` | top-left | 94×18 | — |
+| `who` | fixed, bottom-left | 153×12 | — |
+| `ap-echo` | fixed, bottom | 1280×6 | dropped from `bottom:38px` to `bottom:6px` |
+| `ap-chat-input` | ~~bottom, 1074×30~~ | — | ⛳ **SUMMONED** — moved into the right-edge panel |
+| `ap-chat-send` | ~~bottom, 60×30~~ | — | ⛳ **SUMMONED** |
+| `ap-chat-tab` | fixed, right edge | 20×85 | ⚠ **NEW** — the one always-present part that remains |
+
+⇒ **7 always-present elements. Bottom furniture 44 px → 20 px** (`who` + the echo strip; the
+full-width bar is gone entirely).
+
+**Why the tab is allowed to be permanent when the input is not.** The reply channel is on this
+document's own short list — *"a participant with nothing to say back is an audience, not a
+participant"* — so it cannot simply be deleted. But that argument justifies **discoverability**, not
+**a text box**: what a participant must know without being told is *that they can speak*, and a 20×85
+edge tab says that in 1/12th the pixels a 1134×30 bottom bar spent saying it. The panel behind it is
+summoned, costs nothing when closed, and ESC or the tab closes it.
+
+⚠ **Two counts, one page — state your method or the comparison is worthless.** A raw sweep of the
+fixed layer returns **10 before / 8 after**, because it also counts the `ap-seat` and `ap-chat`
+*containers* that the table above lists only by their children. The 8→7 figures are on the table's
+basis. Both deltas are −2 and −1 respectively; neither number is wrong, and quoting one against the
+other would invent a regression that did not happen.
+
 ⚠ Note `ap-seat` renders **"Role 👁 Observer" on a deployment with no stations declared**, though
 `paintSeat()` documents *"No registry, or a uid this deployment does not know ⇒ render NOTHING …
 a blank badge is worse than no badge: it reads as a broken seat."* **Worth checking whether that

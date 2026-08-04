@@ -35,6 +35,14 @@ test('T-CHAT-FIRSTCLASS typed text lands in the inbox (server-attributed) AND st
     expect((await part.evaluate(() => window.__apChat.enabled())) === true, '#ap-chat ENABLED once a listener (ai) is attached');
 
     // Type + send.
+    // Plan 0537 P4.1 — the input lives in a summoned right-edge panel now, not the bottom bar.
+    // ⚠ Opened through the API, NOT by clicking the tab. Clicking raced the handler attach
+    // under full-suite load and made both these files flaky (green alone, red in the suite).
+    // What the tab CLICK does is 0537 P4's business and is tested there; what these files
+    // need is simply for the input to be on screen.
+    await part.waitForFunction(() => window.__apChatPanel && typeof window.__apChatPanel.set === 'function');
+    await part.evaluate(() => window.__apChatPanel.set(true));
+    await until(async () => (await part.evaluate(() => window.__apChatPanel.open())) === true, { label: 'message panel open', timeout: 5000 });
     await part.type('#ap-chat-input', 'wearable hello');
     await part.click('#ap-chat-send');
 
