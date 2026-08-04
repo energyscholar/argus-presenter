@@ -434,6 +434,26 @@
       try { window.__apPrivate = { ok: !!m.ok, text: m.text || '' }; } catch(e){}   // test hook
       return;
     }
+    if (m.t === 'roll' || m.t === 'roll_refused') {
+      // Plan 0537 P3.4 — ONE EVENT, TWO REPRESENTATIONS. This renders the HUMAN one, and the server
+      // hands it over already rendered (`m.line`) so the prose exists in exactly one place. ⛔ The
+      // structured record lives in the `rolls` store slice; anything that needs the numbers reads
+      // THAT. Nothing may ever parse this string back into a total — that is how one event quietly
+      // becomes two disagreeing facts.
+      // ⛔ Same siting rule as chat_private above: NOT in the else-if chain below, which the server
+      // deletes when voice is off. Dice are not voice.
+      try {
+        var re = document.getElementById('ap-echo');
+        if (re) {
+          re.textContent = (m.t === 'roll') ? String(m.line || '')
+                                            : ('🎲 could not roll that — ' + (m.text || 'check the spec'));
+          re.classList.add('show'); clearTimeout(re.__apT);
+          re.__apT = setTimeout(function(){ re.classList.remove('show'); }, 8000);
+        }
+      } catch(e){}
+      try { (window.__apRolls = window.__apRolls || []).push(m); } catch(e){}   // test hook
+      return;
+    }
     if (m.t === 'welcome') { dbg.socketId = m.socketId || null; dbgRender(); grantedRole = (typeof m.role === 'string') ? m.role : null; if (typeof onWelcomeRole === 'function') onWelcomeRole(m.role);
       // Plan 0514 §5/§8 — identity is SERVER-AUTHORITATIVE: a seat link's userId is derived
       // server-side from the resolved station, so adopt what came back rather than what we guessed.

@@ -45,6 +45,10 @@ export const DEFAULT_READ_POLICY = [
   // ⚠ WRITE is unchanged (add-only, below). The private aside is `/gm …`, which the server
   // diverts to the `gm` slice and therefore never lands here at all.
   { glob: 'chat', roles: ALL },
+  // Plan 0537 P3.2 — the roll log. READ by everyone: a roll nobody else can see is not a roll, it
+  // is a claim. ⛔ There is deliberately NO participant WRITE rule below — the SERVER rolls and the
+  // server is the only writer, so nothing in this slice was asserted by a client.
+  { glob: 'rolls', roles: ALL },
   // private per-user — a voter reads ONLY its own vote
   { glob: 'polls/*/votes/{self}', roles: ['participant'], self: true },
   // controller-only (gm is NOT an override role → list gm explicitly; presenter/ai override anyway)

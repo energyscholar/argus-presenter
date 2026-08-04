@@ -15,7 +15,7 @@
  *   on(event, cb)  events: 'presence','result','poll'
  */
 import http from 'http';
-import { createHash } from 'node:crypto';
+import { createHash, randomInt } from 'node:crypto';
 import { readFileSync, readdirSync, statSync, existsSync, writeFileSync, watch, mkdirSync, unlinkSync, renameSync, appendFileSync, lstatSync } from 'fs';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { dirname, join } from 'path';
@@ -1276,6 +1276,15 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         // (visible via presenter_debug) — NEVER the inbox/transcript, so the transcript + echo line stay
         // clean. Untrusted client content is confined to a bounded log field.
         if (m && typeof m.tag === 'string') log.info('voicedbg', m.tag.slice(0, 48), { socketId: c && c.id, ...(m.data && typeof m.data === 'object' ? m.data : {}) });
+      } else if (m.t === 'roll') {
+        // Plan 0537 P3.2 — the wire form: {t:'roll', spec, target?, label?, total?}. `total` is the
+        // MANUAL entry (physical dice, typed in) and is the only number a client may contribute —
+        // it is recorded as `entry:'manual'` so the log can always tell a roll from a claim.
+        if (c && c.isGuest && !(c.capScope || []).includes('type')) { log.warn('cap', 'roll-out-of-scope', { socketId: c.id }); return; }
+        if (c) {
+          const res = doRoll(c, { spec: m.spec, target: m.target, label: m.label, manualTotal: m.total });
+          if (!res.ok) send(ws, { t: 'roll_refused', reason: res.reason, text: 'expected {spec:"2d6+1", target?, label?, total?}' });
+        }
       } else if (m.t === 'chat') {
         // Plan 0472: typed text is FIRST-CLASS input. Land it in the unified inbox attributed to the
         // SERVER-AUTHORITATIVE connection identity (never the client payload). D5 = DUAL-WRITE: also
@@ -1302,6 +1311,18 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
             handleOp(c, { path: 'gm/asides/' + id, verb: 'set', value: { id, text: body, name: c.userName, userId: c.userId, ts: Date.now() } },
               { userId: c.userId, role: 'system' });   // sender's id, lifted role — see handleOp
             send(ws, { t: 'chat_private', ok: true, text: body });
+            return;
+          }
+          // Plan 0537 P3 — `/roll …` from the chat input. It routes into the SAME doRoll() the
+          // `{t:'roll'}` wire message uses, so there is exactly one place a roll is produced. ⛔ It
+          // does NOT also land in `chat`: a roll's record is `rolls`, and duplicating it as prose in
+          // the room's talk would create a second, parseable representation of the same event.
+          const rollCmd = /^\/roll(?:\s+([\s\S]*))?$/.exec(m.text.trim());
+          if (rollCmd) {
+            const args = parseRollCommand(rollCmd[1]);
+            if (!args) { send(ws, { t: 'roll_refused', reason: 'usage', text: '/roll 2d6+1 [target] [= total] [label]' }); return; }
+            const res = doRoll(c, args);
+            if (!res.ok) send(ws, { t: 'roll_refused', reason: res.reason, text: '/roll 2d6+1 [target] [= total] [label]' });
             return;
           }
           emitInbox({ kind: 'text', userId: c.userId, userName: c.userName, role: c.role, text: m.text, conf: null, final: true, isGuest: !!c.isGuest });
@@ -1402,6 +1423,95 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   function updateChatListeners() {
     const count = currentListeners();
     for (const ws of conns.keys()) send(ws, { t: 'chat_listeners', n: count });
+  }
+
+  /* ────────────────────────── Plan 0537 P3 — DICE. THE SERVER ROLLS. ──────────────────────────
+   * ⛓ THE DESIGN DECISION THIS PHASE RESTS ON: the client ASKS, the server ROLLS, computes
+   * `success`, records and broadcasts. Nothing about the outcome is client-asserted. That removes
+   * the target-knowledge problem (the target arrives WITH the request, so the server always has it)
+   * and it removes the far worse problem in `components/dice/dice.js`, which calls Math.random() in
+   * the browser: mount that on five screens and five people watch five different results of what
+   * was supposed to be one roll.
+   *
+   * ⛓ ONE EVENT, TWO REPRESENTATIONS. `rolls/<id>` is the machine-readable record and is the ONLY
+   * thing a future outcome hook may read. The readable line is for humans and is derived FROM the
+   * record — ⛔ never the other way round. Nothing must ever parse the prose back into numbers.
+   */
+  const DICE_RE = /^(\d*)d(\d+)([+-]\d+)?$/i;
+  /** Parse `NdS+M`. Returns null for anything else — an unparseable spec is REFUSED, never guessed. */
+  function parseDice(spec) {
+    const m = DICE_RE.exec(String(spec || '').trim());
+    if (!m) return null;
+    const count = m[1] === '' ? 1 : Number(m[1]);
+    const sides = Number(m[2]);
+    const mod = m[3] ? Number(m[3]) : 0;
+    // Bounds are a REFUSAL, not a clamp: a clamp would silently roll something other than what was
+    // asked for, and the asker would read the result as the answer to their question.
+    if (!(count >= 1 && count <= 100)) return null;
+    if (!(sides >= 2 && sides <= 1000)) return null;
+    if (!(Math.abs(mod) <= 10000)) return null;
+    return { count, sides, mod };
+  }
+  /** One die, from the CSPRNG — `randomInt` is uniform, unlike `Math.random()*n|0`. */
+  function rollDie(sides) { return 1 + randomInt(sides); }
+
+  /**
+   * Perform (or record) a roll. `c` is the requesting connection.
+   * `manualTotal != null` ⇒ the human rolled physical dice and typed the number in: it is recorded
+   * with `entry:'manual'` and `rolls:[]`. ⛓ A log that cannot tell a roll from a claim is not a log,
+   * so the distinction is a FIELD, not a convention — and `success` is still computed by the server
+   * from the total it was given, so the target comparison is never the client's opinion either.
+   */
+  function doRoll(c, { spec, target = null, label = null, manualTotal = null }) {
+    const parsed = parseDice(spec);
+    if (!parsed) return { ok: false, reason: 'bad-spec' };
+    const tgt = (target === null || target === undefined) ? null : Number(target);
+    if (tgt !== null && !Number.isFinite(tgt)) return { ok: false, reason: 'bad-target' };
+    let rolls = [], total;
+    if (manualTotal !== null && manualTotal !== undefined) {
+      if (!Number.isFinite(Number(manualTotal))) return { ok: false, reason: 'bad-total' };
+      total = Number(manualTotal);
+    } else {
+      for (let i = 0; i < parsed.count; i++) rolls.push(rollDie(parsed.sides));
+      total = rolls.reduce((a, b) => a + b, 0) + parsed.mod;
+    }
+    const rec = {
+      id: c.userId + '-' + Date.now() + '-' + randomInt(1e6),
+      who: c.userId, whoName: c.userName || c.userId,
+      label: (typeof label === 'string' && label.trim()) ? label.trim().slice(0, 120) : null,
+      spec: `${parsed.count}d${parsed.sides}${parsed.mod ? (parsed.mod > 0 ? '+' + parsed.mod : String(parsed.mod)) : ''}`,
+      rolls, total, target: tgt,
+      success: tgt === null ? null : total >= tgt,
+      entry: (manualTotal !== null && manualTotal !== undefined) ? 'manual' : 'rolled',
+      ts: Date.now(),
+    };
+    // Written through handleOp with a lifted role so the roll log inherits the X6 rate limit and the
+    // op-log attribution, exactly like the `/gm` aside. The sender's userId is preserved.
+    handleOp(c, { path: 'rolls/' + rec.id, verb: 'set', value: rec }, { userId: c.userId, role: 'system' });
+    // Representation 2, for humans, DERIVED from the record above.
+    for (const sock of conns.keys()) send(sock, { t: 'roll', roll: rec, line: rollLine(rec) });
+    log.info('roll', rec.entry, { who: rec.who, spec: rec.spec, total: rec.total, target: rec.target, success: rec.success });
+    return { ok: true, roll: rec };
+  }
+  /** The human-readable rendering of a roll record. Derived, never authoritative. */
+  function rollLine(r) {
+    const dice = r.entry === 'manual' ? '(entered by hand)' : '[' + r.rolls.join(' ') + ']';
+    const vs = r.target === null ? '' : `  vs ${r.target}+  —  ${r.success ? 'SUCCESS' : 'FAILURE'}`;
+    return `🎲 ${r.whoName} ${r.label ? r.label + ' ' : ''}${r.spec} ${dice} = ${r.total}${vs}`;
+  }
+  /**
+   * `/roll <spec> [target] [= total] [label…]` — the human affordance, routed into the SAME doRoll.
+   * It rides the chat input that is already on screen, so dice cost zero new chrome.
+   */
+  function parseRollCommand(rest) {
+    const toks = String(rest || '').trim().split(/\s+/).filter(Boolean);
+    if (!toks.length) return null;
+    const out = { spec: toks.shift(), target: null, manualTotal: null, label: null };
+    if (toks.length && /^-?\d+$/.test(toks[0])) out.target = Number(toks.shift());
+    if (toks.length && toks[0] === '=') { toks.shift(); if (toks.length && /^-?\d+$/.test(toks[0])) out.manualTotal = Number(toks.shift()); else return null; }
+    else if (toks.length && /^=-?\d+$/.test(toks[0])) out.manualTotal = Number(toks.shift().slice(1));
+    if (toks.length) out.label = toks.join(' ');
+    return out;
   }
 
   function serverApply(op, actor) {
