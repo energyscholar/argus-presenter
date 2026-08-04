@@ -963,7 +963,12 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     // reconnect — a reconnect is a NEW connection record). lastSeen (keepalive, refreshed by the Part A0
     // heartbeat's pong) drives the connection-liveness dot. lastActive stays in the struct (still set on
     // deliberate interaction) but Plan 0468 no longer surfaces it or anything derived from it (G5).
-    conns.set(ws, { id: 'c' + (++connSeq), userId: null, userName: null, role: 'participant', lastSeen: Date.now(), connectedAt: Date.now(), lastActive: 0, ip });
+    // Plan 0539 P2.1 / 0538 §1(a) — `converged: false`. ⛓ THE ROOT OF THE X1 DOUBLE-DELIVERY IS THIS
+    // LINE: the socket joins `conns` at TCP-CONNECT time, before any `hello` has been read, so it is
+    // a broadcast recipient before it has an identity, let alone a converged state. Anything written
+    // to the store while the handshake is still running is therefore broadcast to it AND replayed to
+    // it by the resync that follows. It stops being a recipient-in-name-only at :1071.
+    conns.set(ws, { id: 'c' + (++connSeq), userId: null, userName: null, role: 'participant', lastSeen: Date.now(), connectedAt: Date.now(), lastActive: 0, ip, converged: false });
     // Plan 0471 C1: a socket-level 'error' (frame > MAX_PAYLOAD → ws RangeError 1009, invalid
     // UTF-8, bad RSV bits, ECONNRESET) must NOT hit Node's default handler and kill the process.
     ws.on('error', (e) => {
@@ -1069,6 +1074,23 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         // can still replay from the op-log, send only the MISSED ops (resync);
         // otherwise a full role-filtered snapshot (Memento).
         resyncOrSnapshot(ws, c, m.lastVersion);
+        /* Plan 0539 P2.3 — from HERE on, live broadcasts are purely additive: the client's state is
+         * caught up to `store.version()`, so anything arriving next is genuinely new.
+         *
+         * ⛓ WHERE THIS MAY GO, MEASURED RATHER THAN ASSUMED. The binding constraint is that it sit
+         * AFTER THE CONNECT-TIME STORE WRITES — today the station-seat write ~20 lines above
+         * (`seatResolver.select` → `occupancy.seat`). Break-tested three ways:
+         *   · guard removed entirely            → X1 red, `got=[18,19,16,17,18,19]` (the original defect)
+         *   · `converged = true` before the SEAT WRITE → X1 red, same signature
+         *   · `converged = true` before the RESYNC     → X1 GREEN
+         * That third result is the interesting one: it means the resync is NOT the boundary, the seat
+         * write is. Nothing writes to the store between `resyncOrSnapshot` and this line, so the two
+         * placements are observationally identical today. It is kept here anyway because that empty
+         * window is an accident of the current handler, not a guarantee — the moment anything
+         * store-writing is added to the handshake, only this position stays correct. ⛔ An earlier
+         * "must be after the resync or the fix is undone" claim was written here first and was
+         * simply WRONG; the break-test is what says otherwise. */
+        c.converged = true;
         redisplayFor(ws, c);   // C6: re-push the currently-displayed content module
         if (everSeen.has(c.userId)) telem.reconnects++; else { everSeen.add(c.userId); everSeenOrder.push(c.userId); if (everSeenOrder.length > EVER_SEEN_MAX) everSeen.delete(everSeenOrder.shift()); }   // Plan 0471 L2: bounded
         send(ws, { t: 'ping', ts: Date.now() });   // X3 RTT probe
@@ -1700,6 +1722,19 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   function broadcastDiff(diff, meta) {
     let recipients = 0;
     for (const [ws, c] of conns.entries()) {
+      /* ── Plan 0539 P2.2 — DO NOT BROADCAST TO A SOCKET THAT HAS NOT CONVERGED YET. ──────────────
+       * Verified in 0538: this loop filtered by `canRead` ONLY, so a store write performed DURING a
+       * client's own handshake (today the station-seat write, `seatResolver.select` → `occupancy.seat`)
+       * was delivered here AND again by the resync a few lines later. Skipping it loses nothing: any
+       * op broadcast while `converged === false` has `version <= store.version()` at the moment
+       * `resyncOrSnapshot` runs, so it is either inside `oplogSince(lv)` and replayed, or inside the
+       * snapshot taken at that same version.
+       * ⛓ This fixes the CLASS, not the instance. It is harmless today only because the duplicated
+       * slice (`ship/`) has no client subscriber; `map.js` → `showClick` SPAWNS DOM per diff, so the
+       * first connect-time write into any spawn-on-diff slice would paint a visible double.
+       * ⚠ Ephemerals (pointer/laser) are in neither the oplog nor the snapshot — see P2.4 in the
+       * report for what that costs and what was actually observed. */
+      if (!c.converged) continue;
       const visible = {};
       for (const p of Object.keys(diff)) if (store.perms.canRead({ role: c.role, userId: c.userId }, p)) visible[p] = diff[p];   // Plan 0471 C3: actor-aware read (per-recipient vote redaction)
       if (Object.keys(visible).length) {
