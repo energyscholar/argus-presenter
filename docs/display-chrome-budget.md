@@ -61,6 +61,22 @@ other would invent a regression that did not happen.
 a blank badge is worse than no badge: it reads as a broken seat."* **Worth checking whether that
 guard is doing what it says.**
 
+### ⛳ RE-MEASURED after plan 0539 P1 — **still 7. The reader cost nothing.**
+
+0539 put a **message LOG** inside the panel and made the panel bigger to hold it (320 → 420 wide, with
+a scrollable reading surface). The inventory was re-run by the same method: **7**, unchanged, and the
+same seven names. `ap-chat-log` appears in the OPEN inventory only.
+
+⛓ **This is the summon pattern paying for itself, and it is worth stating plainly.** 0537 argued that
+a 20×85 tab could stand in for a 1134×30 bottom bar. The test of that argument was never the deletion
+— it was the next feature. A reader is exactly the kind of surface that would have been impossible to
+justify as permanent chrome, and behind a tab it is free: **a participant who never opens the panel
+pays the same 7 elements they paid before it existed.** ⇒ *Summoning is not a way of hiding chrome; it
+is what lets a surface grow later without anyone having to argue about pixels.*
+
+Asserted by `test/live/0539-p1-chat-reader.test.mjs` (C8) as well as `0537-p4`, so the number cannot
+drift silently in either direction.
+
 ## ⛓ The rule
 
 **An element earns PERMANENCE only if the participant needs it WITHOUT KNOWING THEY NEED IT.**

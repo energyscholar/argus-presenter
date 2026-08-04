@@ -119,3 +119,27 @@ test('t0539-bd-06 — signed rendering: a contribution reads as an operation, no
   expect(rows[rows.length - 1].kind === 'total', 'the last row is the total', JSON.stringify(rows));
   expect(rows.some((r) => r.kind === 'modifier' && /skill/.test(r.text)), 'the reason is in the row text', JSON.stringify(rows));
 });
+
+/*
+ * Plan 0539 P3.1 — THE EMPTY-CREDENTIAL CLASS, both halves.
+ *
+ * ⛔ The plan pointed at `mcp/tools.mjs:146`. Measured, that line is UNREACHABLE with an empty
+ * password — the MCP tool funnels through createServer(), which throws first (0537 P1.2). The
+ * unfixed instance was `controlToken`, in the same file 0537 fixed, one credential over.
+ */
+test('t0539-p31 — an empty credential is an ERROR for BOTH the password and the token, symmetrically', async () => {
+  const { createServer } = await import('../../app/server.mjs');
+  for (const [field, value] of [['rolePassword', ''], ['rolePassword', '   '],
+                                ['controlToken', ''], ['controlToken', '  ']]) {
+    let threw = null, srv = null;
+    try { srv = await createServer({ port: 0, [field]: value }); } catch (e) { threw = String(e.message || e); }
+    if (srv) await srv.close();
+    check(`${field}=${JSON.stringify(value)} is REFUSED, not silently ungated`,
+      threw !== null && /empty/i.test(threw), threw === null ? 'server started ungated' : threw.slice(0, 70));
+  }
+  // …and omitting them entirely still runs open ON PURPOSE. The rule is about a credential that was
+  // SUPPLIED and cannot work — never about the ungated default the whole test suite relies on.
+  const open = await createServer({ port: 0 });
+  expect(!!open.url(), 'omitting both still starts an ungated server, deliberately');
+  await open.close();
+});

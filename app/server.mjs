@@ -215,7 +215,26 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   const VOICE_ENABLED = (typeof voiceEnabled === 'boolean') ? voiceEnabled : envVoiceEnabled();
   // AUTH-1: a shared secret gates the control roles (presenter/ai). When null,
   // behaviour is unchanged / LAN-open — any browser may claim a control role.
-  const CONTROL_TOKEN = controlToken || process.env.PRESENTER_CONTROL_TOKEN || null;
+  /* Plan 0539 P3.1 (SECURITY) — THE OTHER HALF OF 0537 P1.2, and it is not where the plan said.
+   *
+   * 0539 P3.1 named `mcp/tools.mjs:146` (`gated` from `!!rest.rolePassword`) as an unfixed instance
+   * of the empty-string class. ⛔ REFUTED BY MEASUREMENT: that line is unreachable with an empty
+   * password, because the MCP tool funnels through `createServer`, which throws ~15 lines above.
+   * `presenter_start({rolePassword: ''})` and `{rolePassword: '   '}` both raise the 0537 error.
+   *
+   * ✅ But the CLASS is real, and this is where it actually lives. `controlToken || env || null` is
+   * the exact `||` idiom 0537 P1.2 removed for the password and left standing for the TOKEN — so
+   * `PRESENTER_CONTROL_TOKEN=` (a blank env line, a cleared config field) still yields
+   * CONTROL_TOKEN=null and an UNGATED server, with no complaint. The same operator mistake is a
+   * loud failure for one credential and a silent open door for the other, which is worse than
+   * either rule applied consistently. Verified first that nothing in the tree supplies an empty
+   * token: the MCP path mints one before it can happen, and no test passes `controlToken: ''`. */
+  const CONTROL_TOKEN_SUPPLIED = (controlToken !== null && controlToken !== undefined) ? controlToken
+    : (process.env.PRESENTER_CONTROL_TOKEN !== undefined ? process.env.PRESENTER_CONTROL_TOKEN : null);
+  if (typeof CONTROL_TOKEN_SUPPLIED === 'string' && CONTROL_TOKEN_SUPPLIED.trim() === '') {
+    throw new Error('controlToken was supplied but is empty (or whitespace). An empty token cannot gate anything, and accepting it would start an UNGATED server. Set a real token, or omit controlToken entirely to run open on purpose.');
+  }
+  const CONTROL_TOKEN = CONTROL_TOKEN_SUPPLIED || null;
   // AUTH-ROLE (P5.5): a shared PASSWORD gate via a seeded hash ("keep honest people
   // honest"). The seed is a public salt; the password is secret. ROLE_HASH =
   // sha256(seed + password). The browser computes the same hash and sends it as the
