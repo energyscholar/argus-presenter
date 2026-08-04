@@ -1285,8 +1285,26 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         if (c && c.isGuest && !(c.capScope || []).includes('type')) { log.warn('cap', 'type-out-of-scope', { socketId: c.id }); return; }
         if (c && typeof m.text === 'string' && m.text.length) {
           c.lastActive = Date.now();   // ATT: typing = deliberate human interaction
-          emitInbox({ kind: 'text', userId: c.userId, userName: c.userName, role: c.role, text: m.text, conf: null, final: true, isGuest: !!c.isGuest });
           const id = (typeof m.id === 'string' && m.id) ? m.id : (c.userId + '-' + Date.now());
+          // Plan 0537 P2.3 — `/gm <text>` is a PRIVATE ASIDE TO THE GM. Parsed HERE, on the server,
+          // not in the client: the client cannot be the authority on which of its own messages stay
+          // private, and a second client (or a bot on a raw socket) would otherwise miss the rule
+          // entirely. The aside is written to the `gm` slice, which is already controller-read-only
+          // by default-deny — no second secrecy mechanism, and no way for it to reach `chat`.
+          const aside = /^\/gm(?:\s+([\s\S]*))?$/.exec(m.text.trim());
+          if (aside) {
+            const body = (aside[1] || '').trim();
+            // ⛓ The client MUST be told what happened. A message that simply vanishes from the room
+            // is the invisible-GO defect wearing a new coat: the sender assumes it landed, and the
+            // only evidence either way is its absence. Both branches below answer.
+            if (!body) { send(ws, { t: 'chat_private', ok: false, reason: 'empty', text: '' }); return; }
+            emitInbox({ kind: 'text', userId: c.userId, userName: c.userName, role: c.role, text: body, conf: null, final: true, isGuest: !!c.isGuest, private: true });
+            handleOp(c, { path: 'gm/asides/' + id, verb: 'set', value: { id, text: body, name: c.userName, userId: c.userId, ts: Date.now() } },
+              { userId: c.userId, role: 'system' });   // sender's id, lifted role — see handleOp
+            send(ws, { t: 'chat_private', ok: true, text: body });
+            return;
+          }
+          emitInbox({ kind: 'text', userId: c.userId, userName: c.userName, role: c.role, text: m.text, conf: null, final: true, isGuest: !!c.isGuest });
           handleOp(c, { path: 'chat', verb: 'add', value: { id, text: m.text, name: c.userName } });   // display slice (best-effort; perm-gated)
         }
       }
@@ -1314,7 +1332,13 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // Identity is the CONNECTION record (S1); opId is namespaced by conn id (S5) so a
   // client cannot forge/suppress another's dedup. Diffs are read-perm filtered per
   // recipient (S7). Broadcast-all v1 (§7 Q1).
-  function handleOp(c, m) {
+  /* `actorOverride` (Plan 0537 P2.3) lets a SERVER-PARSED message write somewhere the sender
+   * could not write on its own — today only `/gm …`, which lands in the controller-only `gm`
+   * slice. It goes through handleOp rather than serverApply ON PURPOSE: the X6 durable-op rate
+   * limit, the telemetry counters and the op-log attribution all live in this function, and a
+   * private aside must not be the one message shape that escapes the rate limiter. The override
+   * keeps the sender's userId and only lifts the ROLE, so the log still says who typed it. */
+  function handleOp(c, m, actorOverride) {
     if (c) c.lastActive = Date.now();   // ATT: any store op (chat/slider/form/pointer/vote) = deliberate human interaction
     // X6 per-conn rate limit on DURABLE ops (ephemeral is coalesced/uncapped).
     if (!isEphemeral(m && m.path)) {
@@ -1331,7 +1355,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     const op = { path: m.path, verb: m.verb, value: m.value, opId };
     if (!validOp(op)) { telem.ops.malformed++; log.debug('op', 'malformed', { socketId: c.id, path: m && m.path }); return; }
     const t0 = Date.now();
-    const res = store.apply(op, { userId: c.userId, role: c.role });
+    const res = store.apply(op, actorOverride || { userId: c.userId, role: c.role });
     telem.applyMs.sum += (Date.now() - t0); telem.applyMs.count++; telem.applyMs.max = Math.max(telem.applyMs.max, Date.now() - t0);
     if (res && res.diff) {
       telem.ops.applied++;

@@ -404,6 +404,36 @@
     dbgLog(m);
     if (m.t === 'ping') { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t:'pong', ts:m.ts })); return; }   // X3 RTT
     if (m.t === 'chat_listeners') { updateChat(m.n); return; }   // P3
+    if (m.t === 'chat_private') {
+      // Plan 0537 P2.3 — the server's receipt for a `/gm …` aside. ⛓ THE POINT OF THIS BRANCH:
+      // a private message is INDISTINGUISHABLE FROM A LOST ONE unless something says so. The room
+      // will never show it (it went to the controller-only `gm` slice), so the only evidence the
+      // sender gets is this line. Rendered in the echo strip — chrome ALREADY on screen, so a
+      // private channel costs zero new always-present pixels.
+      // ⛔ IT LIVES HERE, BESIDE `chat_listeners`, AND NOT DOWN IN THE `else if` CHAIN — that chain
+      // runs from line ~430 to ~531 INSIDE THE VOICE FENCE (the BEGIN/END comment markers the
+      // server greps for), and the server DELETES that whole block when voice is off, which is the
+      // default. Written there first, this handler was stripped out of every ordinary deployment:
+      // the server sent the receipt, the raw-socket test passed, and the actual browser rendered
+      // nothing. Chat is NOT voice (see V0473-zero-when-off) and its handlers must not sit inside
+      // voice's coffin. ⚠ Do not name those markers literally anywhere outside the fence itself —
+      // T-BARGE-IN forbids the token from appearing in the served OFF page at all, and this very
+      // comment tripped it once.
+      try {
+        var pe = document.getElementById('ap-echo');
+        if (pe) {
+          // ⚠ "facilitator", not the uppercase prose form of the role — this is USER-VISIBLE page
+          // text and the 0532 neutrality guard scans it (the lowercase `/gm` command is a protocol
+          // literal and is exempt). Caught by t0532-04, not by review.
+          pe.textContent = m.ok ? ('🔒 sent privately to the facilitator — ' + m.text + ' (nobody else saw this)')
+                                : '🔒 /gm needs something to say — type /gm then your message';
+          pe.classList.add('show'); clearTimeout(pe.__apT);
+          pe.__apT = setTimeout(function(){ pe.classList.remove('show'); }, 6000);
+        }
+      } catch(e){}
+      try { window.__apPrivate = { ok: !!m.ok, text: m.text || '' }; } catch(e){}   // test hook
+      return;
+    }
     if (m.t === 'welcome') { dbg.socketId = m.socketId || null; dbgRender(); grantedRole = (typeof m.role === 'string') ? m.role : null; if (typeof onWelcomeRole === 'function') onWelcomeRole(m.role);
       // Plan 0514 §5/§8 — identity is SERVER-AUTHORITATIVE: a seat link's userId is derived
       // server-side from the resolved station, so adopt what came back rather than what we guessed.

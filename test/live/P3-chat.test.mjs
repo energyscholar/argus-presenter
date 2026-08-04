@@ -45,7 +45,16 @@ test('P3 — chat disabled with no listener, enabled + delivered when a listener
     expect(gotChat(listener.inbox), 'the listener received the chat message');
     const stored = Object.values(server.store.get('chat') || {}).some((c) => c && c.text === 'hello team');
     expect(stored, 'chat message stored');
-    expect(!gotChat(other.inbox), 'a non-listener participant did NOT receive the chat (read-perm)', JSON.stringify(other.inbox.filter((m) => m.t === 'host')));
+    // ⛓ Plan 0537 P2.1 — THIS ASSERTION IS INVERTED ON PURPOSE, and it is the only one in the
+    // suite that was. It used to read `!gotChat(other.inbox)` — "a non-listener participant did
+    // NOT receive the chat" — which encoded 0472's framing that chat exists to feed the agent
+    // inbox and only a listener needs to see it. Bruce, S229: "chat was never intended as a
+    // player-GM backchannel". CHAT IS THE ROOM, so a peer participant MUST now receive it.
+    // ⚠ This is a deliberate change of the invariant, not a test bent to fit the code: the
+    // permission table changed first and this test is the record of that decision. The private
+    // channel did not disappear — it moved to `/gm …`, guarded by its own test.
+    await until(() => gotChat(other.inbox), { label: 'peer participant received the chat', timeout: 5000 });
+    expect(gotChat(other.inbox), 'a PEER PARTICIPANT receives the chat — chat is the room (0537 P2.1)', JSON.stringify(other.inbox.filter((m) => m.t === 'host')));
 
     other.ws.close(); listener.ws.close();
   } finally { await browser.close(); await server.close(); }

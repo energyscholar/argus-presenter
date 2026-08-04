@@ -38,14 +38,24 @@ export const DEFAULT_READ_POLICY = [
   { glob: 'polls/*/results', roles: ALL },        // aggregate tally ONLY (D1); NEVER per-user votes
   { glob: 'map/view', roles: ALL }, { glob: 'map/markers', roles: ALL }, { glob: 'map/pointer', roles: ALL },
   { glob: 'crud', roles: ALL },                   // shared collaborative board
+  // Plan 0537 P2.1 — CHAT IS THE ROOM. Read was gm-only, an artifact of 0472's "typed text is
+  // agent input" framing: chat existed to feed the unified inbox, so nobody but a listener needed
+  // to see it. Bruce, S229: "chat was never intended as a player-GM backchannel". A room where
+  // your neighbour cannot hear you is not a room. Participants now READ chat.
+  // ⚠ WRITE is unchanged (add-only, below). The private aside is `/gm …`, which the server
+  // diverts to the `gm` slice and therefore never lands here at all.
+  { glob: 'chat', roles: ALL },
   // private per-user — a voter reads ONLY its own vote
   { glob: 'polls/*/votes/{self}', roles: ['participant'], self: true },
   // controller-only (gm is NOT an override role → list gm explicitly; presenter/ai override anyway)
   { glob: 'polls/*/votes', roles: ['gm'] }, { glob: 'polls/*/votes/*', roles: ['gm'] },
   { glob: 'answers', roles: ['gm'] }, { glob: 'gm', roles: ['gm'] },
-  { glob: 'copresent', roles: ['gm'] }, { glob: 'chat', roles: ['gm'] },
+  { glob: 'copresent', roles: ['gm'] },
 ];
-// votes(peers)/answers/gm/copresent/chat have NO participant rule ⇒ hidden from participants live + in snapshot.
+// votes(peers)/answers/gm/copresent have NO participant rule ⇒ hidden from participants live + in snapshot.
+// Plan 0537 P2.1: `chat` LEFT this list and is now world-readable (above). `gm` did NOT — and that
+// is deliberately where `/gm …` asides are written, so the private backchannel inherits an
+// already-proven default-deny instead of inventing a second secrecy mechanism.
 
 // WRITE matcher (S3): glob and path must have the SAME segment count (exact op target).
 function matchGlob(glob, path, actor) {
