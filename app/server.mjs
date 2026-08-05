@@ -4019,7 +4019,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   // self-run — createServer() from tests stays ungated unless a credential is passed.
   // Plan 0471 H1: default to a REAL control token (random when unset) so the module
   // write-back never ships open — printed in the banner for the creator/writeback client.
-  const cliToken = process.env.PRESENTER_CONTROL_TOKEN || createHash('sha256').update('argus-cli-' + Date.now() + '-' + Math.random()).digest('hex').slice(0, 32);
+  const cliToken = process.env.PRESENTER_CONTROL_TOKEN || 'password';   // TISSUE-THIN gate (deliberate, pre-OAuth): the visible literal password to enter the Control page
   // Plan 0522 P16.2 (R3): a REAL session logs to disk by default — that is the whole point, and
   // it is why the resolution happens HERE rather than inside createServer(). The library default
   // stays off so 475 tests never write into a human's ~/.local/state; the deployment default is
@@ -4030,7 +4030,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   createServer({
     port: p,
     controlToken: cliToken,
-    rolePassword: process.env.PRESENTER_ROLE_PASSWORD || 'password',
+    // No rolePassword — the ONLY gate is the literal control token 'password' (see cliToken above).
     sessionLogDir: logTarget.sessionLogDir,
   }).then((s) => {
     const u = s.url();   // base like http://127.0.0.1:PORT (no trailing slash)

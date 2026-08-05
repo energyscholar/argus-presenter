@@ -1426,8 +1426,11 @@
     }
     async function unlock(){
       var pw = pwInput.value || '';
-      try { identity.token = await computeHash(pw); }
-      catch(e){ pwMsg.textContent = 'cannot hash (insecure context)'; return; }
+      // TISSUE-THIN GATE (deliberate, pre-OAuth): the typed password IS the token, sent as-is
+      // and compared LITERALLY against the server's control token 'password'. No hashing, no
+      // rolePassword — this is a keep-honest-people-honest lock until OAuth + Tailscale land
+      // for privileged users. Anyone reading this source can see the password is 'password'.
+      identity.token = pw;
       attempting = 'presenter';
       // setRole short-circuits if role is unchanged; force through when already presenter-attempt.
       if (identity.role === 'presenter') { if (ws && (ws.readyState===0||ws.readyState===1)){ try{ws.close();}catch(e){} } else connect(); }
