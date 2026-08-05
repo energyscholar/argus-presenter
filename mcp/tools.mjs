@@ -11,7 +11,7 @@ import { assemble } from '../harness/assemble.mjs';
 import { tunnelConfigured, tunnelStatus, tunnelUp, tunnelDown } from './tunnel.mjs';
 import { readFileSync, existsSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
-import { presenterPort } from '../lib/deployment-config.mjs';
+import { presenterPort, authPolicy } from '../lib/deployment-config.mjs';
 import { resolveSessionLogDir } from '../lib/session-log.mjs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -105,6 +105,11 @@ export const coreTools = [
       const PASS = ['profile','controlToken','rolePassword','roleSeed','capSecret','settlingMs','queueMaxPending','queueTtlMs','perTurnBudgetMs','perTurnWrapMs','floorThresholds'];
       const opts = { port, voiceEnabled: voice };
       for (const k of PASS) if (rest[k] !== undefined) opts[k] = rest[k];
+      // Plan 0543 P1 — the auth policy is deployment config (like the port), read here so the
+      // agent-raised session runs the SAME policy as `node app/server.mjs`. A bad value throws.
+      const policy = authPolicy();
+      opts.enforceOAuth = policy.enforceOAuth;
+      opts.allowPasswordCommandOnLAN = policy.allowPasswordCommandOnLAN;
       // ── Plan 0522 P12 (R15) — MINT A CONTROL TOKEN WHEN THE CALLER PASSES NONE ──────────────
       // The CLI has done this since Plan 0471 H1 (app/server.mjs, "so the module write-back never
       // ships open"). presenter_start did not, so the ONE path that also raises a public ingress
@@ -213,7 +218,7 @@ export const coreTools = [
     description: 'Server URL + connected users (presence) + PVS lifecycle state (Plan 0493: whether a Presenter Voice Session is open, its comms mode, and its namespaced delivery cursor) + PUBLIC INGRESS state (S220: whether the tunnel is up and whether the public url actually answers — the local bind says nothing about reachability).',
     input: { type: 'object', properties: {} },
     handler: async () => (server
-      ? { running: true, url: server.url(), presence: server.presence(), pvs: server.pvsState(), mode: server.commsMode().mode, tunnel: await tunnelStatus() }
+      ? { running: true, url: server.url(), presence: server.presence(), pvs: server.pvsState(), mode: server.commsMode().mode, auth: server.authPolicy(), tunnel: await tunnelStatus() }
       : { running: false, tunnel: await tunnelStatus() })
   },
   {

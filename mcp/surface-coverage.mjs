@@ -47,6 +47,11 @@ export const CONSTRUCTOR_COVERAGE = {
   // speech. Where it lands is the deployment's declaration; reading it is role-gated (R6) at
   // GET /api/session-log.
   sessionLogDir:   { declined: 'DEPLOYMENT CONFIG, not a per-call knob (Plan 0522 P16.2 / R3, R6). presenter_start ENABLES the durable session log — it resolves the directory from lib/deployment-config.mjs and passes it to createServer — but the destination is never taken from the caller: the log carries participants\' own words, so an agent-settable path would be a redirect primitive for third parties\' speech. Set it in presenter-config.json or $PRESENTER_SESSION_LOG_DIR.' },
+  // Plan 0543 P1 — the AUTH POLICY dial. Same shape as sessionLogDir: presenter_start passes it
+  // (resolved from lib/deployment-config.mjs authPolicy()), but it is DEPLOYMENT CONFIG, never a
+  // caller knob — an agent that could flip enforceOAuth per call could weaken the room's own gate.
+  enforceOAuth:              { declined: 'DEPLOYMENT CONFIG, not a per-call knob (Plan 0543 P1). presenter_start reads it from lib/deployment-config.mjs authPolicy() and passes it; who may open the Control page is the deployment\'s declaration, not something the agent flips at runtime. Set it in presenter-config.json.' },
+  allowPasswordCommandOnLAN: { declined: 'DEPLOYMENT CONFIG, not a per-call knob (Plan 0543 P1) — an explicitly-unsafe escape hatch. Same deployment-owned resolution as enforceOAuth. Set it in presenter-config.json.' },
 };
 
 // --- api surface ------------------------------------------------------------------------
@@ -61,6 +66,7 @@ export const API_COVERAGE = {
   port:                { tool: 'presenter_start' },
   close:               { tool: 'presenter_stop' },
   profile:             { tool: 'presenter_start' },
+  authPolicy:          { tool: 'presenter_status' },   // Plan 0543 P1 — the current auth policy rides on presenter_status.auth
 
   // --- display / content
   clear:               { tool: 'presenter_situation', },

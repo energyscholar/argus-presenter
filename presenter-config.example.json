@@ -7,5 +7,11 @@
   "presenterPort": 3000,
 
   "//sessionLogDir": "Plan 0522 P16.2 — where the DURABLE SESSION LOG goes: one JSONL file per session, one line per durable op, so a session's record outlives the process that made it (the in-memory op-log is a 1000-entry ring and is freed at exit). MUST BE OUTSIDE ANY REPOSITORY — a path inside the checkout is REFUSED and the log disables itself, because these lines carry the session transcript. Omit the key to get ${XDG_STATE_HOME:-~/.local/state}/argus-presenter/logs; $PRESENTER_SESSION_LOG_DIR overrides both. Reading it over HTTP (GET /api/session-log) requires the control credential and FAILS CLOSED when none is configured, so set rolePassword or controlToken if you want to read it. Caps: 4 MiB per part, 4 parts per session, 50 sessions retained, oldest dropped.",
-  "sessionLogDir": "/home/you/.local/state/argus-presenter/logs"
+  "sessionLogDir": "/home/you/.local/state/argus-presenter/logs",
+
+  "//enforceOAuth": "Plan 0543 — the AUTH POLICY dial. Governs the CONTROL PAGE (drive-the-presentation) ONLY; it NEVER governs command-trust (whose words may become an instruction to Argus). Command-trust is ALWAYS identity-gated: a true-loopback connection, or a verified+allowlisted OIDC/tailscale principal. A shared password NEVER commands Argus. Values: 'off' (default) — the tissue-thin password OR a verified identity may open the Control page; 'control' — the Control page requires a verified+allowlisted principal (password retired for control) AND a break-glass credential must be configured or the server refuses to start. An unknown value is a startup error, never a silent default.",
+  "enforceOAuth": "off",
+
+  "//allowPasswordCommandOnLAN": "Plan 0543 — an explicitly-unsafe escape hatch (default false). When true, a password-holder MAY command Argus, but ONLY from a non-loopback PRIVATE-LAN address with NO forwarding header — never over the tunnel. Leave false unless a deployer knowingly wants a trusted-LAN shared-secret command path.",
+  "allowPasswordCommandOnLAN": false
 }

@@ -29,7 +29,7 @@ import { ALL as ALL_READ_ROLES } from './permissions.mjs';
 import { validate, summarize } from './validate.mjs';
 import { createAsr } from './asr.mjs';
 import { verifyCapability, mintCapability } from '../lib/capability.mjs';
-import { presenterPort } from '../lib/deployment-config.mjs';
+import { presenterPort, authPolicy, normalizeAuthPolicy } from '../lib/deployment-config.mjs';
 import { createSessionLog, resolveSessionLogDir } from '../lib/session-log.mjs';
 import { selectProfile, DEFAULT_PROFILE } from './profiles.mjs';
 import { createHeuristicSummarizer } from './summarizer.mjs';
@@ -170,7 +170,11 @@ function sendStatic(res, req, absPath, contentType) {
   } catch (e) { res.writeHead(404); res.end('not found'); }
 }
 
-export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null, profile = DEFAULT_PROFILE, settlingMs = null, queueMaxPending = null, queueTtlMs = null, perTurnBudgetMs = null, perTurnWrapMs = null, floorThresholds = null, sessionLogDir = null } = {}) {
+export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null, profile = DEFAULT_PROFILE, settlingMs = null, queueMaxPending = null, queueTtlMs = null, perTurnBudgetMs = null, perTurnWrapMs = null, floorThresholds = null, sessionLogDir = null, enforceOAuth = undefined, allowPasswordCommandOnLAN = undefined } = {}) {
+  // Plan 0543 P1 — the AUTH POLICY dial. Validated HERE (the single startup path shared by the CLI
+  // self-run and presenter_start): an unknown enforceOAuth value THROWS rather than falling through
+  // to a policy the deployer never chose. This slice is plumbing only — P3 makes the policy govern.
+  const AUTH_POLICY = normalizeAuthPolicy({ enforceOAuth, allowPasswordCommandOnLAN }, 'createServer()');
   // Plan 0473 P1 — SESSION-TYPE PROFILE (the config-knob spine). Selected ONCE at session start;
   // its knobs are DATA the working-set engine will READ (settling/shedding/budget/floor/digest/queue).
   // Unknown/absent name falls back cleanly to the default (wearable). Profiles are data, not forks.
@@ -3245,6 +3249,9 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   const api = {
     url: () => `http://127.0.0.1:${httpServer.address().port}`,
     port: () => httpServer.address().port,
+    // Plan 0543 P1 — the CURRENT auth policy, surfaced for presenter_status. Read-only; the dial is
+    // set once at startup (config edit + restart), never mutated live.
+    authPolicy: () => ({ ...AUTH_POLICY }),
     // Plan 0473 P1 — READ the active session profile's knobs (settling/shedding/budget/floor/digest/
     // queue). The engine/tools call this to configure behaviour; they must consume knobs, never the
     // profile NAME (drift guard). P2 is the FIRST real consumer: it reads settlingMs from here.
@@ -4027,11 +4034,16 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   // directory disables the log and the presenter still starts.
   const logTarget = resolveSessionLogDir();
   if (logTarget.sessionLogDirError) console.log('  session log:', 'DISABLED —', logTarget.sessionLogDirError);
+  // Plan 0543 P1 — the auth policy is deployment config, read the same way the port is, so the CLI
+  // self-run and presenter_start agree on it. A bad value throws here at startup, not silently.
+  const policy = authPolicy();
   createServer({
     port: p,
     controlToken: cliToken,
     // No rolePassword — the ONLY gate is the literal control token 'password' (see cliToken above).
     sessionLogDir: logTarget.sessionLogDir,
+    enforceOAuth: policy.enforceOAuth,
+    allowPasswordCommandOnLAN: policy.allowPasswordCommandOnLAN,
   }).then((s) => {
     const u = s.url();   // base like http://127.0.0.1:PORT (no trailing slash)
     const slog = s.sessionLog.status();
