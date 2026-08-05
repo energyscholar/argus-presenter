@@ -43,8 +43,34 @@ export function createHttpHandler(ctx) {
       CONTROL_TOKEN, htmlHeaders, httpControlAuthed, LIB, listModules, listModulesAdmin,
       listSeries, MODULE_STATUSES, moduleAdminOp, moduleCache, MODULES_DIR, moduleSummary,
       moduleWriteAuthed, pvsConsumerKey, readModuleFile, readSeriesFile, renderPresenterPage, ROLE_HASH,
-      ROLE_SEED, sendStatic, sessionLog, sessionLogReadAuthed, VOICE_ENABLED,
+      ROLE_SEED, sendStatic, sessionLog, sessionLogReadAuthed, VOICE_ENABLED, oidcAuth,
     } = ctx;
+    // Plan 0543 P2 — OIDC login flow. Three routes; all a clean 404 when OIDC is not configured
+    // (opt-in, never a half-open door). The session cookie is HttpOnly+Secure+SameSite=Lax and holds
+    // a server-side session id ONLY. ⚠ It must be readable at the WS upgrade on the tunnel origin —
+    // an integration seam verified against the live tunnel, not by the offline suite.
+    if (req.url === '/auth/login' || req.url.startsWith('/auth/login?')) {
+      const begin = oidcAuth && oidcAuth.active && oidcAuth.beginLogin();
+      if (!begin) { res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'oidc not configured' })); return; }
+      res.writeHead(302, { location: begin.url, 'cache-control': 'no-store' }); res.end(); return;
+    }
+    if (req.url.startsWith('/auth/callback')) {
+      if (!oidcAuth || !oidcAuth.active) { res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'oidc not configured' })); return; }
+      const query = Object.fromEntries(new URLSearchParams(req.url.split('?')[1] || ''));
+      oidcAuth.completeLogin(query).then((r) => {
+        if (r && r.ok) {
+          res.writeHead(302, { location: '/control', 'set-cookie': oidcAuth.sessionCookie(r.sid), 'cache-control': 'no-store' }); res.end();
+        } else {
+          res.writeHead(302, { location: '/?auth=failed', 'cache-control': 'no-store' }); res.end();
+        }
+      }).catch(() => { res.writeHead(302, { location: '/?auth=failed', 'cache-control': 'no-store' }); res.end(); });
+      return;
+    }
+    if (req.url === '/auth/logout' || req.url.startsWith('/auth/logout?')) {
+      const headers = { location: '/', 'cache-control': 'no-store' };
+      if (oidcAuth) { oidcAuth.logout(req); headers['set-cookie'] = oidcAuth.clearCookie(); }
+      res.writeHead(302, headers); res.end(); return;
+    }
     if (req.url === '/' || req.url.startsWith('/?')) {
       // Plan 0473 P0: strip the voice block(s) unless voice is enabled ⇒ zero voice bytes when off.
       res.writeHead(200, htmlHeaders());

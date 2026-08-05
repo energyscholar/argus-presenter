@@ -30,6 +30,7 @@ import { validate, summarize } from './validate.mjs';
 import { createAsr } from './asr.mjs';
 import { verifyCapability, mintCapability } from '../lib/capability.mjs';
 import { presenterPort, authPolicy, normalizeAuthPolicy } from '../lib/deployment-config.mjs';
+import { makeAllowlist, makeOidcAdapter, makeTailscaleAdapter, defaultOidcDeps, isTrueLoopback, hasForwardingHeader, SESSION_COOKIE } from './identity.mjs';
 import { createSessionLog, resolveSessionLogDir } from '../lib/session-log.mjs';
 import { selectProfile, DEFAULT_PROFILE } from './profiles.mjs';
 import { createHeuristicSummarizer } from './summarizer.mjs';
@@ -170,7 +171,7 @@ function sendStatic(res, req, absPath, contentType) {
   } catch (e) { res.writeHead(404); res.end('not found'); }
 }
 
-export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null, profile = DEFAULT_PROFILE, settlingMs = null, queueMaxPending = null, queueTtlMs = null, perTurnBudgetMs = null, perTurnWrapMs = null, floorThresholds = null, sessionLogDir = null, enforceOAuth = undefined, allowPasswordCommandOnLAN = undefined } = {}) {
+export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null, profile = DEFAULT_PROFILE, settlingMs = null, queueMaxPending = null, queueTtlMs = null, perTurnBudgetMs = null, perTurnWrapMs = null, floorThresholds = null, sessionLogDir = null, enforceOAuth = undefined, allowPasswordCommandOnLAN = undefined, allowlist = null, oidc = null, oidcDeps = null, tailscale = null, tailscaleResolve = null, breakGlass = null } = {}) {
   // Plan 0543 P1 — the AUTH POLICY dial. Validated HERE (the single startup path shared by the CLI
   // self-run and presenter_start): an unknown enforceOAuth value THROWS rather than falling through
   // to a policy the deployer never chose. This slice is plumbing only — P3 makes the policy govern.
@@ -267,6 +268,17 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // In-memory revoked-nonce set. api.revokeCap(nonce) adds; a revoked nonce is rejected on hello even
   // if its HMAC + exp are still valid. In-memory by design (short-lived tokens; a restart = new session).
   const revokedNonces = new Set();
+  /*
+   * Plan 0543 P2 — IDENTITY ADAPTERS (the registry). Each yields a VERIFIED PRINCIPAL or null; NONE
+   * of them decides trust (that is resolveIdentity, P3). Data-configured: oidc/tailscale/allowlist are
+   * deployment config passed in; the network deps are injectable so the flow LOGIC is testable offline.
+   *   - AUTH_ALLOWLIST — FAIL-CLOSED: a verified principal not on it authorizes to participant (fenced).
+   *   - oidcAdapter    — Google sign-in (PKCE+state+nonce+RS256/JWKS); INACTIVE (inert 404) without config.
+   *   - tsAdapter      — a DIRECT tailnet peer's identity (never over the tunnel).
+   */
+  const AUTH_ALLOWLIST = makeAllowlist(allowlist);
+  const oidcAdapter = makeOidcAdapter(oidc, oidcDeps || defaultOidcDeps());
+  const tsAdapter = makeTailscaleAdapter(tailscale, { resolve: tailscaleResolve });
   const conns = new Map();     // ws -> {id,userId,userName,role}
   // Plan 0482 A4 — userId -> Set<ws>. One PERSON may hold several sockets (phone + laptop, or a
   // reconnect race where the old socket has not yet been reaped). The old Map<userId,ws> OVERWROTE
@@ -595,6 +607,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     MODULE_STATUSES, moduleAdminOp, moduleCache, MODULES_DIR, moduleSummary, moduleWriteAuthed,
     pvsConsumerKey, readModuleFile, readSeriesFile, renderPresenterPage, ROLE_HASH, ROLE_SEED,
     sendStatic, sessionLog, sessionLogReadAuthed, VOICE_ENABLED,
+    oidcAuth: oidcAdapter,   // Plan 0543 P2 — the OIDC login/callback/logout routes read this
     // ⚠ A GETTER, NOT A VALUE. `const api` is declared ~2,400 lines below this call, so it is in
     // the temporal dead zone right now and reading it here would throw. The handler destructures
     // ctx per request, by which time this getter resolves.

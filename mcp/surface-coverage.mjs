@@ -52,6 +52,15 @@ export const CONSTRUCTOR_COVERAGE = {
   // caller knob — an agent that could flip enforceOAuth per call could weaken the room's own gate.
   enforceOAuth:              { declined: 'DEPLOYMENT CONFIG, not a per-call knob (Plan 0543 P1). presenter_start reads it from lib/deployment-config.mjs authPolicy() and passes it; who may open the Control page is the deployment\'s declaration, not something the agent flips at runtime. Set it in presenter-config.json.' },
   allowPasswordCommandOnLAN: { declined: 'DEPLOYMENT CONFIG, not a per-call knob (Plan 0543 P1) — an explicitly-unsafe escape hatch. Same deployment-owned resolution as enforceOAuth. Set it in presenter-config.json.' },
+  // Plan 0543 P2/P3 — the IDENTITY layer. All deployment config / security-relevant, none of it a
+  // per-call agent knob: an agent that could set the allowlist, the OIDC client, or the break-glass
+  // credential at runtime could grant itself (or anyone) command authority. Configured on the box.
+  allowlist:                 { declined: 'DEPLOYMENT CONFIG / SECURITY (Plan 0543 P2). The fail-closed email/tailnet-user → role map that is the only thing between a verified principal and command authority. A gitignored manifest on the box, never an agent knob.' },
+  oidc:                      { declined: 'DEPLOYMENT CONFIG / SECURITY (Plan 0543 P2). The Google OIDC client (client id/secret, endpoints). Set on the box; an agent-settable IdP is a login-redirect primitive.' },
+  oidcDeps:                  { declined: 'TEST/INJECTION SEAM (Plan 0543 P2) — the network deps (token exchange, JWKS fetch) are injected so the OIDC flow logic is testable offline; production uses defaultOidcDeps(). Not a session capability.' },
+  tailscale:                 { declined: 'DEPLOYMENT CONFIG (Plan 0543 P2) — enables the direct-tailnet-peer identity adapter. Set on the box.' },
+  tailscaleResolve:          { declined: 'TEST/INJECTION SEAM (Plan 0543 P2) — the resolver that reads a tailnet identity for a direct peer; injected for tests, wired to the tailscale layer in production. Not a session capability.' },
+  breakGlass:                { declined: 'DEPLOYMENT CONFIG / SECURITY (Plan 0543 P3) — the break-glass credential whose PRESENCE is the startup gate for enforceOAuth=control (prevents the OIDC-outage lockout). A loopback-only recovery credential on the box, never an agent knob.' },
 };
 
 // --- api surface ------------------------------------------------------------------------
