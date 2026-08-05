@@ -30,7 +30,7 @@ import { validate, summarize } from './validate.mjs';
 import { createAsr } from './asr.mjs';
 import { verifyCapability, mintCapability } from '../lib/capability.mjs';
 import { presenterPort, authPolicy, normalizeAuthPolicy } from '../lib/deployment-config.mjs';
-import { makeAllowlist, makeOidcAdapter, makeTailscaleAdapter, defaultOidcDeps, isTrueLoopback, hasForwardingHeader, SESSION_COOKIE } from './identity.mjs';
+import { makeAllowlist, makeOidcAdapter, makeTailscaleAdapter, defaultOidcDeps } from './identity.mjs';
 import { createSessionLog, resolveSessionLogDir } from '../lib/session-log.mjs';
 import { selectProfile, DEFAULT_PROFILE } from './profiles.mjs';
 import { createHeuristicSummarizer } from './summarizer.mjs';
@@ -171,7 +171,7 @@ function sendStatic(res, req, absPath, contentType) {
   } catch (e) { res.writeHead(404); res.end('not found'); }
 }
 
-export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null, profile = DEFAULT_PROFILE, settlingMs = null, queueMaxPending = null, queueTtlMs = null, perTurnBudgetMs = null, perTurnWrapMs = null, floorThresholds = null, sessionLogDir = null, enforceOAuth = undefined, allowPasswordCommandOnLAN = undefined, allowlist = null, oidc = null, oidcDeps = null, tailscale = null, tailscaleResolve = null, breakGlass = null } = {}) {
+export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null, profile = DEFAULT_PROFILE, settlingMs = null, queueMaxPending = null, queueTtlMs = null, perTurnBudgetMs = null, perTurnWrapMs = null, floorThresholds = null, sessionLogDir = null, enforceOAuth = undefined, allowPasswordCommandOnLAN = undefined, allowlist = null, oidc = null, oidcDeps = null, oidcSessionTtlMs = null, tailscale = null, tailscaleResolve = null, breakGlass = null } = {}) {
   // Plan 0543 P1 — the AUTH POLICY dial. Validated HERE (the single startup path shared by the CLI
   // self-run and presenter_start): an unknown enforceOAuth value THROWS rather than falling through
   // to a policy the deployer never chose. This slice is plumbing only — P3 makes the policy govern.
@@ -277,8 +277,54 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
    *   - tsAdapter      — a DIRECT tailnet peer's identity (never over the tunnel).
    */
   const AUTH_ALLOWLIST = makeAllowlist(allowlist);
-  const oidcAdapter = makeOidcAdapter(oidc, oidcDeps || defaultOidcDeps());
+  const oidcAdapter = makeOidcAdapter(oidc, { ...(oidcDeps || defaultOidcDeps()), ...(oidcSessionTtlMs != null ? { sessionTtlMs: oidcSessionTtlMs } : {}) });
   const tsAdapter = makeTailscaleAdapter(tailscale, { resolve: tailscaleResolve });
+  /*
+   * Plan 0543 P3 — BREAK-GLASS STARTUP GATE (the config gate only; the full recovery flow is 0489's).
+   * enforceOAuth='control' RETIRES the password for the Control page, so if the OIDC provider is
+   * unreachable and no local recovery credential exists, the deployment can lock everyone out. Refuse
+   * to start without one. A break-glass credential is the 0489 §4.6 shape (loopback-only, single-use,
+   * TTL, 0600 file); here we enforce only that ONE is configured (a token or a file path).
+   */
+  const breakGlassConfigured = !!(breakGlass && typeof breakGlass === 'object' && (breakGlass.token || breakGlass.file));
+  if (AUTH_POLICY.enforceOAuth === 'control' && !breakGlassConfigured) {
+    throw new Error("enforceOAuth='control' retires the password for the Control page; a break-glass credential must be configured (0489 §4.6: loopback-only, single-use, TTL, 0600 file) or an OIDC outage locks everyone out. Configure breakGlass, or run enforceOAuth='off'.");
+  }
+  /*
+   * Plan 0543 P3 — the AUTH CONTEXT for a connection. Bruce's ruling (2026-08-05): LOOPBACK/LOCALHOST
+   * IS NOT AN AUTH SIGNAL — any local process or webpage generates loopback traffic, so it carries no
+   * security value and grants NOTHING. The ONLY thing this reads is a VERIFIED PRINCIPAL (an OIDC
+   * session cookie, or a DIRECT tailnet peer) and whether a live OIDC session has expired. Read from
+   * the request, never from a client claim.
+   */
+  function computeAuthCtx(req) {
+    // ⚠ Read sessionExpired BEFORE principalForRequest — the latter DELETES an expired session, which
+    // would otherwise hide the expiry from the re-auth prompt (the A-fix). Order is load-bearing.
+    const expiredBefore = oidcAdapter.sessionExpired(req);
+    const verified = oidcAdapter.principalForRequest(req) || tsAdapter.principalForRequest(req) || null;
+    return { verified, sessionExpired: !verified && expiredBefore };
+  }
+  /** Plan 0543 P3 — the Control-page role from IDENTITY: ONLY a verified + ALLOWLISTED principal. Loopback grants nothing. */
+  function identityGrantsControl(authCtx) {
+    if (!authCtx || !authCtx.verified) return false;
+    return AUTH_ALLOWLIST.lookup(authCtx.verified.email || authCtx.verified.sub).allowed;
+  }
+  /*
+   * Plan 0543 P3 — THE COMMAND-TRUST DECISION (the one gate). Bruce's ruling: `self` (authority to send
+   * prompts/commands to the agent) comes ONLY from a VERIFIED IDENTITY (OIDC | Tailscale) that is ALSO
+   * on the allowlist. NOTHING else earns it — not loopback, not a password/control role, not a
+   * self-asserted role. The allowlist (Bruce, Gen) is the sole authorization to command Argus.
+   */
+  function deriveConnTrust(ident, capGrant, authCtx) {
+    if (capGrant || (ident && ident.isGuest)) return { trust: TRUST.GUEST };                         // 1. cap ⇒ guest (fenced)
+    if (authCtx.verified) {
+      const al = AUTH_ALLOWLIST.lookup(authCtx.verified.email || authCtx.verified.sub);
+      if (al.allowed) return { trust: TRUST.SELF };                                                   // 2. verified (OIDC|Tailscale) AND allowlisted ⇒ SELF
+      return { trust: TRUST.PARTICIPANT, reason: 'signed in, not authorized' };                       // 3. verified but NOT allowlisted ⇒ fenced (E / the C dead-end)
+    }
+    if (authCtx.sessionExpired) return { trust: TRUST.PARTICIPANT, reason: 're-authentication required', reauth: true };  // A-fix: prompt re-auth, never a silent fence
+    return { trust: TRUST.PARTICIPANT };   // 4. everything else — incl loopback, incl password-only (Control-page role, never self) ⇒ fenced
+  }
   const conns = new Map();     // ws -> {id,userId,userName,role}
   // Plan 0482 A4 — userId -> Set<ws>. One PERSON may hold several sockets (phone + laptop, or a
   // reconnect race where the old socket has not yet been reaped). The old Map<userId,ws> OVERWROTE
@@ -762,7 +808,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
    * Returns {userId, userName, role, isGuest, capScope?, capNonce?}.
    * NEVER throws and NEVER returns a role outside KNOWN_ROLES.
    */
-  function resolveIdentity(m, capGrant, socketId) {
+  function resolveIdentity(m, capGrant, socketId, authCtx = {}) {
     // GUEST (capability link): identity comes from the authentic token, role HARD-FORCED to
     // participant. The client cannot widen either.
     if (capGrant) {
@@ -799,8 +845,12 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       }
       if (askedRole !== 'participant') {
         const gated = !!(CONTROL_TOKEN || ROLE_HASH);
-        if (CONTROL_ROLES.has(askedRole) && (!gated || credentialOk(m.token))) return { userId: seatUserId, userName: seatUserName, role: askedRole, isGuest: false, stationUid: st.stationUid };
-        if (askedRole === 'gm' && gated && credentialOk(m.token)) return { userId: seatUserId, userName: seatUserName, role: 'gm', isGuest: false, stationUid: st.stationUid };
+        // Plan 0543 P3 — under enforceOAuth='control' the password is RETIRED for control roles; the
+        // Control-page role comes from IDENTITY only. Under 'off' the existing password gate is unchanged.
+        const controlOk = (AUTH_POLICY.enforceOAuth === 'control') ? identityGrantsControl(authCtx) : (!gated || credentialOk(m.token));
+        const gmOk = (AUTH_POLICY.enforceOAuth === 'control') ? identityGrantsControl(authCtx) : (gated && credentialOk(m.token));
+        if (CONTROL_ROLES.has(askedRole) && controlOk) return { userId: seatUserId, userName: seatUserName, role: askedRole, isGuest: false, stationUid: st.stationUid };
+        if (askedRole === 'gm' && gmOk) return { userId: seatUserId, userName: seatUserName, role: 'gm', isGuest: false, stationUid: st.stationUid };
         log.warn('auth', 'role-denied', { socketId, userId: seatUserId, requested: String(askedRole), granted: 'participant', reason: 'bad-credential' });
       }
       return { userId: seatUserId, userName: seatUserName, role: 'participant', isGuest: false, stationUid: st.stationUid };
@@ -817,11 +867,19 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     if (asked === 'participant') return { userId, userName, role: 'participant', isGuest: false };
 
     if (CONTROL_ROLES.has(asked)) {
+      // Plan 0543 P3 — under enforceOAuth='control' the password is RETIRED for the Control page: the
+      // role comes from IDENTITY only (loopback / verified+allowlisted). Under 'off' this is UNCHANGED.
+      if (AUTH_POLICY.enforceOAuth === 'control') {
+        return identityGrantsControl(authCtx) ? { userId, userName, role: asked, isGuest: false } : deny('control-requires-verified-identity');
+      }
       const gated = !!(CONTROL_TOKEN || ROLE_HASH);
       if (gated && !credentialOk(m.token)) return deny('bad-credential');
       return { userId, userName, role: asked, isGuest: false };     // ungated ⇒ tokenless grant
     }
     // gm — credential required unconditionally; no credential configured ⇒ nothing to verify ⇒ deny.
+    if (AUTH_POLICY.enforceOAuth === 'control') {                    // Plan 0543 P3 — identity, not password
+      return identityGrantsControl(authCtx) ? { userId, userName, role: 'gm', isGuest: false } : deny('control-requires-verified-identity');
+    }
     if (!(CONTROL_TOKEN || ROLE_HASH)) return deny('gm-requires-credential-none-configured');
     if (!credentialOk(m.token)) return deny('bad-credential');
     return { userId, userName, role: 'gm', isGuest: false };
@@ -1070,11 +1128,21 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         // Plan 0482 A2: role + userId are decided in EXACTLY ONE function (resolveIdentity,
         // the identity seam). Guest/control/gm/unknown-role policy all live there; this call
         // site only applies the verdict.
-        const ident = resolveIdentity(m, capGrant, c.id);
+        // Plan 0543 P3 — the AUTH CONTEXT (loopback verdict + any verified principal) is read from the
+        // upgrade request `req`, then fed to BOTH decisions: resolveIdentity (the control-page ROLE)
+        // and deriveConnTrust (command TRUST). This is where 0543 keeps "role" and "authority" separate.
+        const authCtx = computeAuthCtx(req);
+        const ident = resolveIdentity(m, capGrant, c.id, authCtx);
         c.userId = ident.userId;
         c.userName = ident.userName;
         c.role = ident.role;
         if (ident.isGuest) { c.isGuest = true; c.capScope = ident.capScope; c.capNonce = ident.capNonce; }
+        // The SERVER-AUTHORITATIVE command-trust for this connection. Stamped on every turn this
+        // connection emits (chat/voice) so the fence delimits it correctly. NEVER from the password.
+        const trustVerdict = deriveConnTrust(ident, capGrant, authCtx);
+        c.trust = trustVerdict.trust;
+        c.trustReason = trustVerdict.reason || null;
+        c.reauth = !!trustVerdict.reauth;
         bindUser(c.userId, ws);
         // welcome.role = the EFFECTIVE granted role, so the client learns if it was
         // silently downgraded (wrong/absent password) and can surface feedback.
@@ -1094,6 +1162,11 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         // welcome, so a client rebuilds its selector AND RESTORES ITS OWN STATE ON RECONNECT —
         // the 0508 D1 class of bug, designed out rather than patched.
         send(ws, { t: 'welcome', userId: c.userId, userName: c.userName, socketId: c.id, role: c.role, transcriptPersisting: TRANSCRIPT_PERSIST,
+          // Plan 0543 P3 — the client learns its COMMAND-TRUST (distinct from role): whether its words
+          // may become an instruction. `authReason` explains a fenced verdict ("signed in, not
+          // authorized" — the E/C dead-end fix); `reauth:true` asks a lapsed session to re-authenticate
+          // rather than being silently downgraded (the A fix).
+          trust: c.trust, ...(c.trustReason ? { authReason: c.trustReason } : {}), ...(c.reauth ? { reauth: true } : {}),
           ...(c.isGuest ? { guest: true, scope: c.capScope } : {}),
           ...(stationsActive() ? {
             stationRegistry: stationRegistry.wire(),
@@ -1374,7 +1447,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
             // only evidence either way is its absence. Both branches below answer.
             if (!body) { send(ws, { t: 'chat_private', ok: false, reason: 'empty', text: '' }); return; }
             const asideTs = Date.now();
-            emitInbox({ kind: 'text', userId: c.userId, userName: c.userName, role: c.role, text: body, conf: null, final: true, isGuest: !!c.isGuest, private: true });
+            emitInbox({ kind: 'text', userId: c.userId, userName: c.userName, role: c.role, text: body, conf: null, final: true, isGuest: !!c.isGuest, private: true, trust: c.trust });
             handleOp(c, { path: 'gm/asides/' + id, verb: 'set', value: { id, text: body, name: c.userName, userId: c.userId, ts: asideTs } },
               { userId: c.userId, role: 'system' });   // sender's id, lifted role — see handleOp
             // Plan 0539 P1.3 — the receipt now carries `id` + `ts`. THE SENDER IS THE ONLY PERSON
@@ -1398,7 +1471,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
             if (!res.ok) send(ws, { t: 'roll_refused', reason: res.reason, text: '/roll <count>d<sides>[+mod] [target] [= total] [label]' });
             return;
           }
-          emitInbox({ kind: 'text', userId: c.userId, userName: c.userName, role: c.role, text: m.text, conf: null, final: true, isGuest: !!c.isGuest });
+          emitInbox({ kind: 'text', userId: c.userId, userName: c.userName, role: c.role, text: m.text, conf: null, final: true, isGuest: !!c.isGuest, trust: c.trust });
           // Plan 0539 P1.1 — `ts` and `userId` are ADDED to the record, and both are load-bearing for
           // the reader. `chat` is a keyed collection, not a list: a client rebuilding the log from a
           // snapshot gets an OBJECT, whose key order is an implementation detail and not a history.
@@ -2727,14 +2800,15 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // speaker's turn is over. `turnComplete` (set when the turn settles) is the DISTINCT turn-end signal.
   // Plan 0473 P13: `own` marks the AGENT's OWN outbound reply (role:'ai', trust:'self') so it joins the
   // conversation object but never barges in on itself and is never queued as a judgment item.
-  function emitInbox({ kind, userId, userName, role, text, conf = null, final = true, sessionId, isGuest = false, own = false, voiceId = null, voiceIdConf = null, speakerLabel = null }) {
+  function emitInbox({ kind, userId, userName, role, text, conf = null, final = true, sessionId, isGuest = false, own = false, voiceId = null, voiceIdConf = null, speakerLabel = null, trust = null }) {
     const entry = {
       seq: ++inboxSeq, kind, userId, userName, role: role || null,
-      // Plan 0473 P9: the SERVER-AUTHORITATIVE trust level, stamped at ingest from role + isGuest (both
-      // server-decided; never client-reported). Carried on every item so every downstream consumer
-      // (inbox, coalesced turns, work queue) can DELIMIT untrusted content as data. Guest wins first
-      // because the server hard-forces a guest's role to 'participant'.
-      trust: deriveTrust(role, isGuest),
+      // Plan 0473 P9 / 0543 P3: the SERVER-AUTHORITATIVE trust level. It is now the connection's
+      // trust (c.trust) when the real hello-driven chat/voice path supplies it — because 0543 SPLIT
+      // command-authority from the control-page role: a password-holder may hold role:presenter yet
+      // be trust:participant (the D fix). When no explicit trust is passed (the agent's own reply,
+      // the test-injection seam), fall back to the role-derived base map. Guest still wins first.
+      trust: (trust === TRUST.SELF || trust === TRUST.PARTICIPANT || trust === TRUST.GUEST) ? trust : deriveTrust(role, isGuest),
       text, conf: (conf == null ? null : conf), final: final !== false,
       // Biometric voice-ID hooks (Plan 0476 P0; impl DEFERRED). Nullable, decorate-only. voiceId =
       // matched enrolled person (distinct from connection userId); speakerLabel SUPPLEMENTS userName,
@@ -2773,8 +2847,8 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     return entry;
   }
   // Back-compat shim: voice-path callers still call emitTranscript(); it is kind:'voice' into the inbox.
-  function emitTranscript({ userId, userName, role, text, conf, isGuest = false }) {
-    return emitInbox({ kind: 'voice', userId, userName, role, text, conf, final: true, isGuest });
+  function emitTranscript({ userId, userName, role, text, conf, isGuest = false, trust = null }) {
+    return emitInbox({ kind: 'voice', userId, userName, role, text, conf, final: true, isGuest, trust });
   }
   function voiceArmTimeout(c, ws) {   // RT-14: an open segment starved of frames is flushed/discarded
     const v = c.voice; if (!v) return;
@@ -2849,7 +2923,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     try { unlinkSync(wavPath); } catch (e) {}
     log.info('voice', 'S10 asr-result', { socketId: c.id, seq, text: String((result && result.text) || '').slice(0, 60) });   // S206 tracer
     if (!result || !result.text) { log.info('voice', 'no-text', { socketId: c.id, seq }); return; }
-    emitTranscript({ userId: c.userId, userName: c.userName, role: c.role, text: result.text, conf: result.conf, isGuest: !!c.isGuest });
+    emitTranscript({ userId: c.userId, userName: c.userName, role: c.role, text: result.text, conf: result.conf, isGuest: !!c.isGuest, trust: c.trust });
     // Plan 0476 P4: echo the speaker's OWN recognized words back to THEIR client only (rendered as a
     // single line above the input field). Participants never see peers' voice, but seeing your own words
     // is your own data. voiceId hooks ride along (null until biometric ID lands).
@@ -3593,6 +3667,8 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     // trust derivation, waiter wake). Mirrors the WS voice/text ingress without a socket. `_`-prefixed,
     // like the other test hooks; not part of the driving surface.
     _emitInboxForTest: (spec = {}) => { const e = emitInbox(spec); return annotateTrust(e, e.trust); },
+    _oidcAdapterForTest: oidcAdapter,   // Plan 0543 P3 — test seam: mint a verified OIDC session to drive the trust path
+    _authCtxForTest: (req) => computeAuthCtx(req),   // Plan 0543 P3 — test seam: inspect the loopback/verified verdict for a req
     // Plan 0522 P4 (I3) — the DURABLE DISPLAY STATE, serialised. The only seam through which a
     // test can assert that staging wrote nothing: t07 compares this string (plus every seat's
     // stationUid, read from presence()) before and after a stage. Field-by-field spot checks were

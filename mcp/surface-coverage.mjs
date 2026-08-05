@@ -58,6 +58,7 @@ export const CONSTRUCTOR_COVERAGE = {
   allowlist:                 { declined: 'DEPLOYMENT CONFIG / SECURITY (Plan 0543 P2). The fail-closed email/tailnet-user → role map that is the only thing between a verified principal and command authority. A gitignored manifest on the box, never an agent knob.' },
   oidc:                      { declined: 'DEPLOYMENT CONFIG / SECURITY (Plan 0543 P2). The Google OIDC client (client id/secret, endpoints). Set on the box; an agent-settable IdP is a login-redirect primitive.' },
   oidcDeps:                  { declined: 'TEST/INJECTION SEAM (Plan 0543 P2) — the network deps (token exchange, JWKS fetch) are injected so the OIDC flow logic is testable offline; production uses defaultOidcDeps(). Not a session capability.' },
+  oidcSessionTtlMs:          { declined: 'DEPLOYMENT CONFIG / TEST SEAM (Plan 0543 P3) — the OIDC session lifetime; set on the box (and driven to 0 by the expiry test). Not a per-call agent knob.' },
   tailscale:                 { declined: 'DEPLOYMENT CONFIG (Plan 0543 P2) — enables the direct-tailnet-peer identity adapter. Set on the box.' },
   tailscaleResolve:          { declined: 'TEST/INJECTION SEAM (Plan 0543 P2) — the resolver that reads a tailnet identity for a direct peer; injected for tests, wired to the tailscale layer in production. Not a session capability.' },
   breakGlass:                { declined: 'DEPLOYMENT CONFIG / SECURITY (Plan 0543 P3) — the break-glass credential whose PRESENCE is the startup gate for enforceOAuth=control (prevents the OIDC-outage lockout). A loopback-only recovery credential on the box, never an agent knob.' },
@@ -178,6 +179,8 @@ export const API_COVERAGE = {
   commsMode:           { tool: 'presenter_mode' },
   getPvsSubscriberCount: { declined: 'test-only observability — live ws subscriber count (leak/teardown assertions)' },
   _emitInboxForTest:   { declined: 'test-only ingress seam — injects an inbox item through the real emit path without a socket' },
+  _oidcAdapterForTest: { declined: 'test-only seam (Plan 0543 P3) — the OIDC adapter, so an acceptance test can mint a verified session and exercise the trust path offline. Never a session capability.' },
+  _authCtxForTest:     { declined: 'test-only seam (Plan 0543 P3) — computes the loopback/verified auth context for a request so a test can assert the discriminator. Read-only, no capability.' },
   _displayStateForTest: { declined: 'test-only observability seam — serialises displayByRole/displayByUser so Plan 0522 t07 can prove a stage wrote nothing durable (I3); read-only, no capability' },
 
   // --- sensing

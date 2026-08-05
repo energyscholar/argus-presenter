@@ -46,7 +46,13 @@ export function isTrueLoopback(req) {
   return typeof peer === 'string' && LOOPBACK_PEERS.has(peer.trim());
 }
 
-/** The loopback adapter: a provable local principal, or null. Needs no internet. */
+/*
+ * The loopback adapter. ⚠ Bruce's ruling (2026-08-05): LOOPBACK IS NOT A TRUST SIGNAL — any local
+ * process or webpage generates loopback traffic; it is not equivalent to file access and grants
+ * NOTHING. `isTrueLoopback`/`hasForwardingHeader` remain exported for the tailscale adapter's
+ * direct-peer check and for tests, but NO code path turns loopback into `self`. Kept intentionally
+ * inert so that "am I local?" can never be mistaken for "am I authorized?".
+ */
 export function loopbackPrincipal(req) {
   return isTrueLoopback(req) ? { provider: 'loopback', sub: 'loopback', name: 'local', email: null } : null;
 }

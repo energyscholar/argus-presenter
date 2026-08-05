@@ -26,9 +26,12 @@ import { TRUST, END_MARKER, beginMarker } from '../../app/untrusted.mjs';
 import { WebSocket } from 'ws';
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-function client(url, hello) {
+// Plan 0543: `opts.headers` optionally sets WS upgrade headers (e.g. a verified tailnet identity).
+// Callers that pass no headers are byte-identical to before — so the participant/guest cases below
+// still connect with no identity and stay fenced.
+function client(url, hello, opts = {}) {
   return new Promise((resolve) => {
-    const ws = new WebSocket(url.replace(/^http/, 'ws'));
+    const ws = new WebSocket(url.replace(/^http/, 'ws'), opts.headers ? { headers: opts.headers } : undefined);
     ws.on('open', () => ws.send(JSON.stringify(Object.assign({ t: 'hello' }, hello))));
     ws.on('message', (d, b) => { if (b) return; let m; try { m = JSON.parse(d.toString()); } catch (e) { return; } if (m.t === 'welcome') resolve({ ws }); });
   });
@@ -106,11 +109,18 @@ test('T-UNTRUSTED-DELIMIT (guest): injection is trust:guest, fenced, neutralized
   } finally { await s.close(); }
 });
 
-// (a): a presenter/ai GATED controller is trust:'self' and NOT fenced (it is the trusted instruction side).
-test('T-UNTRUSTED-DELIMIT (self): a gated controller (presenter/ai) is trust:self, NOT fenced', async () => {
-  const s = await createServer({ port: 0, settlingMs: 0 });
+// (a): a VERIFIED + ALLOWLISTED controller is trust:'self' and NOT fenced (it is the trusted
+// instruction side). Plan 0543 (Bruce's ruling): `self` is earned ONLY by a verified identity that is
+// also on the allowlist — a bare presenter ROLE no longer implies self. So the controller here signs
+// in as a direct-tailnet allowlisted principal; the assertions are unchanged.
+test('T-UNTRUSTED-DELIMIT (self): a verified+allowlisted controller is trust:self, NOT fenced', async () => {
+  const s = await createServer({
+    port: 0, settlingMs: 0,
+    tailscale: { enabled: true }, tailscaleResolve: (req) => req.headers['tailscale-user-login'] || null,
+    allowlist: { 'boss@tailnet': { role: 'presenter' } },
+  });
   try {
-    const pres = await client(s.url(), { userId: 'boss', userName: 'Argus', role: 'presenter' });
+    const pres = await client(s.url(), { userId: 'boss', userName: 'Argus', role: 'presenter' }, { headers: { 'tailscale-user-login': 'boss@tailnet' } });
     chat(pres, 'advance to the next beat please', 'c1');
     await until(() => s.getInbox(0).items.some((i) => (i.text || '').indexOf('advance to the next beat') >= 0), 'controller line landed');
 
