@@ -31,7 +31,7 @@ import { createAsr } from './asr.mjs';
 import { verifyCapability, mintCapability } from '../lib/capability.mjs';
 import { presenterPort, authPolicy, normalizeAuthPolicy } from '../lib/deployment-config.mjs';
 import { makeAllowlist, makeOidcAdapter, makeTailscaleAdapter, defaultOidcDeps } from './identity.mjs';
-import { createSessionLog, resolveSessionLogDir } from '../lib/session-log.mjs';
+import { createSessionLog, resolveSessionLogDir, defaultSessionLogDir } from '../lib/session-log.mjs';
 import { selectProfile, DEFAULT_PROFILE } from './profiles.mjs';
 import { createHeuristicSummarizer } from './summarizer.mjs';
 import { buildDigest } from './digests.mjs';
@@ -171,7 +171,7 @@ function sendStatic(res, req, absPath, contentType) {
   } catch (e) { res.writeHead(404); res.end('not found'); }
 }
 
-export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null, profile = DEFAULT_PROFILE, settlingMs = null, queueMaxPending = null, queueTtlMs = null, perTurnBudgetMs = null, perTurnWrapMs = null, floorThresholds = null, sessionLogDir = null, enforceOAuth = undefined, allowPasswordCommandOnLAN = undefined, allowlist = null, oidc = null, oidcDeps = null, oidcSessionTtlMs = null, tailscale = null, tailscaleResolve = null, breakGlass = null } = {}) {
+export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null, profile = DEFAULT_PROFILE, settlingMs = null, queueMaxPending = null, queueTtlMs = null, perTurnBudgetMs = null, perTurnWrapMs = null, floorThresholds = null, sessionLogDir = null, enforceOAuth = undefined, allowPasswordCommandOnLAN = undefined, allowlist = null, oidc = null, oidcDeps = null, oidcSessionTtlMs = null, tailscale = null, tailscaleResolve = null, breakGlass = null, revokedNonceFile = null } = {}) {
   // Plan 0543 P1 — the AUTH POLICY dial. Validated HERE (the single startup path shared by the CLI
   // self-run and presenter_start): an unknown enforceOAuth value THROWS rather than falling through
   // to a policy the deployer never chose. This slice is plumbing only — P3 makes the policy govern.
@@ -265,9 +265,26 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // NEVER logged or echoed. Independent of the control-token / role-password gate (a cap never grants
   // a control role; that gate alone governs presenter/ai).
   const CAP_SECRET = capSecret || process.env.PRESENTER_CAP_SECRET || null;
-  // In-memory revoked-nonce set. api.revokeCap(nonce) adds; a revoked nonce is rejected on hello even
-  // if its HMAC + exp are still valid. In-memory by design (short-lived tokens; a restart = new session).
+  // Revoked-nonce set. api.revokeCap(nonce) adds; a revoked nonce is rejected on hello even if its HMAC
+  // + exp are still valid.
+  // Plan 0543 P4 — the set is DURABLE when a file is configured: the one real bug 0489 flagged was that
+  // a revocation died with the process, so a still-unexpired guest link came back to life across a
+  // restart. When `revokedNonceFile` is set, we LOAD it at start and REWRITE it on every revoke. The
+  // library default is null (in-memory only) so the test suite writes nothing; the CLI / presenter_start
+  // resolve a durable path. Never fatal: an unreadable/unwritable file degrades to in-memory, loudly.
   const revokedNonces = new Set();
+  const REVOKED_FILE = (typeof revokedNonceFile === 'string' && revokedNonceFile.trim()) ? revokedNonceFile.trim() : null;
+  if (REVOKED_FILE) {
+    try {
+      const arr = JSON.parse(readFileSync(REVOKED_FILE, 'utf8'));
+      if (Array.isArray(arr)) for (const n of arr) if (typeof n === 'string' && n) revokedNonces.add(n);
+    } catch (e) { /* absent/unreadable ⇒ start empty; a fresh deployment has no file yet */ }
+  }
+  function persistRevokedNonces() {
+    if (!REVOKED_FILE) return;
+    try { mkdirSync(dirname(REVOKED_FILE), { recursive: true }); writeFileSync(REVOKED_FILE, JSON.stringify([...revokedNonces])); }
+    catch (e) { try { log.warn('cap', 'revoked-persist-failed', { err: String((e && e.message) || e).slice(0, 120) }); } catch {} }
+  }
   /*
    * Plan 0543 P2 — IDENTITY ADAPTERS (the registry). Each yields a VERIFIED PRINCIPAL or null; NONE
    * of them decides trust (that is resolveIdentity, P3). Data-configured: oidc/tailscale/allowlist are
@@ -3777,6 +3794,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     revokeCap: (nonce) => {
       if (!nonce) return false;
       revokedNonces.add(nonce);
+      persistRevokedNonces();   // Plan 0543 P4 — survive a restart (0489's flagged bug)
       for (const [ws, c] of conns.entries()) if (c.isGuest && c.capNonce === nonce) { try { ws.close(); } catch (e) {} }
       log.info('cap', 'revoked', { nonce: String(nonce).slice(0, 8) });   // only a short prefix, for audit; not the token
       return revokedNonces.has(nonce);
@@ -4133,6 +4151,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     sessionLogDir: logTarget.sessionLogDir,
     enforceOAuth: policy.enforceOAuth,
     allowPasswordCommandOnLAN: policy.allowPasswordCommandOnLAN,
+    // Plan 0543 P4 — a durable store for revoked guest-link nonces (in the state/log dir) so a
+    // revocation survives a restart. State, not content: it holds only nonces.
+    revokedNonceFile: join(logTarget.sessionLogDir || defaultSessionLogDir(), 'revoked-caps.json'),
   }).then((s) => {
     const u = s.url();   // base like http://127.0.0.1:PORT (no trailing slash)
     const slog = s.sessionLog.status();

@@ -62,6 +62,7 @@ export const CONSTRUCTOR_COVERAGE = {
   tailscale:                 { declined: 'DEPLOYMENT CONFIG (Plan 0543 P2) — enables the direct-tailnet-peer identity adapter. Set on the box.' },
   tailscaleResolve:          { declined: 'TEST/INJECTION SEAM (Plan 0543 P2) — the resolver that reads a tailnet identity for a direct peer; injected for tests, wired to the tailscale layer in production. Not a session capability.' },
   breakGlass:                { declined: 'DEPLOYMENT CONFIG / SECURITY (Plan 0543 P3) — the break-glass credential whose PRESENCE is the startup gate for enforceOAuth=control (prevents the OIDC-outage lockout). A loopback-only recovery credential on the box, never an agent knob.' },
+  revokedNonceFile:          { declined: 'DEPLOYMENT CONFIG (Plan 0543 P4) — the durable store path for revoked guest-link nonces (so a revocation survives a restart, 0489\'s flagged bug). Resolved by the CLI / presenter_start from the state dir; not a per-call knob.' },
 };
 
 // --- api surface ------------------------------------------------------------------------
@@ -202,8 +203,8 @@ export const API_COVERAGE = {
 
   // --- capability links (Plan 0472)
   capEnabled:          { declined: 'reported by presenter_start as capLinks' },
-  mintCap:             { declined: 'NOT YET EXPOSED — owed. Minting guest seat links is exactly what plan 0486 needs; tracked there, not silently dropped.' },
-  revokeCap:           { declined: 'NOT YET EXPOSED — owed alongside mintCap (0486).' },
+  mintCap:             { tool: 'mint_cap' },      // Plan 0543 P4 — guest seat links, sid = seat slug
+  revokeCap:           { tool: 'revoke_cap' },    // Plan 0543 P4 — revoke by nonce, persisted across restart
   isCapRevoked:        { declined: INTERNAL },
 
   // --- moderation / floor
