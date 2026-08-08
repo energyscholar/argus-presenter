@@ -29,7 +29,7 @@ import { ALL as ALL_READ_ROLES } from './permissions.mjs';
 import { validate, summarize } from './validate.mjs';
 import { createAsr } from './asr.mjs';
 import { verifyCapability, mintCapability } from '../lib/capability.mjs';
-import { presenterPort, authPolicy, normalizeAuthPolicy } from '../lib/deployment-config.mjs';
+import { presenterPort, authPolicy, normalizeAuthPolicy, identityConfig, identityServerOptions, identityStartupLine } from '../lib/deployment-config.mjs';
 import { makeAllowlist, makeOidcAdapter, makeTailscaleAdapter, defaultOidcDeps } from './identity.mjs';
 import { createSessionLog, resolveSessionLogDir, defaultSessionLogDir } from '../lib/session-log.mjs';
 import { selectProfile, DEFAULT_PROFILE } from './profiles.mjs';
@@ -307,6 +307,24 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   if (AUTH_POLICY.enforceOAuth === 'control' && !breakGlassConfigured) {
     throw new Error("enforceOAuth='control' retires the password for the Control page; a break-glass credential must be configured (0489 §4.6: loopback-only, single-use, TTL, 0600 file) or an OIDC outage locks everyone out. Configure breakGlass, or run enforceOAuth='off'.");
   }
+  /*
+   * Plan 0551 P2 — THE ONE STARTUP LINE: is sign-in ACTIVE, and how many principals are authorized?
+   * Emitted HERE, inside the single startup path, so BOTH launch paths report it and so it states
+   * what the server ACTUALLY received rather than what a config file said.
+   *
+   * ⛔ STATE, NEVER CONTENTS. The size of the allowlist, never its entries; that OIDC is configured,
+   * never the client id or secret. This line reaches the log ring a debug endpoint can serve.
+   *
+   * WHY IT EXISTS: 0543 booted inert and said nothing. A server that has silently lost its sign-in
+   * must be legible from the outside, or the next person also finds out on a phone.
+   */
+  log.info('auth', 'identity', {
+    oidcActive: oidcAdapter.active,
+    allowlistSize: AUTH_ALLOWLIST.size,
+    tailscaleActive: tsAdapter.active,
+    breakGlass: breakGlassConfigured,
+    enforceOAuth: AUTH_POLICY.enforceOAuth,
+  });
   /*
    * Plan 0543 P3 — the AUTH CONTEXT for a connection. Bruce's ruling (2026-08-05): LOOPBACK/LOCALHOST
    * IS NOT AN AUTH SIGNAL — any local process or webpage generates loopback traffic, so it carries no
@@ -4144,6 +4162,15 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   // Plan 0543 P1 — the auth policy is deployment config, read the same way the port is, so the CLI
   // self-run and presenter_start agree on it. A bad value throws here at startup, not silently.
   const policy = authPolicy();
+  /*
+   * Plan 0551 P2 — IDENTITY, from the SAME deployment file, through the SAME router the MCP tool
+   * uses (C4). A divergence between these two launch paths is how 0543's class of bug is born, so
+   * there is exactly one function that turns config into options: identityServerOptions().
+   * A present-but-incomplete oidc block throws HERE, at startup, by name — never an inert boot.
+   * The spread is LAST so a config-stated revokedNonceFile overrides the derived default below.
+   */
+  const identity = identityConfig();
+  console.log(' ', identityStartupLine(identity));
   createServer({
     port: p,
     controlToken: cliToken,
@@ -4154,6 +4181,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     // Plan 0543 P4 — a durable store for revoked guest-link nonces (in the state/log dir) so a
     // revocation survives a restart. State, not content: it holds only nonces.
     revokedNonceFile: join(logTarget.sessionLogDir || defaultSessionLogDir(), 'revoked-caps.json'),
+    ...identityServerOptions(identity),
   }).then((s) => {
     const u = s.url();   // base like http://127.0.0.1:PORT (no trailing slash)
     const slog = s.sessionLog.status();

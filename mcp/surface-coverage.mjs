@@ -21,23 +21,35 @@
  * SAYING NO IS A SUPPORTED ANSWER. The goal is a recorded decision, never forced exposure —
  * `capSecret` and `controlToken` are security-relevant and should be deliberate, which is
  * exactly why codegen was rejected (plan §3).
+ *
+ * ── Plan 0551 C7 — EVERY constructor entry ALSO carries `deploymentOnly: true|false` ────────────
+ * `deploymentOnly:true` means: this option is DEPLOYMENT CONFIG ONLY. It must be routed from the
+ * deployment's own file by BOTH launch paths, and it must NEVER appear on presenter_start's input
+ * schema. Both halves are asserted by test/unit/0551-p2-identity-routing.test.mjs, which enumerates
+ * the options FROM createServer's signature — so a NEWLY ADDED identity key fails the guard until a
+ * human classifies it, and fails again unless it is actually routed.
+ *
+ * That second failure is the one that matters. 0543 added five identity options to createServer and
+ * every one of them was unreachable: declined here with a good reason, and never wired to anything
+ * that could supply it. "Declined from the agent surface" was silently read as "configured
+ * elsewhere", and nowhere was elsewhere.
  */
 
 // --- createServer({ ... }) options -----------------------------------------------------
 export const CONSTRUCTOR_COVERAGE = {
-  port:            { tool: 'presenter_start' },
-  voiceEnabled:    { tool: 'presenter_start', as: 'voice' },
-  profile:         { tool: 'presenter_start' },
-  controlToken:    { tool: 'presenter_start' },
-  rolePassword:    { tool: 'presenter_start' },
-  roleSeed:        { tool: 'presenter_start' },
-  capSecret:       { tool: 'presenter_start' },
-  settlingMs:      { tool: 'presenter_start' },
-  queueMaxPending: { tool: 'presenter_start' },
-  queueTtlMs:      { tool: 'presenter_start' },
-  perTurnBudgetMs: { tool: 'presenter_start' },
-  perTurnWrapMs:   { tool: 'presenter_start' },
-  floorThresholds: { tool: 'presenter_start' },
+  port:            { tool: 'presenter_start', deploymentOnly: false },   // its DEFAULT is deployment config (presenterPort()); the option itself is a legitimate caller knob
+  voiceEnabled:    { tool: 'presenter_start', as: 'voice', deploymentOnly: false },
+  profile:         { tool: 'presenter_start', deploymentOnly: false },
+  controlToken:    { tool: 'presenter_start', deploymentOnly: false },
+  rolePassword:    { tool: 'presenter_start', deploymentOnly: false },
+  roleSeed:        { tool: 'presenter_start', deploymentOnly: false },
+  capSecret:       { tool: 'presenter_start', deploymentOnly: false },
+  settlingMs:      { tool: 'presenter_start', deploymentOnly: false },
+  queueMaxPending: { tool: 'presenter_start', deploymentOnly: false },
+  queueTtlMs:      { tool: 'presenter_start', deploymentOnly: false },
+  perTurnBudgetMs: { tool: 'presenter_start', deploymentOnly: false },
+  perTurnWrapMs:   { tool: 'presenter_start', deploymentOnly: false },
+  floorThresholds: { tool: 'presenter_start', deploymentOnly: false },
   // Plan 0522 P16.2 — DELIBERATELY NOT ON THE TOOL SCHEMA, and that is the security decision, not
   // an oversight. presenter_start DOES enable the durable log (it resolves the directory from
   // lib/deployment-config.mjs / $PRESENTER_SESSION_LOG_DIR and passes it in), so the agent-raised
@@ -46,23 +58,23 @@ export const CONSTRUCTOR_COVERAGE = {
   // participants' own words, so a caller-settable path is a redirect primitive for other people's
   // speech. Where it lands is the deployment's declaration; reading it is role-gated (R6) at
   // GET /api/session-log.
-  sessionLogDir:   { declined: 'DEPLOYMENT CONFIG, not a per-call knob (Plan 0522 P16.2 / R3, R6). presenter_start ENABLES the durable session log — it resolves the directory from lib/deployment-config.mjs and passes it to createServer — but the destination is never taken from the caller: the log carries participants\' own words, so an agent-settable path would be a redirect primitive for third parties\' speech. Set it in presenter-config.json or $PRESENTER_SESSION_LOG_DIR.' },
+  sessionLogDir:   { declined: 'DEPLOYMENT CONFIG, not a per-call knob (Plan 0522 P16.2 / R3, R6). presenter_start ENABLES the durable session log — it resolves the directory from lib/deployment-config.mjs and passes it to createServer — but the destination is never taken from the caller: the log carries participants\' own words, so an agent-settable path would be a redirect primitive for third parties\' speech. Set it in presenter-config.json or $PRESENTER_SESSION_LOG_DIR.', deploymentOnly: true },
   // Plan 0543 P1 — the AUTH POLICY dial. Same shape as sessionLogDir: presenter_start passes it
   // (resolved from lib/deployment-config.mjs authPolicy()), but it is DEPLOYMENT CONFIG, never a
   // caller knob — an agent that could flip enforceOAuth per call could weaken the room's own gate.
-  enforceOAuth:              { declined: 'DEPLOYMENT CONFIG, not a per-call knob (Plan 0543 P1). presenter_start reads it from lib/deployment-config.mjs authPolicy() and passes it; who may open the Control page is the deployment\'s declaration, not something the agent flips at runtime. Set it in presenter-config.json.' },
-  allowPasswordCommandOnLAN: { declined: 'DEPLOYMENT CONFIG, not a per-call knob (Plan 0543 P1) — an explicitly-unsafe escape hatch. Same deployment-owned resolution as enforceOAuth. Set it in presenter-config.json.' },
+  enforceOAuth:              { declined: 'DEPLOYMENT CONFIG, not a per-call knob (Plan 0543 P1). presenter_start reads it from lib/deployment-config.mjs authPolicy() and passes it; who may open the Control page is the deployment\'s declaration, not something the agent flips at runtime. Set it in presenter-config.json.', deploymentOnly: true },
+  allowPasswordCommandOnLAN: { declined: 'DEPLOYMENT CONFIG, not a per-call knob (Plan 0543 P1) — an explicitly-unsafe escape hatch. Same deployment-owned resolution as enforceOAuth. Set it in presenter-config.json.', deploymentOnly: true },
   // Plan 0543 P2/P3 — the IDENTITY layer. All deployment config / security-relevant, none of it a
   // per-call agent knob: an agent that could set the allowlist, the OIDC client, or the break-glass
   // credential at runtime could grant itself (or anyone) command authority. Configured on the box.
-  allowlist:                 { declined: 'DEPLOYMENT CONFIG / SECURITY (Plan 0543 P2). The fail-closed email/tailnet-user → role map that is the only thing between a verified principal and command authority. A gitignored manifest on the box, never an agent knob.' },
-  oidc:                      { declined: 'DEPLOYMENT CONFIG / SECURITY (Plan 0543 P2). The Google OIDC client (client id/secret, endpoints). Set on the box; an agent-settable IdP is a login-redirect primitive.' },
-  oidcDeps:                  { declined: 'TEST/INJECTION SEAM (Plan 0543 P2) — the network deps (token exchange, JWKS fetch) are injected so the OIDC flow logic is testable offline; production uses defaultOidcDeps(). Not a session capability.' },
-  oidcSessionTtlMs:          { declined: 'DEPLOYMENT CONFIG / TEST SEAM (Plan 0543 P3) — the OIDC session lifetime; set on the box (and driven to 0 by the expiry test). Not a per-call agent knob.' },
-  tailscale:                 { declined: 'DEPLOYMENT CONFIG (Plan 0543 P2) — enables the direct-tailnet-peer identity adapter. Set on the box.' },
-  tailscaleResolve:          { declined: 'TEST/INJECTION SEAM (Plan 0543 P2) — the resolver that reads a tailnet identity for a direct peer; injected for tests, wired to the tailscale layer in production. Not a session capability.' },
-  breakGlass:                { declined: 'DEPLOYMENT CONFIG / SECURITY (Plan 0543 P3) — the break-glass credential whose PRESENCE is the startup gate for enforceOAuth=control (prevents the OIDC-outage lockout). A loopback-only recovery credential on the box, never an agent knob.' },
-  revokedNonceFile:          { declined: 'DEPLOYMENT CONFIG (Plan 0543 P4) — the durable store path for revoked guest-link nonces (so a revocation survives a restart, 0489\'s flagged bug). Resolved by the CLI / presenter_start from the state dir; not a per-call knob.' },
+  allowlist:                 { declined: 'DEPLOYMENT CONFIG / SECURITY (Plan 0543 P2). The fail-closed email/tailnet-user → role map that is the only thing between a verified principal and command authority. A gitignored manifest on the box, never an agent knob.', deploymentOnly: true },
+  oidc:                      { declined: 'DEPLOYMENT CONFIG / SECURITY (Plan 0543 P2). The Google OIDC client (client id/secret, endpoints). Set on the box; an agent-settable IdP is a login-redirect primitive.', deploymentOnly: true },
+  oidcDeps:                  { declined: 'TEST/INJECTION SEAM (Plan 0543 P2) — the network deps (token exchange, JWKS fetch) are injected so the OIDC flow logic is testable offline; production uses defaultOidcDeps(). Not a session capability.', deploymentOnly: false },
+  oidcSessionTtlMs:          { declined: 'TEST SEAM (Plan 0543 P3) — the OIDC session lifetime, driven to 0 by the expiry test. Not a per-call agent knob. ⚠ deploymentOnly:false is the HONEST answer today: nothing reads it from the config file, so production runs the built-in 12h default. If a deployment ever needs to state it, add it to lib/deployment-config.mjs DEPLOYMENT_ROUTED_OPTIONS and flip this flag — the 0551 C7 guard enforces the pairing.', deploymentOnly: false },
+  tailscale:                 { declined: 'DEPLOYMENT CONFIG (Plan 0543 P2) — enables the direct-tailnet-peer identity adapter. Set on the box.', deploymentOnly: true },
+  tailscaleResolve:          { declined: 'TEST/INJECTION SEAM (Plan 0543 P2) — the resolver that reads a tailnet identity for a direct peer; injected for tests, wired to the tailscale layer in production. Not a session capability.', deploymentOnly: false },
+  breakGlass:                { declined: 'DEPLOYMENT CONFIG / SECURITY (Plan 0543 P3) — the break-glass credential whose PRESENCE is the startup gate for enforceOAuth=control (prevents the OIDC-outage lockout). A loopback-only recovery credential on the box, never an agent knob.', deploymentOnly: true },
+  revokedNonceFile:          { declined: 'DEPLOYMENT CONFIG (Plan 0543 P4) — the durable store path for revoked guest-link nonces (so a revocation survives a restart, 0489\'s flagged bug). Resolved by the CLI / presenter_start from the state dir; not a per-call knob.', deploymentOnly: true },
 };
 
 // --- api surface ------------------------------------------------------------------------

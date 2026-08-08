@@ -11,7 +11,7 @@ import { assemble } from '../harness/assemble.mjs';
 import { tunnelConfigured, tunnelStatus, tunnelUp, tunnelDown } from './tunnel.mjs';
 import { readFileSync, existsSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
-import { presenterPort, authPolicy } from '../lib/deployment-config.mjs';
+import { presenterPort, authPolicy, identityConfig, identityServerOptions, identityStartupLine } from '../lib/deployment-config.mjs';
 import { resolveSessionLogDir, defaultSessionLogDir } from '../lib/session-log.mjs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -110,6 +110,20 @@ export const coreTools = [
       const policy = authPolicy();
       opts.enforceOAuth = policy.enforceOAuth;
       opts.allowPasswordCommandOnLAN = policy.allowPasswordCommandOnLAN;
+      /*
+       * ── Plan 0551 P2 — IDENTITY IS READ HERE, AND IS NOT ON THIS TOOL'S INPUT SCHEMA ─────────
+       * `oidc` / `allowlist` / `tailscale` / `breakGlass` / `revokedNonceFile` are DEPLOYMENT data,
+       * exactly like the port and the session-log dir: resolved from the deployment's own file, on
+       * the box, by the SAME identityServerOptions() router the CLI self-run uses (C4).
+       *
+       * ⛔ THEY ARE DELIBERATELY ABSENT FROM `input.properties` ABOVE. An agent that could name its
+       * own allowlist could authorize itself to command Argus; an agent that could name the OIDC
+       * client would hold a login-redirect primitive. The reason is recorded per key in
+       * mcp/surface-coverage.mjs, and the C7 guard fails if any of them ever appears in the schema.
+       *
+       * A present-but-incomplete oidc block throws HERE, by name, before anything binds (C6).
+       */
+      const identity = identityConfig();
       // ── Plan 0522 P12 (R15) — MINT A CONTROL TOKEN WHEN THE CALLER PASSES NONE ──────────────
       // The CLI has done this since Plan 0471 H1 (app/server.mjs, "so the module write-back never
       // ships open"). presenter_start did not, so the ONE path that also raises a public ingress
@@ -139,6 +153,8 @@ export const coreTools = [
       // survives a restart. Kept in the resolved state/log dir (so it honours PRESENTER_SESSION_LOG_DIR
       // test isolation); resolved here, not taken from the caller, like the session log dir.
       opts.revokedNonceFile = join(sessionLogTarget.sessionLogDir || defaultSessionLogDir(), 'revoked-caps.json');
+      // Plan 0551 P2 — applied LAST so a config-stated revokedNonceFile overrides the derived path.
+      Object.assign(opts, identityServerOptions(identity));
       server = await createServer(opts);
 
       // Raise the ingress AFTER the bind, so the first public request has something to hit.
@@ -154,6 +170,13 @@ export const coreTools = [
       // and left it standing, which is the anti-pattern P16.1 catalogues. Prevented, not warned.
       const gated = !!(opts.controlToken || rest.rolePassword || process.env.PRESENTER_CONTROL_TOKEN);
       const publicUrl = ingress.publicUrl || null;
+      /*
+       * Plan 0551 P2 — the startup line, RETURNED rather than printed. stdout is this process's
+       * JSON-RPC channel, so the CLI's console.log is not available here; the agent's "outside" is
+       * the tool result. States whether sign-in is active and the allowlist SIZE — never its
+       * contents, never the client id or secret. 0543 was inert and nothing anywhere said so.
+       */
+      const identityLine = identityStartupLine(identity);
       const minted = mintedToken ? { controlToken: mintedToken, controlTokenMinted: true,
         // The minted secret is RETURNED, never only logged: a credential the caller cannot read
         // is the same as no write surface at all — the Content Creator and /manage need it, and
@@ -186,6 +209,7 @@ export const coreTools = [
           publicUrl,
           gated,
           tunnel: ingress,
+          identity: identityLine,
           remedy: 'the local bind is still up: presenter_tunnel {action:"start"} retries the ingress; presenter_stop then presenter_start {port} changes the port.',
           ...minted,
         };
@@ -199,6 +223,7 @@ export const coreTools = [
         gated,
         capLinks: !!rest.capSecret,
         tunnel: ingress,
+        identity: identityLine,
         ...minted,
       };
     }
