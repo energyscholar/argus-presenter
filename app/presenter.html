@@ -18,6 +18,26 @@
   #led{display:block;width:10px;height:10px;border-radius:50%;background:#cc3333;box-shadow:0 0 8px #cc3333;}
   /* P2.8: quick-switch to /control. Presenter-GRANTED only (welcome-gated, hidden otherwise).
      Top-LEFT corner, subtle; z 55 sits BELOW the config overlay (61) and control overlay (70). */
+  /* Plan 0551 P3 — THE SIGN-IN AFFORDANCE. Ships DISPLAY:NONE and is revealed only when
+     GET /api/auth-state says oidcActive — so a deployment with no IdP renders exactly what it
+     rendered before, and a deployment WITH one is no longer a stack no human can reach (0543).
+
+     ⚠ SIZED FOR A PHONE, deliberately: a phone is where the missing feature was found. 44px min
+     tap target (the platform minimum), 13px text — NOT the 11px ambient chrome around it, which
+     is a readout you glance at rather than a control you must hit while standing up. It sits
+     top-right, LEFT of the settings dot (#led-btn, right:6px z60), because the one control a
+     not-yet-signed-in person needs must not be three taps inside an overlay. */
+  #ap-signin{position:fixed;top:4px;right:40px;z-index:56;display:none;align-items:center;gap:6px;
+    min-height:44px;padding:6px 12px;background:rgba(6,10,24,.86);color:#cfe9ff;border:1px solid #2a3a5a;
+    border-radius:8px;font:13px/1.3 'Courier New',monospace;letter-spacing:.04em;cursor:pointer;text-decoration:none;}
+  #ap-signin.show{display:inline-flex;}
+  #ap-signin:hover,#ap-signin:focus{border-color:#22e5a0;color:#fff;outline:none;}
+  #ap-signin.in{cursor:default;opacity:.9;}
+  #ap-signin a{color:inherit;text-decoration:none;display:inline-flex;align-items:center;min-height:32px;}
+  #ap-signin .who{max-width:34vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  #ap-signin .out{color:#8ab;border-left:1px solid #2a3a5a;padding-left:8px;min-height:32px;display:inline-flex;align-items:center;text-decoration:none;}
+  #ap-signin .out:hover{color:#f97;}
+  @media (max-width:520px){ #ap-signin{font-size:14px;} #ap-signin .who{max-width:44vw;} }
   #ap-goto-control{position:fixed;top:4px;left:6px;z-index:55;background:rgba(6,10,24,.7);color:#cfe9ff;border:1px solid #2a3a5a;border-radius:6px;padding:4px 9px;font:11px/1.4 'Courier New',monospace;letter-spacing:.06em;cursor:pointer;opacity:.45;}
   #ap-goto-control:hover{opacity:1;border-color:#22e5a0;}
   /* Plan 0522 P13 — AMBIENT SEAT IDENTITY. Which seat this display is sitting at used to be
@@ -189,6 +209,16 @@
 <body>
 <button id="led-btn" title="Settings" aria-haspopup="true" aria-label="Connection and settings"><span id="led"></span></button>
 <button id="ap-goto-control" title="Open (or refocus) the presenter control window" style="display:none">⧉ Control</button>
+<!-- Plan 0551 P3 — SIGN IN. Ships hidden; revealed ONLY when GET /api/auth-state reports
+     oidcActive. Plain <a href> targets, not fetch(): the OAuth flow is a full-page redirect, and a
+     link that works with the script broken is the right shape for the one control that gets a
+     person out of the fenced default. ⛔ Nothing here ever holds an email, a `sub`, or a session
+     id — the display name is all the endpoint hands over, and only to its own holder. -->
+<div id="ap-signin" role="status" aria-live="polite">
+  <a id="ap-signin-link" href="/auth/login" title="Sign in with your account to speak as yourself">🔑 Sign in</a>
+  <span id="ap-signin-who" class="who" style="display:none"></span>
+  <a id="ap-signin-out" class="out" href="/auth/logout" title="Sign out" style="display:none">sign out</a>
+</div>
 <!-- Plan 0522 P13 — the seat's own identity, ambient. Ships hidden and is revealed only by a
      welcome carrying a non-empty registry (the same gate as the selector row above it), so a
      deployment with no stations renders nothing at all. Every string in it comes from the
@@ -243,6 +273,10 @@
   <div class="row" style="margin-top:8px"><button id="cfg-attendance">👁 Show attendance</button></div>
   <div class="rd" id="cfg-readout"></div>
   <h4>Presenter</h4>
+  <!-- Plan 0551 P3 — the canonical home of the sign-in control (the fixed pill above is the
+       reachable one). Hidden unless oidcActive; a deployment with no IdP sees no change. -->
+  <div class="row" id="cfg-signin-row" style="display:none"><span class="k">Sign-in</span> <span id="cfg-signin-state"></span></div>
+  <div class="row" id="cfg-signin-actions" style="display:none"><a id="cfg-signin-link" href="/auth/login">🔑 Sign in</a> <a id="cfg-signout-link" href="/auth/logout" style="display:none">Sign out</a></div>
   <div class="row"><span class="k">Access</span> <button id="cfg-role-user" class="sel">User</button> <button id="cfg-role-presenter">Presenter</button></div>
   <div class="row" id="cfg-role-pwgroup" style="display:none"><input id="cfg-role-pw" type="password" placeholder="presenter password" autocomplete="off"> <button id="cfg-role-go">Unlock</button><span id="cfg-role-msg"></span></div>
   <div class="row" id="cfg-control-row" style="display:none"><button id="cfg-open-control">▮ Show Presenter Control</button></div>
@@ -337,6 +371,62 @@
   // Set by the Role picker; called from the `welcome` handler with the server's EFFECTIVE
   // granted role so a silent downgrade (wrong password) surfaces as feedback.
   var onWelcomeRole = null;
+
+  /* ── Plan 0551 P3 — THE SIGN-IN AFFORDANCE ──────────────────────────────────────────────────
+   * 0543 shipped routes, an adapter, an allowlist and a trust path, and Bruce opened the
+   * Presenter on his phone and found NO WAY IN. Nothing in any client linked /auth/login.
+   *
+   * ⛔ VISIBLE ONLY WHEN THE SERVER SAYS SIGN-IN EXISTS. A button that 404s is worse than no
+   * button, so the reveal is gated on oidcActive from GET /api/auth-state — never assumed, never
+   * hard-coded. Absent/failed fetch ⇒ stays hidden (the pre-0551 page, exactly).
+   *
+   * The state it renders is deliberately three-valued, because "signed in" and "authorized" are
+   * different things and the fence makes the difference matter: signed OUT (offer the link),
+   * signed in and ALLOWLISTED (say so), signed in and NOT allowlisted (say THAT, out loud —
+   * otherwise a person discovers it only when their words arrive fenced). */
+  var authStateLast = null;
+  function renderSignIn(st){
+    authStateLast = st || null;
+    var pill = document.getElementById('ap-signin');
+    var link = document.getElementById('ap-signin-link');
+    var who = document.getElementById('ap-signin-who');
+    var out = document.getElementById('ap-signin-out');
+    var row = document.getElementById('cfg-signin-row');
+    var acts = document.getElementById('cfg-signin-actions');
+    var cst = document.getElementById('cfg-signin-state');
+    var cin = document.getElementById('cfg-signin-link');
+    var cout = document.getElementById('cfg-signout-link');
+    var active = !!(st && st.oidcActive);
+    if (pill) pill.classList.toggle('show', active);
+    if (row) row.style.display = active ? '' : 'none';
+    if (acts) acts.style.display = active ? '' : 'none';
+    if (!active) return;
+    var signedIn = !!(st && st.signedIn);
+    // ⛔ st.name is the ONLY identifier the endpoint hands over, and only to its own holder. There
+    // is no email and no `sub` in this payload to render even by accident.
+    var label = (st && st.name) ? st.name : 'signed in';
+    if (pill) pill.classList.toggle('in', signedIn);
+    if (link) link.style.display = signedIn ? 'none' : '';
+    if (who) { who.style.display = signedIn ? '' : 'none'; who.textContent = (st && st.trust === 'self') ? ('✓ ' + label) : ('◌ ' + label); }
+    if (out) out.style.display = signedIn ? '' : 'none';
+    if (cin) cin.style.display = signedIn ? 'none' : '';
+    if (cout) cout.style.display = signedIn ? '' : 'none';
+    if (cst) {
+      cst.textContent = !signedIn ? 'not signed in'
+        : (st.trust === 'self' ? (label + ' · authorized')
+          : (label + ' · signed in, NOT authorized' + (st.reauth ? ' (session expired — sign in again)' : '')));
+      cst.style.color = !signedIn ? '#8ab' : (st.trust === 'self' ? '#8fe6a8' : '#f97');
+    }
+    if (pill) pill.title = !signedIn ? 'Sign in with your account to speak as yourself'
+      : (st.trust === 'self' ? (label + ' — signed in and authorized') : (label + ' — signed in, but not on this room\'s allowlist'));
+  }
+  function refreshAuthState(){
+    return fetch('/api/auth-state', { cache: 'no-store' })
+      .then(function(r){ return r.ok ? r.json() : null; })
+      .then(function(st){ renderSignIn(st); return st; })
+      .catch(function(){ renderSignIn(null); return null; });   // unreachable ⇒ hidden, i.e. the pre-0551 page
+  }
+  refreshAuthState();
 
   // ---- P2.8: quick-switch button to /control (reciprocal of control.html's #btn-present).
   // Visibility is gated on the EFFECTIVE role the server granted in `welcome`, NOT the

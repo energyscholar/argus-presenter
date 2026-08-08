@@ -66,6 +66,21 @@
   #ap-config .k{color:var(--dim);}
   #ap-config .rd{font-size:11px;opacity:.85;margin:2px 0 6px;}
   #ap-config input{flex:1 1 90px;min-width:80px;}
+  /* Plan 0551 P3 — THE SIGN-IN AFFORDANCE (control page). Ships display:none and is revealed only
+     when GET /api/auth-state reports oidcActive, so a deployment with no IdP renders exactly what
+     it rendered before. INLINE IN THE HEADER rather than a fixed pill: this page's corners are
+     already occupied (#pvdock, the live-preview label, the status dot), and a fourth fixed box
+     would be a collision, not a layout. ⚠ 44px min tap target / 13px text — this page is opened on
+     a phone too, and /control is where the OAuth callback lands. */
+  #ap-signin{display:none;align-items:center;gap:8px;min-height:44px;padding:4px 10px;margin-left:10px;
+    background:rgba(6,10,24,.86);border:1px solid #2a3a5a;border-radius:8px;font-size:13px;color:var(--ink);}
+  #ap-signin.show{display:inline-flex;}
+  #ap-signin a{color:inherit;text-decoration:none;display:inline-flex;align-items:center;min-height:32px;}
+  #ap-signin a:hover{color:#fff;}
+  #ap-signin .who{max-width:34vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  #ap-signin .out{color:var(--dim);border-left:1px solid #2a3a5a;padding-left:8px;}
+  #ap-signin .out:hover{color:var(--warn);}
+  #cfg-signin-state{flex-basis:100%;font-size:11px;margin:0;}
   #cfg-hint{font-size:11px;color:var(--warn);flex-basis:100%;margin:0 0 2px;}
   #cfg-msg{font-size:11px;color:var(--danger);flex-basis:100%;margin:0;min-height:13px;}
   .col{min-height:0;overflow:auto;display:flex;flex-direction:column;gap:10px;}
@@ -324,6 +339,16 @@
 <div id="ap-config" role="dialog" aria-label="Settings">
   <h4>Control · Settings</h4>
   <div class="rd" id="cfg-readout"></div>
+  <!-- Plan 0551 P3 — the settings-panel twin of the header control. ⛔ It sits ABOVE the password
+       box on purpose: the password opens the Control PAGE and never grants command authority
+       (trust:self), which only a verified + allowlisted identity does. The order on screen should
+       match the order of what they actually get. The password gate STAYS (enforceOAuth:'off'). -->
+  <div class="row" id="cfg-signin-row" style="display:none">
+    <span class="k">Sign-in</span>
+    <a id="cfg-signin-link" href="/auth/login">🔑 Sign in</a>
+    <a id="cfg-signout-link" href="/auth/logout" style="display:none">Sign out</a>
+    <div id="cfg-signin-state"></div>
+  </div>
   <div class="row" id="cfg-authgroup" style="display:none">
     <div id="cfg-hint">🔒 enter presenter password to take control</div>
     <input id="cfg-pw" type="password" placeholder="presenter password" autocomplete="off">
@@ -348,7 +373,16 @@
 <!-- P2.7: top frame — ALWAYS-VISIBLE presenter controls (see #topframe CSS note) -->
 <header id="topframe">
   <h1>◉ Argus Presenter — Control
-    <span id="status"><span id="statustext">connecting…</span></span></h1>
+    <span id="status"><span id="statustext">connecting…</span></span>
+    <!-- Plan 0551 P3 — sign in. Hidden until /api/auth-state says oidcActive. Plain <a href>:
+         the OAuth flow is a full-page redirect, and /control is where the callback lands, so the
+         indicator must be legible on the page a signed-in person arrives at. ⛔ Never renders an
+         email, a `sub`, or a session id — the endpoint hands over a display name and nothing else. -->
+    <span id="ap-signin" role="status" aria-live="polite">
+      <a id="ap-signin-link" href="/auth/login" title="Sign in with your account to command Argus">🔑 Sign in</a>
+      <span id="ap-signin-who" class="who" style="display:none"></span>
+      <a id="ap-signin-out" class="out" href="/auth/logout" title="Sign out" style="display:none">sign out</a>
+    </span></h1>
   <div id="tf-sections">
     <section id="np-section">
       <h2>Now playing</h2>
@@ -1752,6 +1786,45 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   fetch('/api/auth').then(function(r){return r.json();})
     .then(function(d){ authGated=!!(d&&d.gated); if(d&&d.seed) authSeed=d.seed; renderConfig(); })
     .catch(function(){ authGated=false; renderConfig(); });
+
+  /* ── Plan 0551 P3 — SIGN IN (the affordance 0543 never grew) ────────────────────────────────
+   * /control is where /auth/callback lands, so this page must be able to say "you are signed in,
+   * and here is whether that got you anything". ⛔ Revealed ONLY when the server reports
+   * oidcActive — a sign-in button on a deployment with no IdP is a link that 404s. A failed or
+   * absent fetch leaves it hidden, i.e. this page exactly as it was before 0551.
+   *
+   * ⛔ Signed in ≠ authorized. A verified principal who is not on the allowlist is FENCED and
+   * arrives `participant`; saying so here is the difference between a person understanding the
+   * room and a person wondering why nothing they say lands. */
+  function renderSignIn(st){
+    var pill=$('ap-signin'), link=$('ap-signin-link'), who=$('ap-signin-who'), out=$('ap-signin-out');
+    var row=$('cfg-signin-row'), cin=$('cfg-signin-link'), cout=$('cfg-signout-link'), cst=$('cfg-signin-state');
+    var active=!!(st&&st.oidcActive);
+    if(pill) pill.classList.toggle('show',active);
+    if(row) row.style.display=active?'':'none';
+    if(!active) return;
+    var signedIn=!!(st&&st.signedIn);
+    // ⛔ st.name is the only identifier in the payload: no email, no `sub`, no session id.
+    var label=(st&&st.name)?st.name:'signed in';
+    if(link) link.style.display=signedIn?'none':'';
+    if(who){ who.style.display=signedIn?'':'none'; who.textContent=(st&&st.trust==='self')?('✓ '+label):('◌ '+label); }
+    if(out) out.style.display=signedIn?'':'none';
+    if(cin) cin.style.display=signedIn?'none':'';
+    if(cout) cout.style.display=signedIn?'':'none';
+    if(cst){
+      cst.textContent=!signedIn?'not signed in — the password below opens this page, but only a signed-in, allowlisted account may command Argus'
+        :(st.trust==='self'?(label+' · authorized to command')
+          :(label+' · signed in, NOT authorized'+(st.reauth?' (session expired — sign in again)':'')));
+      cst.style.color=!signedIn?'var(--dim)':(st.trust==='self'?'var(--ok)':'var(--warn)');
+    }
+  }
+  function refreshAuthState(){
+    return fetch('/api/auth-state',{cache:'no-store'})
+      .then(function(r){ return r.ok?r.json():null; })
+      .then(function(st){ renderSignIn(st); return st; })
+      .catch(function(){ renderSignIn(null); return null; });
+  }
+  refreshAuthState();
 
   // ---- Plan 0473 P8: the HUMAN DIGEST FACE (room-at-a-glance + prioritized queue + one-click resolve) ----
   // Reads the SAME bounded WORKING SET the AI consumes via presenter_situation, over GET /api/situation

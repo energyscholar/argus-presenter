@@ -43,7 +43,7 @@ export function createHttpHandler(ctx) {
       CONTROL_TOKEN, htmlHeaders, httpControlAuthed, LIB, listModules, listModulesAdmin,
       listSeries, MODULE_STATUSES, moduleAdminOp, moduleCache, MODULES_DIR, moduleSummary,
       moduleWriteAuthed, pvsConsumerKey, readModuleFile, readSeriesFile, renderPresenterPage, ROLE_HASH,
-      ROLE_SEED, sendStatic, sessionLog, sessionLogReadAuthed, VOICE_ENABLED, oidcAuth,
+      ROLE_SEED, sendStatic, sessionLog, sessionLogReadAuthed, VOICE_ENABLED, oidcAuth, authState,
     } = ctx;
     // Plan 0543 P2 — OIDC login flow. Three routes; all a clean 404 when OIDC is not configured
     // (opt-in, never a half-open door). The session cookie is HttpOnly+Secure+SameSite=Lax and holds
@@ -123,6 +123,24 @@ export function createHttpHandler(ctx) {
       // seed (public by design) and a boolean. The browser computes sha256(seed+password).
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-cache' });
       res.end(JSON.stringify({ gated: !!(CONTROL_TOKEN || ROLE_HASH), seed: ROLE_SEED }));
+    } else if (req.url === '/api/auth-state' || req.url.startsWith('/api/auth-state?')) {
+      /*
+       * Plan 0551 P3 — CAN I SIGN IN HERE, AND AM I SIGNED IN? The one question every client page
+       * must be able to ask, and the reason 0543's sign-in was invisible: nothing could ask it.
+       *
+       * ⛔ UNGATED ON PURPOSE, and safe to be. An anonymous phone MUST be able to learn that a
+       * sign-in control exists — that is the whole feature — and the answer carries only a boolean
+       * about the SERVER plus this caller's own state. Never an email, never `sub`, never a session
+       * id, never another participant's anything. See authState() in server.mjs.
+       *
+       * ⚠ This branch must stay ABOVE nothing in particular but must never be folded into
+       * /api/auth: that route answers "is the tissue-thin password gate on", a different question
+       * about a different credential, and merging them would put a password readout on a route
+       * whose whole point is that anonymous callers may read it.
+       */
+      const state = (typeof authState === 'function') ? authState(req) : { oidcActive: false, signedIn: false, name: null, trust: 'participant' };
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      res.end(JSON.stringify(state));
     } else if (req.url === '/api/modules' || req.url.startsWith('/api/modules?')) {
       // Discover available modules (id, title, counts, validation summary) — for the GM panel's SELECT list.
       // ⚠ The `?...` arm is Plan 0529 P2. This branch was an EXACT match, so `/api/modules?token=…`

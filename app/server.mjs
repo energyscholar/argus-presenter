@@ -360,6 +360,38 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     if (authCtx.sessionExpired) return { trust: TRUST.PARTICIPANT, reason: 're-authentication required', reauth: true };  // A-fix: prompt re-auth, never a silent fence
     return { trust: TRUST.PARTICIPANT };   // 4. everything else — incl loopback, incl password-only (Control-page role, never self) ⇒ fenced
   }
+  /*
+   * ── Plan 0551 P3 — THE AUTH STATE A BROWSER MAY SEE (GET /api/auth-state) ────────────────────
+   *
+   * WHY IT EXISTS: a sign-in control that is always visible on a deployment with no IdP is a
+   * button that 404s, and one that is never visible on a deployment WITH an IdP is 0543 — a
+   * complete OAuth stack no human could reach. The page must be able to ask.
+   *
+   * ⛔ WHAT IT MAY SAY, AND NOTHING MORE:
+   *   oidcActive  is sign-in configured on this deployment (a property of the SERVER, not of you)
+   *   signedIn    does THIS request carry a verified session
+   *   name        the display name of the person holding it — for their own eyes, on their own
+   *               request. ⛔ NEVER the email, NEVER `sub`, NEVER the session id. The presence
+   *               payload already carries ip/socketId (§0 of the plan); this must not join it.
+   *   trust       the fence verdict, so the page can say "signed in, not authorized" out loud
+   *               instead of leaving a person to discover it when their words are fenced.
+   *
+   * ⛓ trust is READ FROM deriveConnTrust — the SAME one function the socket uses. A second
+   * trust computation here would be a second policy, and the two would eventually disagree.
+   */
+  function authState(req) {
+    const ctx = computeAuthCtx(req);
+    const verdict = deriveConnTrust(null, null, ctx);
+    const name = (ctx.verified && typeof ctx.verified.name === 'string' && ctx.verified.name.trim()) ? ctx.verified.name.trim() : null;
+    return {
+      oidcActive: oidcAdapter.active,
+      signedIn: !!ctx.verified,
+      name,
+      trust: verdict.trust,
+      ...(verdict.reason ? { reason: verdict.reason } : {}),
+      ...(verdict.reauth ? { reauth: true } : {}),
+    };
+  }
   const conns = new Map();     // ws -> {id,userId,userName,role}
   // Plan 0482 A4 — userId -> Set<ws>. One PERSON may hold several sockets (phone + laptop, or a
   // reconnect race where the old socket has not yet been reaped). The old Map<userId,ws> OVERWROTE
@@ -689,6 +721,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     pvsConsumerKey, readModuleFile, readSeriesFile, renderPresenterPage, ROLE_HASH, ROLE_SEED,
     sendStatic, sessionLog, sessionLogReadAuthed, VOICE_ENABLED,
     oidcAuth: oidcAdapter,   // Plan 0543 P2 — the OIDC login/callback/logout routes read this
+    authState,               // Plan 0551 P3 — GET /api/auth-state reads this (state only; no email/sub/sid)
     // ⚠ A GETTER, NOT A VALUE. `const api` is declared ~2,400 lines below this call, so it is in
     // the temporal dead zone right now and reading it here would throw. The handler destructures
     // ctx per request, by which time this getter resolves.
