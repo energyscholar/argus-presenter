@@ -111,14 +111,31 @@ test('MSG-D — cross-client propagation, digest agreement, reconnect convergenc
       !/8675309/.test(bobAfter), bobAfter.slice(0, 160));
 
     // ---- D2: checksum agreement (server vs every client) --------------------
-    const srvAnswers = server.store.get('crud');
+    /*
+     * ⛔ DIGEST THE SLICE THIS TEST DELIVERED, NOT THE WHOLE SUBTREE. `rebuilt()` is, by its own
+     * definition three lines up, "the state THIS client rebuilt FROM THE DIFFS IT WAS DELIVERED" —
+     * so it can only ever contain writes made after the client connected. Pre-existing state
+     * reaches a client through the SNAPSHOT, which is what `snapshotState()` exists to inspect.
+     *
+     * Comparing it against all of `crud` was an equality that held only while the server's entire
+     * crud subtree happened to BE this test's own writes. It stopped holding the moment a plugin
+     * seeded state at register (the air-raft surfaces sit under crud/), and what it then reported
+     * was not a convergence failure — every client had the seeded state, from the snapshot — but
+     * an instrument pointed at the wrong half of the delivery mechanism.
+     *
+     * ⇒ Agreement is asserted where the claim actually lives: on `crud/board`, the path D1 wrote
+     *   and both peers were delivered. The client-to-client check below is kept and strengthened:
+     *   two independent rebuilds agreeing is the distributed-integrity claim in its own right.
+     */
+    const srvBoard = server.store.get('crud/board');
     const aState = await rebuilt(alice);
     const bState = await rebuilt(bob);
-    const srvD = digest(srvAnswers);
-    const aD = digest(aState && aState.crud);
-    const bD = digest(bState && bState.crud);
-    expect('D2 alice digest matches server', aD === srvD, `client=${aD} server=${srvD}`);
-    expect('D2 bob digest matches server', bD === srvD, `client=${bD} server=${srvD}`);
+    const srvD = digest(srvBoard);
+    const aD = digest(aState && aState.crud && aState.crud.board);
+    const bD = digest(bState && bState.crud && bState.crud.board);
+    expect('D2 alice digest matches server on the delivered slice', aD === srvD, `client=${aD} server=${srvD}`);
+    expect('D2 bob digest matches server on the delivered slice', bD === srvD, `client=${bD} server=${srvD}`);
+    expect('D2 alice and bob rebuilt IDENTICAL state from independent diff streams', aD === bD, `alice=${aD} bob=${bD}`);
 
     // ---- D3: reconnect convergence (state-machine maintenance) --------------
     await bob.close();                       // bob drops

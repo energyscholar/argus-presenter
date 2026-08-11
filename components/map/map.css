@@ -16,8 +16,9 @@
 .ap-map-img { display: block; }
 /* T4 full-bleed host: when the map is THE pushed content (mounted directly on the
    .ap-root host), lift the readable-column cap so the map fills the display —
-   full width, full viewport height minus only the label bar. */
-.ap-root.ap-fullbleed { max-width: none; width: 100%; height: 100%; padding: 0; }
+   full width, full viewport height minus only the label bar.
+   The `.ap-root.ap-fullbleed` base rule now lives in lib/theme.css: it is an engine mount
+   affordance, and every component that claimed it here was depending on map.css shipping. */
 .ap-root.ap-fullbleed .ap-map { gap: 0.35rem; }
 .ap-root.ap-fullbleed .ap-map > .ap-prompt { margin: 0; padding: 0.25rem 0.8rem 0; font-size: clamp(1rem, 1.6vw, 1.3rem); }
 /* Neutral default grid (domain-agnostic; domain art lives in plugins) */

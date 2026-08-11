@@ -23,12 +23,17 @@ test('X4 — health green when live; reports throughput and sizes', async () => 
   try {
     const a = await open(url, { userId: 'u1', role: 'participant' });
     await wait(120);
+    const base = { v: server.store.version(), l: server.store.oplogSince(0).length };   // a plugin may have seeded state at register
     a.ws.send(JSON.stringify({ t: 'op', path: 'polls/p/votes/u1', verb: 'set', value: 'yes', opId: 'h1' }));
     await wait(150);
     const h = await T.presenter_health.handler({ staleMs: 10000 });
     expect(h.status === 'green', 'health green with a live client', JSON.stringify(h));
     expect(h.opsApplied >= 1, 'throughput counted', String(h.opsApplied));
-    expect(h.stateVersion === 1 && h.opLogSize === 1, 'state + op-log sizes reported', JSON.stringify({ v: h.stateVersion, l: h.opLogSize }));
+    /* ⛔ DELTA. `=== 1` asserted that this test's single op was the ONLY thing the store had
+       ever seen, which is a fact about the deployment, not about health reporting. What X4
+       means is that health reports the sizes and they MOVE with traffic. */
+    expect(h.stateVersion - base.v === 1 && h.opLogSize - base.l === 1, 'state + op-log sizes reported',
+      JSON.stringify({ dv: h.stateVersion - base.v, dl: h.opLogSize - base.l, v: h.stateVersion, l: h.opLogSize }));
     expect(h.connections.length === 1 && h.connections[0].stale === false, 'live connection not stale');
     a.ws.close();
   } finally { await T.presenter_stop.handler({}); }

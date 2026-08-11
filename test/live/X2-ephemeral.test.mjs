@@ -30,11 +30,25 @@ test('X2 — 100 pointer ops: 0 op-log growth, no version bump, bounded broadcas
     const peer = await open(url, { userId: 'u2', role: 'participant' });
     await wait(120);
 
+    /*
+     * ⛔ BASELINE, NOT ZERO. This test used to assert `version() === 0`, and that absolute was
+     * never the invariant — the invariant is that an EPHEMERAL OP CHANGES NOTHING DURABLE, which
+     * is a DELTA of zero. The two coincided only on a deployment with no plugins installed: a
+     * plugin legitimately seeds its state at register (starship-ops publishes ship/<region> so a
+     * mounting component has something to read), so the store opens at version 13 and every
+     * absolute assertion here failed on the very machine the software runs on.
+     *
+     * ⇒ Sample first, assert the difference. The test now holds on ANY deployment, and it gets
+     *   STRICTLY STRONGER: an ephemeral op that logged would still be caught, and it no longer
+     *   passes for the accidental reason that nothing else had written yet.
+     */
+    const base = { v: server.store.version(), ops: server.store.oplogSince(0).length };
+
     for (let i = 0; i < 100; i++) a.ws.send(JSON.stringify({ t: 'op', path: 'map/pointer/u1', verb: 'set', value: { px: i / 100, py: 0.5 }, opId: 'e' + i }));
     await wait(300);   // allow coalesced flushes
 
-    expect(server.store.oplogSince(0).length === 0, 'ephemeral ops NOT logged', String(server.store.oplogSince(0).length));
-    expect(server.store.version() === 0, 'ephemeral ops did not bump the durable version', String(server.store.version()));
+    expect(server.store.oplogSince(0).length - base.ops === 0, 'ephemeral ops NOT logged', String(server.store.oplogSince(0).length - base.ops));
+    expect(server.store.version() - base.v === 0, 'ephemeral ops did not bump the durable version', String(server.store.version() - base.v));
     expect(server.store.get('map/pointer/u1') != null, 'state reflects the latest pointer');
 
     const dc = diffCount(peer.inbox);
@@ -45,7 +59,9 @@ test('X2 — 100 pointer ops: 0 op-log growth, no version bump, bounded broadcas
     // A durable op still logs + versions.
     a.ws.send(JSON.stringify({ t: 'op', path: 'polls/p/votes/u1', verb: 'set', value: 'yes', opId: 'd1' }));
     await wait(150);
-    expect(server.store.version() === 1 && server.store.oplogSince(0).length === 1, 'durable op logged + versioned', String(server.store.version()));
+    expect(server.store.version() - base.v === 1 && server.store.oplogSince(0).length - base.ops === 1,
+      'durable op logged + versioned (exactly one, measured from the baseline)',
+      `Δversion=${server.store.version() - base.v} Δops=${server.store.oplogSince(0).length - base.ops}`);
 
     a.ws.close(); peer.ws.close();
   } finally { await server.close(); }

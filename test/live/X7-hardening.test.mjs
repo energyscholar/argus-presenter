@@ -25,6 +25,7 @@ test('X7 — proto pollution / default-deny / oversized / malformed all rejected
   try {
     const a = await connect(url, { userId: 'u1', role: 'participant' });
     await wait(120);
+    const base = { v: server.store.version() };   // where the store stands BEFORE any attack
 
     // S4: prototype-pollution attempt.
     send(a, { t: 'op', path: '__proto__/polluted', verb: 'set', value: true, opId: 'p1' });
@@ -39,7 +40,10 @@ test('X7 — proto pollution / default-deny / oversized / malformed all rejected
 
     expect(({}).polluted === undefined, 'Object.prototype not polluted');
     expect(server.store.get('admin/secret') === undefined, 'default-deny path not written');
-    expect(server.store.version() === 0, 'no invalid op mutated state', String(server.store.version()));
+    /* ⛔ DELTA, NOT ZERO. A plugin seeds its own state at register, so `version() === 0` was only
+       ever true on a deployment with nothing installed. What X7 asserts is that a REJECTED OP
+       WRITES NOTHING — a delta of zero from where the store stood before the attacks began. */
+    expect(server.store.version() - base.v === 0, 'no invalid op mutated state', String(server.store.version() - base.v));
     expect(diffs(a.inbox).length === 0, 'no diffs broadcast for rejected ops', JSON.stringify(diffs(a.inbox)));
 
     // Server still responsive: a valid op now applies.

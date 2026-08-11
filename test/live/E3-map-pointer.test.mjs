@@ -17,10 +17,15 @@ test('E3 — presenter pointer op shows on a viewer; pointer op is not logged', 
     const f = await waitContentFrame(viewer);
     await new Promise((r) => setTimeout(r, 300));
 
-    const beforeVer = server.store.version();
     const pres = new WebSocket(server.url().replace('http', 'ws'));
     await new Promise((res) => pres.on('open', () => { pres.send(JSON.stringify({ t: 'hello', userId: 'gm', role: 'presenter' })); res(); }));
     await new Promise((r) => setTimeout(r, 120));
+    /* ⛔ BASELINE AFTER THE HANDSHAKE, NOT BEFORE IT. This was sampled before the presenter's
+       hello, so it also spanned the CONNECT — and connecting is not free: with a station plugin
+       installed, a hello seats the user, which is a durable write. The claim under test is that
+       THE POINTER OP is ephemeral, so the baseline belongs immediately before the pointer op and
+       nowhere else. A delta measured across an unrelated operation is not a delta. */
+    const beforeVer = server.store.version();
     pres.send(JSON.stringify({ t: 'op', path: 'map/pointer/gm', verb: 'set', value: { px: 0.5, py: 0.4 } }));
 
     await until(async () => (await f.$eval('.ap-map-pointer', (el) => el.style.display)) === 'block', { label: 'pointer visible', timeout: 5000 });

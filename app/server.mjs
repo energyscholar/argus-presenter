@@ -1919,7 +1919,24 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         recipients++;
       }
     }
-    telem.fanout.sum += recipients; telem.fanout.count++;   // X3 fan-out measurement
+    /*
+     * X3 fan-out measurement. ⛔ ONLY SAMPLE WHEN THERE IS AN AUDIENCE. Fan-out is "how many
+     * clients did this broadcast reach"; a broadcast made while nobody is connected is not a
+     * fan-out of zero, it is not a sample at all. A plugin seeding its state at register fires
+     * before the first client exists, and those 13 empty broadcasts dragged avgFanout to 0.21 —
+     * a server reporting under one recipient per broadcast while every connected client was in
+     * fact receiving everything. `recipients === 0` WITH an audience is still a real zero
+     * (everything redacted) and is still sampled. Found 2026-08-11.
+     *
+     * ⚠ CONVERGED, not merely connected. The loop above skips `!c.converged` by design — a client
+     * mid-handshake is served by the snapshot/resync path instead — so a broadcast during somebody's
+     * hello can only ever score zero. Counting those measures the handshake, not the fan-out, and
+     * with a station plugin (which writes a seat on every hello) that is three phantom zeroes per
+     * joiner.
+     */
+    let audience = 0;
+    for (const c of conns.values()) if (c.converged) audience++;
+    if (audience > 0) { telem.fanout.sum += recipients; telem.fanout.count++; }
   }
 
   // X2: ephemeral (pointer/laser) coalescing. Merge latest-per-path and flush at
@@ -4131,7 +4148,16 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     },
     // X5 RAF metrics from the attributed/timestamped op-log.
     raf: ({ windowMs = 5000 } = {}) => {
-      const entries = store.oplogSince(0);
+      /*
+       * ⛔ RAF IS A METRIC OVER HUMAN ACTIVITY, so SYSTEM-actor ops are not in the population.
+       * `totalOps` was `oplogSince(0).length` — everything — while every ratio computed from it
+       * counted only `participant` / `presenter` / `ai`. A plugin that seeds its own state when it
+       * registers (a legitimate thing to do: a component that mounts needs something to read)
+       * therefore landed its machine writes in the DENOMINATOR and in nothing else, and
+       * peerCatalysisRatio silently fell by a factor of three on any deployment with such a plugin
+       * installed. The READING was wrong, not merely the test that noticed. Found 2026-08-11.
+       */
+      const entries = store.oplogSince(0).filter((e) => e.role !== 'system');
       const total = entries.length;
       const CONTROLLERS = new Set(['ai', 'presenter']);
       const peerVisible = entries.filter((e) => e.role === 'participant' && store.perms.canRead({ role: 'participant', userId: null }, e.path)).length;   // Plan 0471 C3

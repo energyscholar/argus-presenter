@@ -23,13 +23,16 @@ test('X6 — durable-op flood is throttled; server stays responsive', async () =
     const flood = await open(url, { userId: 'u1', role: 'presenter' });  // presenter can write anywhere
     const other = await open(url, { userId: 'u2', role: 'participant' });
     await wait(120);
+    const base = { v: server.store.version() };   // the throttle governs ops from HERE, not from zero
 
     // Flood 300 durable ops in one window (distinct paths so they'd all log if not capped).
     for (let i = 0; i < 300; i++) flood.ws.send(JSON.stringify({ t: 'op', path: 'k/n' + i, verb: 'set', value: i, opId: 'f' + i }));
     await wait(300);
 
-    const v = server.store.version();
-    expect(v > 0 && v <= 60, 'flood throttled near the per-sec cap (version=' + v + ')', String(v));
+    /* ⛔ The cap is on ops ADMITTED IN THIS WINDOW, so measure the delta. The absolute version
+       includes whatever a plugin seeded at register and has nothing to do with the throttle. */
+    const v = server.store.version() - base.v;
+    expect(v > 0 && v <= 60, 'flood throttled near the per-sec cap (Δversion=' + v + ')', String(v));
 
     // Server still responsive: another client's op applies.
     other.ws.send(JSON.stringify({ t: 'op', path: 'polls/p/votes/u2', verb: 'set', value: 'yes', opId: 'ok' }));
