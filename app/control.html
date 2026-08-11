@@ -1765,14 +1765,22 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     }
     renderConfig();
   }
+  // ⛔ DEAD SINCE 2026-08-10 — kept only so nobody re-derives it. The unlock is a LITERAL
+  //    string compare (see unlock() below). Do NOT re-wire this in: Bruce, verbatim —
+  //    "NO HASH! NOT FOR A TOY." The door says "speak friend and enter"; the word is on the door.
   async function computeHash(pw){
     var buf=await crypto.subtle.digest('SHA-256', new TextEncoder().encode(authSeed+pw));
     return [].map.call(new Uint8Array(buf),function(b){ return b.toString(16).padStart(2,'0'); }).join('');
   }
   async function unlock(){
     var pw=($('cfg-pw').value)||'';
-    try{ identity.token=await computeHash(pw); }
-    catch(e){ var mg=$('cfg-msg'); mg.textContent='cannot hash (insecure context)'; mg.style.color='var(--danger)'; return; }
+    // ⭐ TOY GATE, Bruce 2026-08-10: "NO HASH! NOT FOR A TOY. Just if (pw_typed = 'password')
+    // ==> authorize. Simple & stupid." The password is sent VERBATIM and the server compares
+    // it as a literal string (CONTROL_TOKEN). Its ONLY job is to stop a player wandering into
+    // Control while exploring the interface. It is NOT security and is not pretending to be.
+    // Real auth arrives when the usage model has settled — not before, because a real lock on
+    // an unsettled system breaks the system.  See ~/.config/argus-presenter/CREDENTIALS.md
+    identity.token=pw;
     try{ localStorage.setItem(TOKEN_KEY, identity.token); }catch(e){}   // persist so a refresh stays authed
     identity.role='presenter'; attempting=true;
     var m2=$('cfg-msg'); m2.textContent='unlocking…'; m2.style.color='var(--dim)';
