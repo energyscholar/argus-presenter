@@ -3,6 +3,7 @@
 import json, math, random, os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mkhelpers import frame, stars, title, comms, MONO   # reuse the helper primitives
+from mkplaces import alpha_city, epsilon, rings, belt2, engagement   # places + hardware
 
 OUT = "/home/bruce/software/argus-presenter/modules/s18-bowman.json"
 # ⚠ Regenerate the maps rather than reading them from wherever they happened to be built.
@@ -141,10 +142,22 @@ BEATS = [
  ("b2-starport","B2 · Garrison Starport, Alpha", starport(),
   "The money shot. Over a third of the system lives on this one moon."),
  *npc_beats(),
+ ("b6-city","B6 · Alpha — the settlement", alpha_city(),
+  "PLAYER-SAFE. 3,000 people, four levels, one bar. ⛔ NOBODY HERE KNOWS ABOUT THE PIRATES — Alpha is clean."),
+ ("b7-rings","B7 · Bowman Prime — the rings", rings(),
+  "PLAYER-SAFE. Free ice. And a clean industrial cut face nobody filed a claim on. → EV1"),
+ ("b7-epsilon","B7 · Epsilon — the Darrian outpost", epsilon(),
+  "PLAYER-SAFE. 2,000 years old, and a dig camp living beside it. → EV4"),
+ ("b7-belt2","B7 · Belt II — the working belt", belt2(),
+  "PLAYER-SAFE. Where the belters are. Doc Merisi rides a circuit out here. → EV5"),
  ("b9-scan-soft","B9 · Belt III — sensor return", scan(False),
   "🔒 GM. What a NORMAL scan returns. TRUE, and it reads weak. This is the trap."),
  ("b10-scan-hard","B10 · Belt III — what is there", scan(True),
   "🔒 GM. Only if someone ACTIVELY re-scans with the improved array. Four more hulls."),
+ ("b11-engage","B11 · The engagement", engagement(),
+  "🔒 GM ONLY — DO NOT STAGE. Stand-off geometry. Pirates carry ENERGY weapons and few missiles because "
+  "piracy wants capture. Hold LONG range and the AD likely wins; close and you hand it back. "
+  "⚠ They may go nuclear — intercepted ~99% AT LONG RANGE ONLY."),
  ("bg-system","GM · Bowman system, full", GM_SVG,
   "🔒 GM ONLY — DO NOT STAGE. Belt III, transit times, the 83-light-minute problem."),
 ]
@@ -152,14 +165,14 @@ BEATS = [
 SECTIONS = [
  {"id":"s-arrive","title":"ARRIVAL","kind":"section",
   "summary":"Bowman as the players meet it. Empty, cold, and with nowhere to land.",
-  "beatIds":["b1-arrival","b2-starport"]},
+  "beatIds":["b1-arrival","b2-starport","b6-city"]},
  {"id":"s-people","title":"THE PEOPLE — and the five fragments","kind":"section",
   "summary":("Alpha holds NO pirate hints. The five EV-holders each explain their own fragment "
              "away. One is noise, two is coincidence, THREE locates Belt III."),
-  "beatIds":[b[0] for b in npc_beats()]},
+  "beatIds":["b7-rings","b7-epsilon","b7-belt2"]+[b[0] for b in npc_beats()]},
  {"id":"s-belt3","title":"🔒 BELT III — GM ONLY","kind":"section",
   "summary":"The soft scan is true and reads weak. The hard scan needs someone to actively look.",
-  "beatIds":["b9-scan-soft","b10-scan-hard","bg-system"]},
+  "beatIds":["b9-scan-soft","b10-scan-hard","b11-engage","bg-system"]},
 ]
 
 mod = {
@@ -175,7 +188,7 @@ mod = {
              "🔒 The last three beats are GM-only — DO NOT STAGE.")},
  "sections":SECTIONS,
  "beats":[{"id":b[0],"title":b[1],"component":"map",
-           "section":("s-belt3" if b[0].startswith(("b9","b10","bg")) else
+           "section":("s-belt3" if b[0].startswith(("b9","b10","b11","bg")) else
                       "s-people" if b[0].startswith(("b3","b7")) else "s-arrive"),
            "onDemand":True,"durationSec":0,
            "opts":{"svg":b[2],"title":b[1],"laser":True,"controllable":False,
