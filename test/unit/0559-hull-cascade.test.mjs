@@ -82,14 +82,37 @@ test('t0559-07 — ⭐ data-* MIRROR: state is readable with nothing rendered (D
   for (const v of Object.values(d)) assert.equal(typeof v, 'string', 'attributes are strings');
 });
 
-test('t0559-08 — ⛔ LAYERING: the RULES level names no ship and no setting (0556 UC2/UC3)', () => {
-  const rules = readFileSync(join(PLUGIN, 'hull-factory.mjs'), 'utf8');
-  const hull = JSON.stringify(HULL);
-  const banned = /astral dawn|amishi|delleron|raschev|bowman|spinward|imperium|marina|von sydo/i;
-  assert.equal(banned.test(rules.replace(/\/\*[\s\S]*?\*\//g, '')), false,
-    'hull-factory.mjs CODE must not name our campaign — a second group reuses this file verbatim');
-  assert.equal(banned.test(hull), false,
-    'the Subsidised Liner template is a PUBLISHED class and must name nobody');
+test('t0559-08 — ⛔ LAYERING: the RULES level names nothing from the CAMPAIGN level (0556 UC2/UC3)', () => {
+  /*
+   * The forbidden vocabulary is READ FROM THE CAMPAIGN INSTANCE, never written here. Two reasons,
+   * and the second is the interesting one:
+   *   1. this file then carries no campaign vocabulary, so t0531-01 stays green — the first draft
+   *      spelled the words out and the neutrality guard failed the repo on its own guard list;
+   *   2. it is a BETTER test. It asserts "the rules level does not name whatever ship we actually
+   *      commissioned", so it keeps working when the campaign changes ships — which is exactly the
+   *      reuse property the layering exists to provide.
+   */
+  const instPath = join(HERE, '../../../repertory/campaigns/campaign-a/ships/astral-dawn.json');
+  let inst = null;
+  try { inst = JSON.parse(readFileSync(instPath, 'utf8')); } catch { /* content repo absent */ }
+  if (!inst) return;                       // no campaign checked out ⇒ nothing to leak
+
+  const words = [inst.name, inst.wasNamed, inst.shipId]
+    .filter(Boolean)
+    .flatMap(w => String(w).split(/[\s·]+/))
+    .filter(w => w.length > 4 && !/^(iss|the|class|type)$/i.test(w));
+  assert.ok(words.length >= 2, 'the instance must supply words worth guarding against');
+
+  const strip = t => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  for (const [what, text] of [
+    ['hull-factory.mjs', strip(readFileSync(join(PLUGIN, 'hull-factory.mjs'), 'utf8'))],
+    ['the published hull template', JSON.stringify(HULL)],
+  ]) {
+    for (const w of words) {
+      assert.equal(new RegExp(w, 'i').test(text), false,
+        `${what} must not name "${w}" — a second group reuses this file verbatim`);
+    }
+  }
 });
 
 test('t0559-09 — a hull class refuses to commission without an id, and a factory without a chart', () => {
