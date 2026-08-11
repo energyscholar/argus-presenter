@@ -1501,8 +1501,8 @@
     }
     // ---- AUTH-ROLE (P5.5): inline password gate on the Presenter switch.
     // When the server is gated, clicking Presenter reveals a password field instead of
-    // switching immediately. On Unlock we hash the password IN THE BROWSER (WebCrypto) and
-    // send only sha256(seed+password) as the hello token — the plaintext never leaves.
+    // switching immediately. On Unlock we send the typed word, then — if the server does not
+    // promote us — retry with sha256(seed+password), which is what a rolePassword server wants.
     // (crypto.subtle needs a secure context: localhost/https qualify; plain-LAN-http is out
     // of scope for this gate — deployers front it with https or a tunnel.)
     var pwGroup = document.getElementById('cfg-role-pwgroup');
@@ -1514,13 +1514,21 @@
       var buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(authSeed + pw));
       return [].map.call(new Uint8Array(buf), function(b){ return b.toString(16).padStart(2,'0'); }).join('');
     }
+    var pendingPw = null;
     async function unlock(){
       var pw = pwInput.value || '';
-      // TISSUE-THIN GATE (deliberate, pre-OAuth): the typed password IS the token, sent as-is
-      // and compared LITERALLY against the server's control token 'password'. No hashing, no
-      // rolePassword — this is a keep-honest-people-honest lock until OAuth + Tailscale land
-      // for privileged users. Anyone reading this source can see the password is 'password'.
+      /*
+       * TISSUE-THIN GATE (deliberate, pre-OAuth): the typed word IS the token on a `controlToken`
+       * deployment, sent as-is and compared literally. Keep-honest-people-honest, nothing more.
+       *
+       * ⚠ BUT a `rolePassword` deployment compares sha256(seed+password), which a literal can
+       * never match — so the literal alone made the gate UNREACHABLE there, and silently: a
+       * correct password just said "wrong password". (The comment above this function had claimed
+       * hashing for months while the code sent plaintext, and computeHash sat here unused.)
+       * ⇒ literal first, hashed retry second. See onWelcomeRole below.
+       */
       identity.token = pw;
+      pendingPw = pw;
       attempting = 'presenter';
       // setRole short-circuits if role is unchanged; force through when already presenter-attempt.
       if (identity.role === 'presenter') { if (ws && (ws.readyState===0||ws.readyState===1)){ try{ws.close();}catch(e){} } else connect(); }
@@ -1542,9 +1550,26 @@
       identity.role = effRole;
       try { localStorage.setItem(ROLE_KEY, effRole === 'presenter' ? 'presenter' : 'participant'); } catch(e){}
       if (wasAttempting === 'presenter'){
-        attempting = null;
-        if (effRole === 'presenter'){ showPwGroup(false); pwInput.value = ''; pwMsg.textContent = ''; }   // granted
-        else { pwMsg.textContent = 'wrong password'; identity.token = null; }                             // denied → revert to User
+        if (effRole === 'presenter'){                                                                    // granted
+          attempting = null; pendingPw = null;
+          showPwGroup(false); pwInput.value = ''; pwMsg.textContent = '';
+        } else if (pendingPw !== null && authSeed) {                                                     // ⭐ hashed retry
+          var pw2 = pendingPw; pendingPw = null;      // one retry only, never a loop
+          pwMsg.textContent = 'unlocking…';
+          computeHash(pw2).then(function(h){
+            identity.token = h;
+            // ⛔ THE ROLE MUST BE RE-ASSERTED TOO. A valid token alone changes nothing: the hello
+            // carries role AND token, and the server grants presenter only when the hello ASKS
+            // for it. Setting just the token sent a correct credential alongside a request to
+            // stay a participant, and the server — correctly — kept us one.
+            identity.role = 'presenter';
+            if (ws && (ws.readyState===0||ws.readyState===1)){ try{ws.close();}catch(e){} } else connect();
+          });
+          return;                                     // stay `attempting` across the reconnect
+        } else {                                                                                         // denied
+          attempting = null; pendingPw = null;
+          pwMsg.textContent = 'wrong password'; identity.token = null;
+        }
       }
       reflectRole(); renderWho(); readout();
     };

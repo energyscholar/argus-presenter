@@ -586,7 +586,7 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   function ctlHeaders(base){ var h = base || {}; if(identity.token) h['x-control-token'] = identity.token; return h; }
   // AUTH-ROLE (P5.5): is the presenter role gated, and what public salt do we hash with?
   // Default UNGATED on fetch failure. effRole = the server's EFFECTIVE granted role (from welcome).
-  var authGated=false, authSeed=NS, effRole=null, attempting=false;
+  var authGated=false, authSeed=NS, effRole=null, attempting=false, pendingPw=null;
   var ws=null, module=null, curBeat=-1, recBeat=-1, users=[], viewingAs=null, results={};
   // Plan 0522 P5 — THE ONE TARGET. `target` is the WIRE value verbatim: 'all', a userId, or
   // 'station:<uid>'. `viewingAs` survives as the userId form the MON-2 mirror machinery and the
@@ -1790,14 +1790,46 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     renderTargets();
     renderStationTier();   // P15: the tier is built from the SAME welcome, so it survives a reconnect without a fetch
     if(attempting){
-      attempting=false;
-      if(effRole==='presenter'){ var mg=$('cfg-msg'); mg.textContent='✓ unlocked'; mg.style.color='var(--ok)'; if($('cfg-pw')) $('cfg-pw').value=''; }
-      else { var md=$('cfg-msg'); md.textContent='wrong password'; md.style.color='var(--danger)'; identity.token=null; try{localStorage.removeItem(TOKEN_KEY);}catch(e){} }
+      if(effRole==='presenter'){
+        attempting=false; pendingPw=null;
+        var mg=$('cfg-msg'); mg.textContent='✓ unlocked'; mg.style.color='var(--ok)'; if($('cfg-pw')) $('cfg-pw').value='';
+      }
+      /*
+       * ⭐ SECOND ATTEMPT, HASHED. The literal word is the right first try — with a `controlToken`
+       * deployment the server compares it as a plain string, which is the toy gate Bruce asked for.
+       * But a `rolePassword` deployment compares against sha256(seed+password) and a literal can
+       * NEVER match it. Sending the word verbatim and stopping there broke exactly that path
+       * (CTRL-auth), and it broke silently: the box just said "wrong password" for a correct one.
+       * So: try the word, and if the server did not promote us, try the hash before giving up.
+       * ⛔ This is NOT re-securing the toy — a hash here is a WIRE FORMAT the server chose, not a
+       * secrecy claim, and the first attempt is still the literal one.
+       */
+      else if(pendingPw!==null && authSeed){
+        var pw2=pendingPw; pendingPw=null;                 // one retry only, never a loop
+        var mh=$('cfg-msg'); mh.textContent='unlocking…'; mh.style.color='var(--dim)';
+        computeHash(pw2).then(function(h){
+          identity.token=h; try{ localStorage.setItem(TOKEN_KEY, h); }catch(e){}
+          identity.role='presenter';
+          if(ws && (ws.readyState===0||ws.readyState===1)){ try{ws.close();}catch(e){} } else connect();
+        });
+      }
+      else {
+        attempting=false; pendingPw=null;
+        var md=$('cfg-msg'); md.textContent='wrong password'; md.style.color='var(--danger)'; identity.token=null; try{localStorage.removeItem(TOKEN_KEY);}catch(e){}
+      }
     }
     renderConfig();
   }
+  /* sha256(seed + password) — the wire format a `rolePassword` server compares against. Restored
+     2026-08-11: deleting it made the gated unlock unreachable. See the retry above for why this
+     is not a contradiction of "no hash for a toy". */
+  async function computeHash(pw){
+    var buf=await crypto.subtle.digest('SHA-256', new TextEncoder().encode(authSeed+pw));
+    return [].map.call(new Uint8Array(buf),function(b){ return b.toString(16).padStart(2,'0'); }).join('');
+  }
   async function unlock(){
     var pw=($('cfg-pw').value)||'';
+    pendingPw=pw;                       // kept for the hashed second attempt
     // ⭐ TOY GATE, Bruce 2026-08-10: "NO HASH! NOT FOR A TOY. Just if (pw_typed = 'password')
     // ==> authorize. Simple & stupid." The password is sent VERBATIM and the server compares
     // it as a literal string (CONTROL_TOKEN). Its ONLY job is to stop a player wandering into
