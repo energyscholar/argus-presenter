@@ -56,13 +56,14 @@ def epsilon():
     # the outpost: geometric, half-buried, two thousand years of dust
     cx,cy=0,270
     p.append(f'<g opacity=".95">')
-    for i,(rr,rot,op) in enumerate([(150,0,.55),(104,18,.7),(62,36,.85)]):
+    for i,(rr,rot,op) in enumerate([(196,0,.85),(140,18,.95),(86,36,1.0)]):
         pts=[]
         for k in range(6):
             a=math.radians(60*k+rot); pts.append(f"{cx+rr*math.cos(a):.0f},{cy+rr*math.sin(a)*.42:.0f}")
-        p.append(f'<polygon points="{" ".join(pts)}" fill="none" stroke="#8fa8c8" stroke-width="1.6" opacity="{op}"/>')
+        p.append(f'<polygon points="{" ".join(pts)}" fill="#0e1620" fill-opacity=".5" stroke="#a8c4e8" stroke-width="2.4" opacity="{op}"/>')
     p.append('</g>')
-    p.append(f'<circle cx="{cx}" cy="{cy}" r="14" fill="#8fa8c8" opacity=".5"/>')
+    p.append(f'<circle cx="{cx}" cy="{cy}" r="20" fill="#cfe0f5" opacity=".85"/>')
+    p.append(f'<circle cx="{cx}" cy="{cy}" r="34" fill="none" stroke="#a8c4e8" stroke-width="1.6" opacity=".6"/>')
     p.append(f'<circle cx="{cx}" cy="{cy}" r="26" fill="none" stroke="#8fa8c8" stroke-width="1" opacity=".4"/>')
     # the dig camp
     for dx in (-215, -168, 205):
@@ -133,9 +134,9 @@ def engagement():
     p.append('<rect x="-500" y="-500" width="1000" height="1000" fill="#0a0d13"/>')
     p.append(stars(3005, 90, 0))
     # range rings from the AD
-    ax,ay=-330,120
-    for r,lbl,col in [(150,"CLOSE — their guns bite","#e05252"),(300,"SHORT","#e0894a"),
-                      (470,"MEDIUM","#e0c04a"),(640,"LONG — YOU LIVE HERE","#7ec8a0")]:
+    ax,ay=-250,150
+    for r,lbl,col in [(105,"CLOSE — their guns bite","#e05252"),(190,"SHORT","#e0894a"),
+                      (285,"MEDIUM","#e0c04a"),(400,"LONG — YOU LIVE HERE","#7ec8a0")]:
         p.append(f'<circle cx="{ax}" cy="{ay}" r="{r}" fill="none" stroke="{col}" stroke-width="1.2" '
                  f'stroke-dasharray="5 6" opacity=".45"/>')
         p.append(f'<text x="{ax+r-6}" y="{ay-8}" fill="{col}" font-family="{MONO}" font-size="10.5" text-anchor="end">{lbl}</text>')
@@ -149,7 +150,7 @@ def engagement():
     p.append(f'<text x="{ax+230}" y="{ay-150}" fill="#7ec8a0" font-family="{MONO}" font-size="12">6 × MISSILE FIGHTERS</text>')
     p.append(f'<text x="{ax+230}" y="{ay-134}" fill="#8e9bb0" font-family="{MONO}" font-size="10.5">+6 hardpoints · 14 total ≈ 1,400 t of fire</text>')
     # the pirates
-    px,py=300,-160
+    px,py=210,-190
     for i,(dx,dy) in enumerate([(0,0),(-70,90),(80,110),(30,-90)]):
         p.append(f'<g transform="translate({px+dx},{py+dy})"><path d="M-30,0 L18,-8 L40,0 L18,8 Z" fill="#2a1418" stroke="#e05252" stroke-width="1.6"/></g>')
     p.append(f'<text x="{px+70}" y="{py-40}" fill="#e05252" font-family="{MONO}" font-size="12">3–4 × 400 t CONVERTED</text>')
