@@ -17,6 +17,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { resolveClosure } from '../../harness/plugins.mjs';
 import { assemble } from '../../harness/assemble.mjs';
@@ -24,6 +25,16 @@ import { assemble } from '../../harness/assemble.mjs';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PLUGIN = join(HERE, '../../plugins/starship-ops');
 const MANIFEST = JSON.parse(readFileSync(join(PLUGIN, 'plugin.json'), 'utf8'));
+
+/* The station registry as CORE hands it to the plugin: a Map by uid plus a default. Built from
+   the manifest so it tracks the real deployment rather than a fixture that can drift. */
+const STATION_LIST = MANIFEST.stations || [];
+const STATIONS = Object.assign(
+  new Map(STATION_LIST.map((st) => [st.stationUid, st])),
+  { defaultUid: MANIFEST.stationDefaultUid },
+);
+/** The first station that actually declares a screen — the only kind that yields a descriptor. */
+const FIRST_SCREEN_UID = (STATION_LIST.find((st) => st.stationScreen) || {}).stationUid;
 
 test('t0559-20 — every component the manifest declares has an implementation file', () => {
   for (const c of MANIFEST.components) {
@@ -43,13 +54,42 @@ test('t0559-21 — every declared component REGISTERS itself through the registr
   }
 });
 
-test('t0559-22 — ⛔ the station descriptor DECLARES its plugin, or zero plugin bytes ship', () => {
-  const src = readFileSync(join(PLUGIN, 'ship-machine.mjs'), 'utf8');
-  const i = src.indexOf('function descriptorFor');
-  assert.ok(i > 0, 'descriptorFor must exist');
-  const body = src.slice(i, i + 1400);
-  assert.match(body, /requires:\s*\[/, 'descriptorFor must emit `requires` — without it the screen cannot render');
+test('t0559-22 — ⛔ the station descriptor DECLARES its plugin, or zero plugin bytes ship', async () => {
+  /*
+   * ⚠ THIS TEST USED TO GREP THE SOURCE for /requires:\s*\[/ and it was worthless. The object
+   * literal carried the key TWICE — `requires: [PLUGIN_NAME]` and, three lines later,
+   * `requires: []` — and in JS the LAST key wins, so the runtime value was `[]`. The regex
+   * matched the empty one and the test went green over a completely broken descriptor.
+   *
+   * ⇒ DRIVE THE REAL PATH AND READ WHAT COMES BACK. descriptorFor is not exported; it reaches
+   *   the world through the seat resolver the plugin hands to core, so capture that and ask it
+   *   for a seat, exactly as core does. A test that reads source text asserts what somebody
+   *   typed, never what the program does.
+   */
+  const mod = await import(pathToFileURL(join(PLUGIN, 'ship-machine.mjs')).href);
+
+  let resolver = null;
+  const noop = () => {};
+  mod.register({
+    store: { apply: () => ({ ok: true }), get: () => undefined, version: () => 0,
+             subscribe: () => noop, snapshot: () => ({}) },
+    allowRead: noop,
+    log: { info: noop, warn: noop, error: noop },
+    addTool: noop,
+    stations: STATIONS,
+    provideSeatResolver: (r) => { resolver = r; },
+    on: noop,
+  });
+
+  assert.ok(resolver && typeof resolver.select === 'function', 'the plugin must provide a seat resolver');
+  const { descriptor } = resolver.select('test-user', FIRST_SCREEN_UID);
+  assert.ok(descriptor, `station ${FIRST_SCREEN_UID} declares a screen, so it must yield a descriptor`);
+  assert.ok(Array.isArray(descriptor.requires), '`requires` must be an array');
+  assert.ok(descriptor.requires.includes(MANIFEST.name),
+    '⛔ requires must name the plugin, got ' + JSON.stringify(descriptor.requires)
+    + ' — an empty array ships ZERO plugin bytes and the screen renders "No component registered"');
 });
+
 
 test('t0559-23 — resolveClosure accepts the plugin name and returns it', () => {
   assert.deepEqual(resolveClosure([MANIFEST.name]), [MANIFEST.name]);
