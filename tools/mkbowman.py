@@ -5,8 +5,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mkhelpers import frame, stars, title, comms, MONO   # reuse the helper primitives
 
 OUT = "/home/bruce/software/argus-presenter/modules/s18-bowman.json"
-PLAYER_SVG = open("art1-player.svg").read()
-GM_SVG     = open("art1g-gm.svg").read()
+# ⚠ Regenerate the maps rather than reading them from wherever they happened to be built.
+#    The first version read art1-player.svg from a scratchpad dir, which meant this script
+#    silently stopped working the moment that dir was cleared. A generator that depends on
+#    an artifact it did not create is not reproducible.
+import mkmap
+PLAYER_SVG = mkmap.build(False)
+GM_SVG     = mkmap.build(True)
 
 # ── Garrison Starport, Alpha — gas giant behind ─────────────────────────────────
 def starport():

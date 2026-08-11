@@ -88,5 +88,6 @@ def build(gm):
     P.append('</svg>')
     return "".join(P)
 
-for gm,name in ((False,"art1-player.svg"),(True,"art1g-gm.svg")):
+if __name__ == "__main__":
+  for gm,name in ((False,"art1-player.svg"),(True,"art1g-gm.svg")):
     s=build(gm); open(name,"w").write(s); print(f"{name}: {len(s):,} bytes")

@@ -168,7 +168,7 @@ mod = {
   "manifest": {
     "title": "S-HELPERS1 — standard reusable beats",
     "version": "1.0",
-    "kind": "reference",
+    "kind": "00 · LIVE SESSION",   # top of the picker: groups sort A-Z by kind
     "defaultBeatId": "h-jumpspace",
     "summary": ("Standard, re-usable screens for any session: jumpspace, breakout, gas-giant fuel "
                 "skim, ice mining, the official-communication card, and MgT2e tactical range bands. "
