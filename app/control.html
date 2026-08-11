@@ -1608,8 +1608,9 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   // control.html connects as role:'presenter', but opened as its own tab it carries no
   // credential — a GATED server silently downgrades it to participant, so pushPresence
   // never feeds it and it sees NO users. The green-dot settings panel exposes an inline
-  // password unlock: hash sha256(seed+pw) in the browser, send only the hash as the hello
-  // token, reconnect, and the presence feed arrives.
+  // password unlock: send the typed word VERBATIM as the hello token, reconnect, and the
+  // presence feed arrives. ⛔ NO HASHING — Bruce 2026-08-10: "NO HASH! NOT FOR A TOY."
+  // This gate exists to stop a player wandering into Control, nothing more.
   function renderConfig(){
     var ro=$('cfg-readout'); if(!ro) return;
     var linked=(ws&&ws.readyState===1);
@@ -1764,13 +1765,6 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
       else { var md=$('cfg-msg'); md.textContent='wrong password'; md.style.color='var(--danger)'; identity.token=null; try{localStorage.removeItem(TOKEN_KEY);}catch(e){} }
     }
     renderConfig();
-  }
-  // ⛔ DEAD SINCE 2026-08-10 — kept only so nobody re-derives it. The unlock is a LITERAL
-  //    string compare (see unlock() below). Do NOT re-wire this in: Bruce, verbatim —
-  //    "NO HASH! NOT FOR A TOY." The door says "speak friend and enter"; the word is on the door.
-  async function computeHash(pw){
-    var buf=await crypto.subtle.digest('SHA-256', new TextEncoder().encode(authSeed+pw));
-    return [].map.call(new Uint8Array(buf),function(b){ return b.toString(16).padStart(2,'0'); }).join('');
   }
   async function unlock(){
     var pw=($('cfg-pw').value)||'';
