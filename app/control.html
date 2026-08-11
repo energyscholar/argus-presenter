@@ -317,6 +317,25 @@
   #dg-recent{margin-top:5px;font-size:11px;color:var(--dim);line-height:1.5;max-height:200px;overflow:auto;}
   #dg-recent .dgr b{color:var(--ink);font-weight:600;}
   #dg-recent .dg-summary{margin-top:6px;padding-top:5px;border-top:1px solid #16223a;font-style:italic;opacity:.85;}
+
+/* ── RUN SHEET (plan 0555) — the module IS the prep. Purely additive: if any of this
+   fails, every existing control still works. Revert = git checkout app/control.html ── */
+#rs-section .rs-sum{color:#8fa0b5;font-size:11.5px;line-height:1.5;margin:.25rem 0 .5rem;
+  border-left:2px solid #2a3a4d;padding-left:.55rem}
+#rs-section .rs-sec{margin:.6rem 0 .2rem;color:#3fb950;font-size:10.5px;letter-spacing:.12em;
+  text-transform:uppercase;font-weight:700}
+#rs-section .rs-secsum{color:#6b7d94;font-size:11px;line-height:1.45;margin:0 0 .35rem;padding-left:.15rem}
+#rs-row{}
+#rs-section .rs-beat{display:block;width:100%;text-align:left;background:#0d1420;border:1px solid #1d2735;
+  border-left:3px solid #2f4258;border-radius:3px;padding:.4rem .55rem;margin-bottom:.3rem;cursor:pointer;
+  color:#c8d0dc;font:inherit;font-size:11.5px;line-height:1.45;transition:background .12s,border-color .12s}
+#rs-section .rs-beat:hover{background:#152033;border-left-color:#f0b429}
+#rs-section .rs-beat.rs-gm{border-left-color:#e05252;background:#150f12}
+#rs-section .rs-beat.rs-live{border-left-color:#3fb950;background:#0f1e17}
+#rs-section .rs-t{color:#eef2f7;font-weight:700;display:block}
+#rs-section .rs-n{color:#8fa0b5;display:block;margin-top:.15rem}
+#rs-section .rs-id{color:#5f7086;font-size:10px;float:right}
+#rs-empty{color:#5f7086;font-size:11.5px;padding:.4rem 0}
 </style>
 </head>
 <body>
@@ -508,6 +527,15 @@
   <!-- Plan 0473 P8: the HUMAN DIGEST FACE — room-at-a-glance + prioritized work queue (one-click
        resolve/claim) + recent turns / rolling summary. The SAME working set the AI reads via
        presenter_situation; resolve/claim go through the SAME shared api. Works voice on OR off. -->
+  <!-- ── RUN SHEET (plan 0555). Renders the LOADED module as section > beat > GM note,
+       every row click-to-stage. The prep and the content are the same artifact, so they
+       cannot drift. Additive: nothing else on this page depends on it. ── -->
+  <section id="rs-section">
+    <h2>Run sheet <span class="badge" id="rs-mod">no module</span>
+        <button id="rs-refresh" class="ghost" style="float:right;font-size:10px;padding:1px 6px">↻</button></h2>
+    <div class="rs-sum" id="rs-summary"></div>
+    <div id="rs-body"><div id="rs-empty">Load a module — its beats and GM notes appear here, click to stage.</div></div>
+  </section>
   <section id="dg-section">
     <h2>Working set <span class="badge" id="dg-profile">—</span></h2>
     <div id="dg-room">…</div>
@@ -1915,7 +1943,79 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   // <details> rather than being written once at build time and then lying.
   renderStationTier();
   $('st-tier').addEventListener('toggle', renderStationTierTitle);
+  /* ── RUN SHEET (plan 0555) ────────────────────────────────────────────────────
+     Bruce, 2026-08-10: "Ideally GM can run entire session from a single web page,
+     no flipping around." And: "this is the way, and is in the original design doc.
+     We drifted from it."  The module carries a GM note per beat; this renders them
+     and stages the beat on click. WRAPPED THROUGHOUT — a failure here must never
+     take a control with it, because this ships the night before a session. */
+  var rsCurrent=null;
+  function rsRender(mod){
+    try{
+      var body=$('rs-body'), badge=$('rs-mod'), sum=$('rs-summary');
+      if(!body) return;
+      if(!mod){ badge.textContent='no module'; sum.textContent='';
+        body.innerHTML='<div id="rs-empty">Load a module — its beats and GM notes appear here, click to stage.</div>'; return; }
+      var man=mod.manifest||{}, beats=mod.beats||[], secs=mod.sections||[];
+      badge.textContent=man.title? String(man.title).slice(0,42) : (rsCurrent||'module');
+      sum.textContent=man.summary||'';
+      var byId={}; beats.forEach(function(b){ byId[b.id]=b; });
+      var html='', used={};
+      function row(b){
+        if(!b) return '';
+        used[b.id]=1;
+        var note=(b.opts&&b.opts.note)||'';
+        // ⚠ RED means DO-NOT-STAGE, not "this note is for the GM" — every note is for the GM.
+        // The first cut flagged 9 of 11 beats because the NPC notes open "GM:", and those cards
+        // are player-facing. Only an explicit lock counts.
+        var gm=/🔒/.test(note)||/GM[- ]ONLY|DO NOT STAGE/i.test(note);
+        return '<button class="rs-beat'+(gm?' rs-gm':'')+'" data-beat="'+esc(b.id)+'">'
+             + '<span class="rs-id">'+esc(b.id)+'</span>'
+             + '<span class="rs-t">'+esc(b.title||b.id)+'</span>'
+             + (note? '<span class="rs-n">'+esc(note)+'</span>' : '')
+             + '</button>';
+      }
+      secs.forEach(function(sec){
+        html+='<div class="rs-sec">'+esc(sec.title||sec.id)+'</div>';
+        if(sec.summary) html+='<div class="rs-secsum">'+esc(sec.summary)+'</div>';
+        (sec.beatIds||[]).forEach(function(id){ html+=row(byId[id]); });
+      });
+      var orphans=beats.filter(function(b){ return !used[b.id]; });
+      if(orphans.length){
+        html+='<div class="rs-sec">Unsectioned</div>';
+        orphans.forEach(function(b){ html+=row(b); });
+      }
+      body.innerHTML=html||'<div id="rs-empty">Module has no beats.</div>';
+      [].forEach.call(body.querySelectorAll('.rs-beat'), function(el){
+        el.addEventListener('click', function(){
+          try{
+            control('show_beat',{id:el.getAttribute('data-beat')});
+            [].forEach.call(body.querySelectorAll('.rs-beat'),function(x){x.classList.remove('rs-live');});
+            el.classList.add('rs-live');
+          }catch(e){}
+        });
+      });
+    }catch(e){ try{ $('rs-body').innerHTML='<div id="rs-empty">run sheet unavailable — controls above are unaffected</div>'; }catch(_){} }
+  }
+  function esc(v){ return String(v==null?'':v).replace(/[&<>"]/g,function(c){
+    return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]; }); }
+  function rsLoad(id){
+    try{
+      if(!id){ rsRender(null); return Promise.resolve(); }
+      rsCurrent=id;
+      return fetch('/api/modules/'+encodeURIComponent(id),{cache:'no-store',headers:ctlHeaders()})
+        .then(function(r){ return r.ok? r.json() : null; })
+        .then(function(d){ rsRender(d&&d.module?d.module:null); })
+        .catch(function(){ rsRender(null); });
+    }catch(e){ return Promise.resolve(); }
+  }
+  try{
+    $('rs-refresh').addEventListener('click',function(){ rsLoad(loadedModuleId||$('mod-select').value); });
+    $('mod-select').addEventListener('change',function(){ rsLoad($('mod-select').value); });
+  }catch(e){}
+
   connect(); refreshModules(); refreshSeries(); startDigest();
+  try{ setTimeout(function(){ rsLoad(loadedModuleId||$('mod-select').value); }, 900); }catch(e){}
   window.__ctlAuth = { role:function(){return effRole;}, gated:function(){return authGated;}, open:function(){return $('ap-config').classList.contains('open');} };   // test hook
   window.__control = control;   // test/automation hook (P1) — drive control ops programmatically
   window.__gm={ users:function(){return users;}, module:function(){return module;}, cur:function(){return curBeat;}, rec:function(){return recBeat;},
