@@ -1,0 +1,24 @@
+{
+  "//": "LOCAL DEPLOYMENT CONFIG — gitignored (.gitignore:39). Written by Argus S235 with PLACEHOLDERS.",
+  "//TODO-BRUCE": "Replace BOTH REPLACE-ME values below. Type the clientSecret yourself — never paste it into a chat transcript. Until both are real, sign-in will appear but FAIL at Google.",
+
+  "presenterPort": 3000,
+  "sessionLogDir": "/home/bruce/.local/state/argus-presenter/logs",
+
+  "enforceOAuth": "off",
+  "allowPasswordCommandOnLAN": false,
+
+  "oidc": {
+    "clientId": "REPLACE-ME.apps.googleusercontent.com",
+    "clientSecret": "REPLACE-ME",
+    "authEndpoint": "https://accounts.google.com/o/oauth2/v2/auth",
+    "tokenEndpoint": "https://oauth2.googleapis.com/token",
+    "jwksUri": "https://www.googleapis.com/oauth2/v3/certs",
+    "issuer": "https://accounts.google.com",
+    "redirectUri": "https://starship-ops.freethemath.org/auth/callback"
+  },
+
+  "allowlist": {
+    "energyscholar@gmail.com": { "role": "presenter" }
+  }
+}
