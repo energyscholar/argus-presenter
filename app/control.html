@@ -534,7 +534,9 @@
     <h2>Run sheet <span class="badge" id="rs-mod">no module</span>
         <button id="rs-refresh" class="ghost" style="float:right;font-size:10px;padding:1px 6px">↻</button></h2>
     <div class="rs-sum" id="rs-summary"></div>
-    <div id="rs-body"><div id="rs-empty">Load a module — its beats and GM notes appear here, click to stage.</div></div>
+    <!-- "presenter notes", not "GM notes": this engine ships to a business-training user as
+         readily as to a game table, and t0532-04 guards the user-visible register. -->
+    <div id="rs-body"><div id="rs-empty">Load a module — its beats and presenter notes appear here, click to stage.</div></div>
   </section>
   <section id="dg-section">
     <h2>Working set <span class="badge" id="dg-profile">—</span></h2>
@@ -1950,12 +1952,16 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
      and stages the beat on click. WRAPPED THROUGHOUT — a failure here must never
      take a control with it, because this ships the night before a session. */
   var rsCurrent=null;
+  /* ONE copy of the empty-state text. It previously existed twice — once in the markup above and
+     once here — so correcting the register in the markup alone left this one still reading "GM
+     notes". Two copies of a user-visible string is one copy too many. */
+  var RS_EMPTY='Load a module — its beats and presenter notes appear here, click to stage.';
   function rsRender(mod){
     try{
       var body=$('rs-body'), badge=$('rs-mod'), sum=$('rs-summary');
       if(!body) return;
       if(!mod){ badge.textContent='no module'; sum.textContent='';
-        body.innerHTML='<div id="rs-empty">Load a module — its beats and GM notes appear here, click to stage.</div>'; return; }
+        body.innerHTML='<div id="rs-empty">'+RS_EMPTY+'</div>'; return; }
       var man=mod.manifest||{}, beats=mod.beats||[], secs=mod.sections||[];
       badge.textContent=man.title? String(man.title).slice(0,42) : (rsCurrent||'module');
       sum.textContent=man.summary||'';
@@ -1965,10 +1971,15 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
         if(!b) return '';
         used[b.id]=1;
         var note=(b.opts&&b.opts.note)||'';
-        // ⚠ RED means DO-NOT-STAGE, not "this note is for the GM" — every note is for the GM.
-        // The first cut flagged 9 of 11 beats because the NPC notes open "GM:", and those cards
-        // are player-facing. Only an explicit lock counts.
-        var gm=/🔒/.test(note)||/GM[- ]ONLY|DO NOT STAGE/i.test(note);
+        /* ⚠ RED means DO-NOT-STAGE, not "this note is private" — every note is for whoever is
+           running the deck. The first cut flagged 9 of 11 beats because the notes OPEN with a
+           role prefix, and those cards are audience-facing. Only an explicit lock counts.
+
+           ⛔ The lock is a DECLARED FLAG or a neutral sentinel glyph — never a vocabulary match.
+           This engine ships to a business-training user, so it must not know any milieu's word
+           for "private"; content declares `private: true` (or marks the note 🔒) and the engine
+           only ever asks whether the flag is set. t0532-04 guards exactly this. */
+        var gm = (b.private === true) || /🔒/.test(note) || /DO NOT STAGE/i.test(note);
         return '<button class="rs-beat'+(gm?' rs-gm':'')+'" data-beat="'+esc(b.id)+'">'
              + '<span class="rs-id">'+esc(b.id)+'</span>'
              + '<span class="rs-t">'+esc(b.title||b.id)+'</span>'
