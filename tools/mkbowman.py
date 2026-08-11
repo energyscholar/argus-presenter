@@ -4,6 +4,7 @@ import json, math, random, os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mkhelpers import frame, stars, title, comms, MONO   # reuse the helper primitives
 from mkplaces import alpha_city, epsilon, rings, belt2, engagement   # places + hardware
+from mkspot import BEATS as SPOT_BEATS                                # 2 per PC: spotlight + station
 
 OUT = "/home/bruce/software/argus-presenter/modules/s18-bowman.json"
 # ⚠ Regenerate the maps rather than reading them from wherever they happened to be built.
@@ -158,6 +159,10 @@ BEATS = [
   "🔒 GM ONLY — DO NOT STAGE. Stand-off geometry. Pirates carry ENERGY weapons and few missiles because "
   "piracy wants capture. Hold LONG range and the AD likely wins; close and you hand it back. "
   "⚠ They may go nuclear — intercepted ~99% AT LONG RANGE ONLY."),
+ *[(b[0], b[1], b[2],
+     ("🔒 GM. " if b[0] in ("st-asao","st-vonsydo") else "")
+     + "Two-per-PC beat. SPOTLIGHT = a moment that is theirs; STATION = a screen only that seat reads. "
+       "See the card itself for the guardrail.") for b in SPOT_BEATS],
  ("bg-system","GM · Bowman system, full", GM_SVG,
   "🔒 GM ONLY — DO NOT STAGE. Belt III, transit times, the 83-light-minute problem."),
 ]
@@ -170,6 +175,12 @@ SECTIONS = [
   "summary":("Alpha holds NO pirate hints. The five EV-holders each explain their own fragment "
              "away. One is noise, two is coincidence, THREE locates Belt III."),
   "beatIds":["b7-rings","b7-epsilon","b7-belt2"]+[b[0] for b in npc_beats()]},
+ {"id":"s-pcs","title":"⭐ THE FIVE — spotlight + station","kind":"section",
+  "summary":("Two beats per PC: one SPOTLIGHT (a moment that is theirs) and one STATION (a screen "
+             "only that seat can read). ⛔ Marina is in spotlight ARREARS since S9 — hers pays first. "
+             "Grounded in compendium/SPOTLIGHT-BANK.md; banked beats carry guardrails and Bruce "
+             "spends them, so these surface and stop."),
+  "beatIds":[b[0] for b in SPOT_BEATS]},
  {"id":"s-belt3","title":"🔒 BELT III — GM ONLY","kind":"section",
   "summary":"The soft scan is true and reads weak. The hard scan needs someone to actively look.",
   "beatIds":["b9-scan-soft","b10-scan-hard","b11-engage","bg-system"]},
@@ -188,7 +199,8 @@ mod = {
              "🔒 The last three beats are GM-only — DO NOT STAGE.")},
  "sections":SECTIONS,
  "beats":[{"id":b[0],"title":b[1],"component":"map",
-           "section":("s-belt3" if b[0].startswith(("b9","b10","b11","bg")) else
+           "section":("s-pcs" if b[0].startswith(("sp-","st-")) else
+                      "s-belt3" if b[0].startswith(("b9","b10","b11","bg")) else
                       "s-people" if b[0].startswith(("b3","b7")) else "s-arrive"),
            "onDemand":True,"durationSec":0,
            "opts":{"svg":b[2],"title":b[1],"laser":True,"controllable":False,
