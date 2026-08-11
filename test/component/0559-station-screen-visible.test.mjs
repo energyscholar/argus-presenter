@@ -3,9 +3,13 @@
  *
  * ⛔ THE DEFECT THIS LOCKS DOWN (found 2026-08-11, the morning after `requires` was fixed).
  * With `requires` finally correct, the station screen bundled its plugin, registered
- * `station-screen`, mounted it, and put 44 KB of correct DOM on the page — reading
- * "ISS ASTRAL DAWN / SENSORS / BRIDGE · STATION 04". The seat was BLANK. The art measured
+ * `station-screen`, mounted it, and put 44 KB of correct DOM on the page — the ship's name, the
+ * station's name and its number, all present and all right. The seat was BLANK. The art measured
  * 1004 × **0** px.
+ *
+ * ⚠ This comment used to quote that DOM text verbatim, which put a DEPLOYMENT'S SHIP NAME into the
+ * neutral engine's tracked files — `t0531-01` caught it. Quoting a symptom is how domain vocabulary
+ * gets into a domain-free repo: the symptom is made of the domain. Describe it instead.
  *
  * The art is `height:100%` inside `.ap-root`, and assemble.mjs gives `.ap-root` an AUTO height
  * (max-width + padding, no height), so `100%` resolved against an indefinite height and computed
