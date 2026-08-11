@@ -104,10 +104,15 @@ def icemine():
     return frame("".join(p))
 
 # ── 5. OFFICIAL COMMS CARD (ART-8, reusable) ────────────────────────────────────
-def comms(name="—", role="—", org="—", sig="—", body="—", chan="VOICE + TEXT · REAL-TIME"):
+def comms(name="⟨NAME⟩", role="⟨role / title⟩", org="⟨organisation · where⟩",
+          sig="⟨why they matter — one line⟩|⟨second line⟩|⟨third line⟩",
+          body="\u201c⟨what they actually say⟩\u201d|\u201c⟨second line of speech⟩\u201d",
+          chan="⟨CHANNEL · CLASSIFICATION⟩"):
     p=[stars(5, 0, )]
-    p.append('<rect x="-470" y="-410" width="940" height="820" rx="6" fill="#10151f" '
-             'stroke="#1d2735" stroke-width="1.5"/>')
+    nsig  = len(sig.split('|')); nbody = len(body.split('|'))
+    H     = 300 + nsig*21 + nbody*32          # size to content, never a half-empty card
+    p.append(f'<rect x="-470" y="-410" width="940" height="{H}" rx="6" fill="#10151f" '
+             f'stroke="#1d2735" stroke-width="1.5"/>')
     p.append('<rect x="-470" y="-410" width="940" height="4" fill="#f0b429"/>')
     p.append(f'<text x="-440" y="-368" fill="#f0b429" font-family="{MONO}" font-size="12" letter-spacing="3">'
              'INCOMING TRANSMISSION</text>')
@@ -160,7 +165,7 @@ BEATS = [
     ("h-breakout",   "Breakout — emergence",   emergence(), "Transition out. Sensors coarse, detail arrives over minutes."),
     ("h-skim",       "Fuel skim — gas giant",  skim(),      "Unrefined hydrogen. Free and slow; misjump risk unless purified."),
     ("h-ice",        "Ice mining — free fuel", icemine(),   "Beyond the snow line. No port, no fees, NO RECORD OF YOUR ARRIVAL."),
-    ("h-comms",      "Official comms — blank card", comms(), "REUSABLE TEMPLATE: name, role, org, why-they-matter, message."),
+    ("h-comms",      "Official comms — TEMPLATE", comms(), "REUSABLE TEMPLATE. Copy this beat into a session module and replace the ⟨angle-bracket⟩ fields: name, role, org, why-they-matter, and what they say."),
     ("h-ranges",     "Tactical range bands",   ranges(),    "MgT2e range bands. The stand-off argument, drawn."),
 ]
 

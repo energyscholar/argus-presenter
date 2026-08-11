@@ -66,7 +66,7 @@ def build(gm):
     lab(0.70,"BELT I","the UWP 'mainworld' — no planet","#c9a227",168)
     lab(1.60,"BELT II","the working belt","#9aa7b8",122)
     lab(1.00,"snow line 1.01 AU","ice — and fuel — free beyond","#4a7fb5",204)
-    lab(10.0,"BELT III","the outer belt · 10 AU · 54 K","#8a7a7a",250)
+    lab(10.0,"BELT III","the outer belt · 10 AU · 54 K","#8a7a7a",108)
     if gm:
         rad=r(10,W); x,y=rad*math.cos(math.radians(52)), rad*math.sin(math.radians(52))
         P.append(f'<circle cx="0" cy="0" r="{rad:.1f}" fill="none" stroke="#c04a4a" stroke-width="1.4" stroke-dasharray="9 6" opacity=".85"/>')
