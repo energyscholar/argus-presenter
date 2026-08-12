@@ -75,6 +75,17 @@ export function createHttpHandler(ctx) {
       // Plan 0473 P0: strip the voice block(s) unless voice is enabled ⇒ zero voice bytes when off.
       res.writeHead(200, htmlHeaders());
       res.end(renderPresenterPage(VOICE_ENABLED));
+    } else if (req.url === '/diag' || req.url.startsWith('/diag?')) {
+      /* SELF-CHECK. Serves a page that runs entirely in the browser and TRANSMITS NOTHING — no
+         beacon, no logging, no storage, no endpoint behind it. Added 2026-08-12 after sign-in went
+         missing on one browser while the server proved healthy from three angles (tunnel, loopback,
+         stale cookie). ⭐ A remote-debug channel that ships browser state to a server is a new place
+         for identity to leak; this asks the person to read their own screen instead.
+         ⛔ UNGATED, for the same reason /auth/login is: the one page that diagnoses "I cannot get
+         in" must not itself require getting in. It exposes nothing a caller could not already learn
+         from /api/auth-state, which is redacted by design. */
+      res.writeHead(200, htmlHeaders());
+      res.end(readFileSync(CONTROL.replace(/control\.html$/, 'diag.html'), 'utf8'));
     } else if (req.url === '/control' || req.url.startsWith('/control?')) {
       res.writeHead(200, htmlHeaders());
       res.end(readFileSync(CONTROL, 'utf8'));

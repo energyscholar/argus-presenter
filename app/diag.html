@@ -1,0 +1,98 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Presenter — self-check</title>
+<!--
+  SELF-CHECK. Plan 0543 / added 2026-08-12 after sign-in went missing on one browser and the server
+  proved healthy from three angles (tunnel, loopback, stale cookie) while the control stayed hidden.
+
+  ⭐⭐ PRIVACY BY NOT COLLECTING. This page TRANSMITS NOTHING. There is no beacon, no logging, no
+  storage, no server endpoint behind it. Every check runs in the browser and prints on the screen the
+  person is already looking at; they choose what to read out. A remote-debug channel that ships
+  browser state to a server is a new place for identity to leak, and it was not necessary here.
+
+  ⛔ WHAT IT WILL NEVER DISPLAY: cookie values, session ids, tokens, `sub`, or an email. It shows
+  whether a cookie NAME is present — never its content. `/api/auth-state` is already redacted by
+  design (name only, and only to its own holder), and even that is shown only as present/absent.
+-->
+<style>
+  :root{--bg:#070b14;--fg:#cfe9ff;--dim:#7d94ab;--ok:#3fb950;--no:#e05252;--warn:#f0a830;--rule:#1d2b3d}
+  body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.6 ui-monospace,Menlo,Consolas,monospace;padding:1.5rem}
+  h1{font-size:1rem;letter-spacing:.2em;color:var(--warn);text-transform:uppercase;margin:0 0 .3rem}
+  .sub{color:var(--dim);font-size:.8rem;margin-bottom:1.5rem}
+  table{border-collapse:collapse;width:100%;max-width:70ch}
+  td{padding:.45rem .6rem;border-bottom:1px solid var(--rule);vertical-align:top}
+  td:first-child{color:var(--dim);white-space:nowrap;width:16rem}
+  .ok{color:var(--ok)} .no{color:var(--no)} .warn{color:var(--warn)}
+  #verdict{margin:1.5rem 0;padding:1rem;border:1px solid var(--rule);border-left-width:3px;max-width:70ch}
+  button{background:#101a29;color:var(--fg);border:1px solid var(--rule);border-radius:3px;
+    padding:.6rem 1.1rem;font:inherit;cursor:pointer;margin-right:.5rem}
+  button:hover{border-color:var(--ok)}
+  .note{color:var(--dim);font-size:.78rem;max-width:70ch;margin-top:1.5rem;border-top:1px solid var(--rule);padding-top:1rem}
+</style>
+<h1>Presenter — self-check</h1>
+<div class="sub">Nothing on this page is sent anywhere. It runs in your browser and prints here.</div>
+<table id="t"></table>
+<div id="verdict"></div>
+<button onclick="location.reload()">Run again</button>
+<button id="hard">Hard reload (bypass cache)</button>
+<div class="note">
+  Shows only: whether things are present and what shape they are. Never a cookie value, session id,
+  token or address. If you read this out, none of it identifies you.
+</div>
+<script>
+const rows = [];
+const add = (k, v, cls) => rows.push([k, v, cls || '']);
+(async () => {
+  add('page origin', location.origin);
+  add('served over', location.protocol === 'https:' ? 'HTTPS' : 'HTTP (plain)',
+      location.protocol === 'https:' ? 'ok' : 'warn');
+
+  // ⛔ NAME ONLY. document.cookie cannot see HttpOnly cookies at all, which is the point —
+  //    the session cookie is HttpOnly, so this can only ever report "not visible to script".
+  const names = document.cookie ? document.cookie.split(';').map(c => c.split('=')[0].trim()) : [];
+  add('cookies visible to script', names.length ? names.join(', ') : '(none)');
+  add('session cookie', 'HttpOnly — invisible to script by design', 'ok');
+
+  let st = null, err = null;
+  try {
+    const r = await fetch('/api/auth-state', { cache: 'no-store' });
+    add('/api/auth-state', 'HTTP ' + r.status, r.ok ? 'ok' : 'no');
+    if (r.ok) st = await r.json();
+  } catch (e) { err = String(e && e.message || e); add('/api/auth-state', 'FETCH FAILED: ' + err, 'no'); }
+
+  if (st) {
+    add('oidcActive', String(st.oidcActive), st.oidcActive ? 'ok' : 'no');
+    add('signedIn', String(st.signedIn), st.signedIn ? 'ok' : '');
+    add('trust', String(st.trust));
+    add('display name', st.name ? '(present — not shown here)' : '(none)');
+  }
+
+  // Does the page that MATTERS actually contain the control? Fetch the presenter HTML and look.
+  let hasEl = null;
+  try {
+    const h = await fetch('/', { cache: 'no-store' }).then(r => r.text());
+    hasEl = h.includes('id="ap-signin"');
+    add('presenter page has the control', hasEl ? 'yes' : 'NO — you have an OLD page', hasEl ? 'ok' : 'no');
+  } catch (e) { add('presenter page', 'could not fetch', 'no'); }
+
+  document.getElementById('t').innerHTML =
+    rows.map(([k, v, c]) => `<tr><td>${k}</td><td class="${c}">${v}</td></tr>`).join('');
+
+  const V = document.getElementById('verdict');
+  let msg, col;
+  if (err)                     { msg = 'The page cannot reach the server. The presenter may be stopped, or the tunnel is down.'; col = 'var(--no)'; }
+  else if (!st)                { msg = 'The server answered, but not with auth state. Check the server log.'; col = 'var(--no)'; }
+  else if (hasEl === false)    { msg = 'YOUR BROWSER IS SHOWING AN OLD COPY OF THE PAGE. The sign-in control does not exist in it. Press "Hard reload" below.'; col = 'var(--warn)'; }
+  else if (!st.oidcActive)     { msg = 'The server says sign-in is OFF. It is not reading your config — restart the presenter.'; col = 'var(--no)'; }
+  else if (st.signedIn)        { msg = 'You ARE signed in' + (st.trust === 'self' ? ' and authorized.' : ', but NOT on the allowlist — you would be fenced.'); col = st.trust === 'self' ? 'var(--ok)' : 'var(--warn)'; }
+  else                         { msg = 'Everything checks out and you are signed OUT. The control should read "🔑 Sign in". If you cannot see it on the presenter page, that page is cached — hard reload it.'; col = 'var(--ok)'; }
+  V.style.borderLeftColor = col; V.style.color = col; V.textContent = msg;
+})();
+document.getElementById('hard').onclick = async () => {
+  // Clear anything the browser is holding for this origin, then reload the PRESENTER page.
+  try { if (window.caches) for (const k of await caches.keys()) await caches.delete(k); } catch (e) {}
+  try { if (navigator.serviceWorker) for (const r of await navigator.serviceWorker.getRegistrations()) await r.unregister(); } catch (e) {}
+  location.href = '/?cachebust=' + Date.now();
+};
+</script>
