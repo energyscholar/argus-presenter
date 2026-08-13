@@ -16,7 +16,13 @@ modules/*.json
 
 # Local plugin installs stay out of the public repo (domain plugins are installed
 # locally under plugins/<name>/ and are never committed; core stays neutral)
-plugins/starship-ops/
+#
+# ⛔ 0575 P0 (audit) — THE WHOLE DIRECTORY, not one name. Naming a single plugin ignored the
+# one plugin we had thought of; the installer then put `ai-train-the-trainer/` back into the
+# tree UNTRACKED AND UNIGNORED, one `git add -A` away from re-committing content that plan
+# 0569 M2 deliberately removed from this public repo. The invariant is "this repo ships no
+# plugins" (0569 M2) — so the ignore must state THAT, not enumerate the plugins that exist.
+plugins/
 
 # Content SOURCE also stays out (modules/*.json above only covers built output).
 # Session decks live in the private campaign repo; core stays neutral.
