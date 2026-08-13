@@ -11,7 +11,7 @@
 import { readFileSync, existsSync, readdirSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { resolveClosure } from './plugins.mjs';
+import { resolveClosure, pluginDir } from './plugins.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
@@ -33,11 +33,17 @@ function bundle(pluginSet = []) {
     if (existsSync(join(ROOT, c))) css += `\n/* --- ${name} --- */\n` + read(c);
   }
   for (const name of pluginSet) {
-    const dir = join(ROOT, 'plugins', name);
+    // ⛔ Plan 0569 M2 — RESOLVE VIA pluginDir(), NEVER join(ROOT,'plugins',name).
+    // This used to hardcode ROOT/plugins while plugins.mjs honoured PRESENTER_PLUGINS_DIR, so a
+    // deployment or test that redirected the plugin tree got its MANIFESTS from the custom dir
+    // and its COMPONENT BYTES from the default one. The closure resolved, the manifest parsed,
+    // the scene mounted — and the plugin's component silently never rendered. session-rig.mjs
+    // sets that env var, so this was reachable in a real run, not only in tests.
+    const dir = pluginDir(name);
     if (!existsSync(dir)) continue;
     for (const f of readdirSync(dir)) {   // .js/.css only; server-side .mjs + plugin.json excluded
-      if (f.endsWith('.js')) js += `\n/* --- plugin ${name}/${f} --- */\n` + read(`plugins/${name}/${f}`);
-      if (f.endsWith('.css')) css += `\n/* --- plugin ${name}/${f} --- */\n` + read(`plugins/${name}/${f}`);
+      if (f.endsWith('.js')) js += `\n/* --- plugin ${name}/${f} --- */\n` + readFileSync(join(dir, f), 'utf8');
+      if (f.endsWith('.css')) css += `\n/* --- plugin ${name}/${f} --- */\n` + readFileSync(join(dir, f), 'utf8');
     }
   }
   return { css, js };

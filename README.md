@@ -101,8 +101,14 @@ Core ships **domain-neutral**. Optional bundles live in `plugins/<name>/` with a
 `plugin.json` manifest declaring components, map presets, and field schemas. The
 assembler bundles core **plus exactly** the transitive closure of a content
 module's declared `requires` — no `requires` means zero plugin bytes. See
-`plugins/example/` for a reference plugin (a `weather` component + a `city-grid`
-map preset).
+`test/fixtures/plugins/example/` for a reference plugin (a `weather` component +
+a `city-grid` map preset).
+
+⛔ **This repo ships no plugins.** `plugins/` is an install target only — real
+plugins live in `repertory` (private), because plugin content is not necessarily
+publishable and this repo is public. The reference plugin above is a **test
+fixture**: it exists so the engine can prove the plugin *mechanism* without
+knowing any real plugin's name.
 
 **Installing a plugin is a copy plus a proof.** `plugins/` is gitignored, so a
 partial install leaves no trace in `git status` and looks exactly like a complete
