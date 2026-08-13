@@ -1,12 +1,18 @@
 /*
  * A7 — server/MCP push_component honors the content's `requires`: a core push
- * loads no plugin; an example push loads the example plugin (city-grid preset).
+ * loads no plugin; a plugin push loads it (city-grid preset).
+ *
+ * ⭐ Plan 0569 M2 — the plugin is a TEST FIXTURE. This repo ships no plugins; `plugins/` is an
+ * install target and real plugins live in repertory (private). The env redirect must be in place
+ * BEFORE presenter_start, because the server reads the plugin tree as it comes up.
  */
 import { test, check as expect } from '../../harness/test.mjs';
 import { toolMap, _server } from '../../mcp/tools.mjs';
 import { launch, connectUser, waitContentFrame, contentFrame, until } from '../../harness/multi.mjs';
+import { withFixturePlugins } from '../fixtures/plugins.mjs';
 
-test('A7 — core push = no plugin; example push = city-grid preset', async () => {
+test('A7 — core push = no plugin; plugin push = city-grid preset', async () => {
+  await withFixturePlugins(async () => {
   const T = toolMap();
   await T.presenter_start.handler({ port: 0 });
   const server = _server();
@@ -27,6 +33,7 @@ test('A7 — core push = no plugin; example push = city-grid preset', async () =
     await new Promise((r) => setTimeout(r, 400));
     await until(async () => (await contentFrame(p).$$eval('.ap-map-block', (e) => e.length).catch(() => 0)) === 8, { label: '8 blocks after plugin push', timeout: 5000 });
     const blocks = await contentFrame(p).$$eval('.ap-map-block', (els) => els.length);
-    expect('example push loads city-grid preset (8 blocks)', blocks === 8, String(blocks));
+    expect('plugin push loads city-grid preset (8 blocks)', blocks === 8, String(blocks));
   } finally { await browser.close(); await T.presenter_stop.handler({}); }
+  });
 });
