@@ -41,3 +41,8 @@ modules/_archive/*
 # Plan 0534 W1-A: resolve-refs build records (sha256 of what it emitted, so a re-emit
 # can tell its own output from a hand-authored module). Runtime state, never tracked.
 modules/.resolve-refs/
+__pycache__/
+*.pyc
+*.bak
+*.bak-*
+*.orig
