@@ -29,6 +29,21 @@ async function bareMachine(guards = {}) {
   return mod.createShipMachine(mod.loadChart(), { guards });
 }
 
+/*
+ * ⭐ 0575 P1a — THE SHIP NAMESPACE IS KEYED (`ships/<shipId>/…`), NOT THE SINGLETON `ship/…`.
+ *
+ * ⛔ The id is ASKED FOR, never written down here. Two reasons, and either alone decides it:
+ * this repo is PUBLIC and t0531 fails any test that spells a campaign value; and a literal here
+ * would be a second source of truth for a key the plugin already owns — exactly the drift the
+ * rename was done to stop. A deployment with no gitignored instance file answers `unknown`, and
+ * every assertion below still means what it says.
+ */
+async function shipKey() {
+  const mod = await loadMachineModule();
+  const id = mod.loadShipInstance().shipId || mod.UNCOMMISSIONED_SHIP_ID;
+  return { id, ns: mod.shipNs(id) };
+}
+
 test('t0514-00 — the system plugin is installed (every Phase 0 test below needs it)', () => {
   // 0532 P0: the plugin was mined into the content repo. Install it from
   // repertory/systems/traveller/plugins/ — the old private source repo is being retired, and
@@ -92,14 +107,19 @@ test('t0514-26 — an unknown event is IGNORED, never thrown', async () => {
   expect(good.changed && m.state().power === 'combat', 'a valid $event target resolves', JSON.stringify(good));
 });
 
-test('t0514-27 — each region publishes its active state to the store at ship/<region>', async () => {
+test('t0514-27 — each region publishes its active state to the store at ships/<shipId>/<region>', async () => {
+  const { ns } = await shipKey();
   const server = await createServer({ port: 0 });
   try {
-    expect(server.store.get('ship/alert') === 'normal', 'ship/alert seeded at load', String(server.store.get('ship/alert')));
-    expect(server.store.get('ship/nav') === 'docked', 'ship/nav seeded at load', String(server.store.get('ship/nav')));
+    expect(server.store.get(`${ns}/alert`) === 'normal', `${ns}/alert seeded at load`, String(server.store.get(`${ns}/alert`)));
+    expect(server.store.get(`${ns}/nav`) === 'docked', `${ns}/nav seeded at load`, String(server.store.get(`${ns}/nav`)));
     await server.callPluginTool('ship_event', { event: 'battle-stations' });
-    expect(server.store.get('ship/alert') === 'action', 'a transition writes through to the store', String(server.store.get('ship/alert')));
-    expect(server.store.get('ship/nav') === 'docked', 'and only its own region', String(server.store.get('ship/nav')));
+    expect(server.store.get(`${ns}/alert`) === 'action', 'a transition writes through to the store', String(server.store.get(`${ns}/alert`)));
+    expect(server.store.get(`${ns}/nav`) === 'docked', 'and only its own region', String(server.store.get(`${ns}/nav`)));
+    // ⛔ 0575 P1a — AND THE SINGLETON IS GONE. Without this the rename could half-happen and every
+    // assertion above would still pass while a stale `ship/alert` sat beside it, unread and wrong.
+    expect(server.store.get('ship/alert') === undefined, 'nothing is published at the old singleton path ship/alert',
+      String(server.store.get('ship/alert')));
   } finally { await server.close(); }
 });
 
@@ -411,35 +431,43 @@ test('t0514-42 — NO seat resolver registered ⇒ stations are INERT, and the s
   });
 });
 
-test('t0514-45 — a PARTICIPANT can READ ship/alert, and a component watching it is not blank', async () => {
+test('t0514-45 — a PARTICIPANT can READ the ship alert, and a component watching it is not blank', async () => {
   // Plan 0471 C3 made reads default-DENY with an allow-list, and the code comments its own
   // failure mode: "a missed allow rule renders a component BLANK … never a leak". Without a rule
   // for this prefix, promoting a placeholder to a live watching applet would render blank,
   // silently, and look like a broken component rather than a permissions denial.
+  const { id, ns } = await shipKey();
   const server = await createServer({ port: 0 });
   try {
     const actor = { role: 'participant', userId: 'u1' };
-    expect(server.store.perms.canRead(actor, 'ship/alert'), 'a participant may READ ship/alert');
-    expect(server.store.perms.canRead(actor, 'ship/stations/1/occupants'), 'and the nested occupancy path (prefix rule)');
+    expect(server.store.perms.canRead(actor, `${ns}/alert`), `a participant may READ ${ns}/alert`);
+    expect(server.store.perms.canRead(actor, `${ns}/stations/1/occupants`), 'and the nested occupancy path (prefix rule)');
     const snap = server.store.snapshot(actor);
-    expect(snap.state.ship && snap.state.ship.alert === 'normal', 'and it reaches the participant SNAPSHOT — not blank',
-      JSON.stringify(snap.state.ship));
+    // ⛔ 0575 P1b — THE SNAPSHOT SHAPE IS PART OF THE NAMESPACE. Three components read this tree by
+    // path (`d.state.ships[id]…`), and each guards on its own root — so a rename that stopped at
+    // the store would leave every one of them fetching `undefined`, failing CLOSED and LOOKING FINE.
+    const sh = snap.state.ships && snap.state.ships[id];
+    expect(sh && sh.alert === 'normal', 'and it reaches the participant SNAPSHOT — not blank',
+      JSON.stringify(snap.state.ships));
+    expect(sh && sh.identity && sh.identity.shipId === id, 'the identity is filed under its own key — one name, not two',
+      JSON.stringify(sh && sh.identity));
   } finally { await server.close(); }
 });
 
 test('t0514-46 — the machine writes as `system` (accepted); the same write as `participant` is DENIED', async () => {
+  const { ns } = await shipKey();
   const server = await createServer({ port: 0 });
   try {
     // Accepted: the machine's own writes landed (proof the actor it uses is an override role).
-    expect(server.store.get('ship/power') === 'standard', 'a machine write was accepted', String(server.store.get('ship/power')));
+    expect(server.store.get(`${ns}/power`) === 'standard', 'a machine write was accepted', String(server.store.get(`${ns}/power`)));
 
     // Denied, and QUIETLY — app/permissions.mjs is default-deny for participants and state.mjs
     // counts the refusal rather than throwing. This is the trap §4.2b exists to record: writing
     // as `participant` (the obvious choice, since the write is triggered by a player's action)
     // would have failed forever with no error anywhere.
-    const res = server.store.apply({ path: 'ship/power', verb: 'set', value: 'combat' }, { role: 'participant', userId: 'u1' });
+    const res = server.store.apply({ path: `${ns}/power`, verb: 'set', value: 'combat' }, { role: 'participant', userId: 'u1' });
     expect(res === null, 'a participant write is refused', JSON.stringify(res));
-    expect(server.store.get('ship/power') === 'standard', 'and the value did not change', String(server.store.get('ship/power')));
+    expect(server.store.get(`${ns}/power`) === 'standard', 'and the value did not change', String(server.store.get(`${ns}/power`)));
   } finally { await server.close(); }
 });
 

@@ -20,6 +20,17 @@
 import { test, check as expect } from '../../harness/test.mjs';
 import { createServer } from '../../app/server.mjs';
 import { launch, until, wait } from '../../harness/multi.mjs';
+import { join, dirname } from 'path';
+import { fileURLToPath, pathToFileURL } from 'url';
+
+/* ⭐ 0575 P1a — the ship's store namespace is `ships/<shipId>/…`. ASK THE PLUGIN for the key;
+   this repo is PUBLIC and must not spell a campaign value, and a literal here would be a second
+   source of truth for something the plugin already owns. */
+const MACHINE = join(dirname(fileURLToPath(import.meta.url)), '../../plugins/starship-ops/ship-machine.mjs');
+async function shipNs() {
+  const mod = await import(pathToFileURL(MACHINE).href);
+  return mod.shipNs(mod.loadShipInstance().shipId);
+}
 
 /** Seat a real browser at a station, exactly as a player's link does. */
 async function seat(browser, server, uid, name) {
@@ -137,8 +148,12 @@ test('t0565-02 — ⛔ THE DENY: a seat without the order is REFUSED, IN WORDS',
     expect('a hostile client can send the order', sent, 'no Argus.emit in the frame');
 
     await wait(1500);
-    const st = server.store.get('ship/alert');
-    expect('⛔⛔ THE SHIP DID NOT MOVE', st !== 'action', `ship/alert = ${st}`);
+    /* ⛔ 0575 P1a — READ THE KEYED PATH, and get the key from the plugin rather than writing it
+       down: a stale `ship/alert` would read `undefined`, `undefined !== 'action'` is TRUE, and
+       this assertion would pass for the wrong reason forever — a guard that can no longer fail. */
+    const ns = await shipNs();
+    const st = server.store.get(`${ns}/alert`);
+    expect('⛔⛔ THE SHIP DID NOT MOVE', st !== 'action' && st !== undefined, `${ns}/alert = ${st}`);
 
     const ack = await panel(pil);
     if (ack) {

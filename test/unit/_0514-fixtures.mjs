@@ -102,6 +102,30 @@ export function makeArtPluginsDir(over = {}) {
   } });
 }
 
+// ── the ship's store namespace ────────────────────────────────────────────────────────────────
+/*
+ * ⭐⭐ 0575 P1a — SHIP STATE IS KEYED: `ships/<shipId>/alert`, not the singleton `ship/alert`.
+ *
+ * ⛔ THE ID IS ASKED FOR, NEVER WRITTEN DOWN. Two independent reasons: this repo is PUBLIC and
+ * t0531 fails any test that spells a campaign value; and a literal here would be a SECOND source
+ * of truth for a key the plugin already owns — which is the drift the rename exists to stop.
+ *
+ * The fallback is the plugin's OWN uncommissioned default, and it applies only when the plugin is
+ * not installed — a case every test using this already guards with `haveMachine`/a station check.
+ */
+async function readShipKey() {
+  try {
+    const mod = await import(pathToFileURL(join(REAL_PLUGINS, 'starship-ops', 'ship-machine.mjs')).href);
+    const id = mod.loadShipInstance().shipId || mod.UNCOMMISSIONED_SHIP_ID;
+    return { id, ns: mod.shipNs(id) };
+  } catch (e) { return { id: 'unknown', ns: 'ships/unknown' }; }
+}
+const SHIP_KEY = await readShipKey();
+/** The commissioned ship's id, or `unknown` when nothing is commissioned. */
+export const SHIP_ID = SHIP_KEY.id;
+/** Its store namespace — the prefix every ship write hangs off. */
+export const SHIP_NS = SHIP_KEY.ns;
+
 // ── live websocket helpers ────────────────────────────────────────────────────────────────────
 export const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 

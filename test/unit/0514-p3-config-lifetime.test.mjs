@@ -18,7 +18,7 @@ import { WebSocket } from 'ws';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
-import { ROOT, REAL_PLUGINS, makePluginsDir, makeArtPluginsDir, DRAWN_MARK, withPlugins, wait, connect, last } from './_0514-fixtures.mjs';
+import { ROOT, REAL_PLUGINS, makePluginsDir, makeArtPluginsDir, DRAWN_MARK, withPlugins, wait, connect, last, SHIP_NS } from './_0514-fixtures.mjs';
 
 const PRESENTER_HTML = readFileSync(join(ROOT, 'app', 'presenter.html'), 'utf8');
 const CONTROL_HTML = readFileSync(join(ROOT, 'app', 'control.html'), 'utf8');
@@ -238,7 +238,7 @@ test('t0514-31 — station → present_module → THE STATION STILL RESOLVES (th
       server.setModule(MODULE); server.showBeat(0); await wait(160);
 
       expect(server.stations().seats.find((s) => s.userId === 'seat-op').stationUid === 1, 'the station SURVIVED the module load');
-      expect((server.store.get('ship/stations/1/occupants') || []).includes('seat-op'), 'occupancy is intact in the machine');
+      expect((server.store.get(`${SHIP_NS}/stations/1/occupants`) || []).includes('seat-op'), 'occupancy is intact in the machine');
       c.clear();
       c.send({ t: 'station-show' }); await wait(180);
       const html = last(c, 'content')?.html || '';
@@ -295,8 +295,8 @@ test('t0514-34 — disconnect + reconnect on the same seat link → same userId,
     const again = await connect(WebSocket, url, link);
     expect(last(again, 'welcome').userId === id, 'same userId', last(again, 'welcome').userId);
     expect(last(again, 'welcome').stationUid === uid, 'same station', String(last(again, 'welcome').stationUid));
-    expect((server.store.get('ship/stations/' + uid + '/occupants') || []).includes(id), 'and it is re-recorded exactly once',
-      JSON.stringify(server.store.get('ship/stations/' + uid + '/occupants')));
+    expect((server.store.get(SHIP_NS + '/stations/' + uid + '/occupants') || []).includes(id), 'and it is re-recorded exactly once',
+      JSON.stringify(server.store.get(SHIP_NS + '/stations/' + uid + '/occupants')));
     again.ws.close();
   } finally { await server.close(); }
 });
@@ -348,7 +348,7 @@ test('t0514-36 — displayByUser CLEARING behaviour is unchanged (a guard agains
   } finally { await server.close(); }
 });
 
-test('t0514-37 — no station LABEL or CODE appears anywhere under ship/ (occupancy is UID-only)', async () => {
+test('t0514-37 — no station LABEL or CODE appears anywhere under the ship namespace (occupancy is UID-only)', async () => {
   const server = await createServer({ port: 0 });
   const url = server.url().replace('http', 'ws');
   try {
@@ -372,16 +372,16 @@ test('t0514-37 — no station LABEL or CODE appears anywhere under ship/ (occupa
         // that a reload returns the same seat (§5). It is an IDENTITY string, not a station
         // reference — the machine never parses it to learn a station, it reads stationUid. The
         // exception is scoped to exactly that one path segment and nowhere else.
-        const isSeatIdentity = path === 'ship/seats';
+        const isSeatIdentity = path === `${SHIP_NS}/seats`;
         if (!isSeatIdentity && (labels.includes(k) || codes.includes(k))) bad.push('key@' + path + '/' + k);
         walk(node[k], path + '/' + k);
       }
-    })(server.store.get('ship'), 'ship');
-    expect(bad.length === 0, 'ship/ is UID-keyed throughout', JSON.stringify(bad));
+    })(server.store.get(SHIP_NS), SHIP_NS);
+    expect(bad.length === 0, `${SHIP_NS}/ is UID-keyed throughout`, JSON.stringify(bad));
 
     // Positive control: the occupancy that IS there is keyed by integer uid.
-    expect(Array.isArray(server.store.get('ship/stations/5/occupants')), 'occupancy lives at an integer-uid path');
-    expect(server.store.get('ship/seats/plain-seat/stationUid') === 3, 'and the reverse index stores an integer');
+    expect(Array.isArray(server.store.get(`${SHIP_NS}/stations/5/occupants`)), 'occupancy lives at an integer-uid path');
+    expect(server.store.get(`${SHIP_NS}/seats/plain-seat/stationUid`) === 3, 'and the reverse index stores an integer');
     a.ws.close(); b.ws.close();
   } finally { await server.close(); }
 });

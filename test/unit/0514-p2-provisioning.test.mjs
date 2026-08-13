@@ -13,7 +13,7 @@ import { createServer, slugForSeat } from '../../app/server.mjs';
 import { WebSocket } from 'ws';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { ROOT, wait, connect, last } from './_0514-fixtures.mjs';
+import { ROOT, wait, connect, last, SHIP_NS } from './_0514-fixtures.mjs';
 
 /**
  * Simulate what app/presenter.html sends for a given seat link. Kept in ONE place.
@@ -170,7 +170,7 @@ test('t0514-19 — two Gunner links with different names get DISTINCT userIds an
     expect(last(a, 'welcome').userId === 'gunner-anemone', 'second gunner', last(a, 'welcome').userId);
     // t0514-40 — and BOTH are in the same occupants list. Multiplicity works because occupancy is
     // extended state keyed by uid, not a vacant|occupied region per station.
-    const occ = server.store.get('ship/stations/5/occupants') || [];
+    const occ = server.store.get(`${SHIP_NS}/stations/5/occupants`) || [];
     expect(occ.includes('gunner-tamsin') && occ.includes('gunner-anemone'), 't0514-40 — both appear in the SAME occupants list', JSON.stringify(occ));
     m.ws.close(); a.ws.close();
   } finally { await server.close(); }
@@ -200,7 +200,7 @@ test('t0514-41 — maxOccupants is RECORDED AND DELIBERATELY NOT ENFORCED', asyn
     const conns = [];
     for (const n of ['One', 'Two', 'Three', 'Four', 'Five']) conns.push(await connect(WebSocket, url, seatLink({ stationUID: 1, name: n })));
     await wait(120);
-    const occ = server.store.get('ship/stations/1/occupants') || [];
+    const occ = server.store.get(`${SHIP_NS}/stations/1/occupants`) || [];
     // Bruce: "its fine if multiple users land on a single station. Later we may restrict this but
     // not yet." This test exists so nobody "finishes" the feature by quietly switching it on —
     // enforcement is later a guard over occupants, not a schema change.

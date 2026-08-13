@@ -12,7 +12,7 @@ import { buildStationRegistry } from '../../harness/plugins.mjs';
 import { WebSocket } from 'ws';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { ROOT, makePluginsDir, withPlugins, stationManifest, wait, connect, last } from './_0514-fixtures.mjs';
+import { ROOT, makePluginsDir, withPlugins, stationManifest, wait, connect, last, SHIP_NS } from './_0514-fixtures.mjs';
 
 /** Build a registry straight from manifest objects — the loader in isolation. */
 function build(manifests) { return buildStationRegistry(manifests, {}); }
@@ -134,13 +134,13 @@ test('t0514-38 — joining a station WRITES OCCUPANCY TO THE MACHINE, both index
   try {
     const a = await connect(WebSocket, url, { userId: 'seat-one', userName: 'Seat One' });
     a.send({ t: 'station-select', stationUid: 6 }); await wait(160);
-    const occupants = server.store.get('ship/stations/6/occupants');
+    const occupants = server.store.get(`${SHIP_NS}/stations/6/occupants`);
     expect(Array.isArray(occupants) && occupants.includes('seat-one'), 'the forward index holds the seat', JSON.stringify(occupants));
-    expect(server.store.get('ship/seats/seat-one/stationUid') === 6, 'the reverse index agrees', String(server.store.get('ship/seats/seat-one/stationUid')));
+    expect(server.store.get(`${SHIP_NS}/seats/seat-one/stationUid`) === 6, 'the reverse index agrees', String(server.store.get(`${SHIP_NS}/seats/seat-one/stationUid`)));
     // Moving station must leave no ghost behind in the previous one.
     a.send({ t: 'station-select', stationUid: 7 }); await wait(160);
-    expect(!(server.store.get('ship/stations/6/occupants') || []).includes('seat-one'), 'the old station released the seat', JSON.stringify(server.store.get('ship/stations/6/occupants')));
-    expect((server.store.get('ship/stations/7/occupants') || []).includes('seat-one'), 'the new station holds it');
+    expect(!(server.store.get(`${SHIP_NS}/stations/6/occupants`) || []).includes('seat-one'), 'the old station released the seat', JSON.stringify(server.store.get(`${SHIP_NS}/stations/6/occupants`)));
+    expect((server.store.get(`${SHIP_NS}/stations/7/occupants`) || []).includes('seat-one'), 'the new station holds it');
     a.ws.close();
   } finally { await server.close(); }
 });
@@ -167,12 +167,12 @@ test('t0514-43 — disconnect calls release() and the seat LEAVES occupants', as
   try {
     const a = await connect(WebSocket, url, { userId: 'leaver', userName: 'Leaver' });
     a.send({ t: 'station-select', stationUid: 9 }); await wait(160);
-    expect((server.store.get('ship/stations/9/occupants') || []).includes('leaver'), 'seated');
+    expect((server.store.get(`${SHIP_NS}/stations/9/occupants`) || []).includes('leaver'), 'seated');
     a.ws.close(); await wait(220);
-    expect(!(server.store.get('ship/stations/9/occupants') || []).includes('leaver'),
+    expect(!(server.store.get(`${SHIP_NS}/stations/9/occupants`) || []).includes('leaver'),
       'gone after disconnect — without release() the roster drifts within one session',
-      JSON.stringify(server.store.get('ship/stations/9/occupants')));
-    expect(server.store.get('ship/seats/leaver/stationUid') === null, 'and the reverse index is cleared');
+      JSON.stringify(server.store.get(`${SHIP_NS}/stations/9/occupants`)));
+    expect(server.store.get(`${SHIP_NS}/seats/leaver/stationUid`) === null, 'and the reverse index is cleared');
   } finally { await server.close(); }
 });
 
@@ -186,9 +186,9 @@ test('t0514-43b — one PERSON on two sockets is not released until the LAST one
     const b = await connect(WebSocket, url, { userId: 'twinned', userName: 'Twinned' });
     a.send({ t: 'station-select', stationUid: 11 }); await wait(160);
     a.ws.close(); await wait(220);
-    expect((server.store.get('ship/stations/11/occupants') || []).includes('twinned'), 'still seated while a socket remains',
-      JSON.stringify(server.store.get('ship/stations/11/occupants')));
+    expect((server.store.get(`${SHIP_NS}/stations/11/occupants`) || []).includes('twinned'), 'still seated while a socket remains',
+      JSON.stringify(server.store.get(`${SHIP_NS}/stations/11/occupants`)));
     b.ws.close(); await wait(220);
-    expect(!(server.store.get('ship/stations/11/occupants') || []).includes('twinned'), 'released when the last socket goes');
+    expect(!(server.store.get(`${SHIP_NS}/stations/11/occupants`) || []).includes('twinned'), 'released when the last socket goes');
   } finally { await server.close(); }
 });
