@@ -14,7 +14,7 @@
 import { test, expect } from '../../harness/test.mjs';
 import { createServer } from '../../app/server.mjs';
 import { WebSocket } from 'ws';
-import { loadShipPluginModule, SHIP_ID, SHIP_NS, wait, connect } from './_0514-fixtures.mjs';
+import { loadShipPluginModule, SHIP_ID, SHIP_NS, wait, connect, withFleet, TWO_HULLS } from './_0514-fixtures.mjs';
 
 const toolResult = async (server, name, args) => {
   const r = await server.callPluginTool(name, args);
@@ -35,14 +35,20 @@ async function crewOf(server, rows) {
 }
 
 test('t0575-03 — ⭐⭐ MOVE ONE PERSON THROUGH THE SAME CODE PATH, AND FIND THE MODEL INTACT', async () => {
+  await withFleet(TWO_HULLS, async () => {
   const server = await createServer({ port: 0 });
   let conns = [];
   try {
     if (!server.stations().stations.length) { expect(true, 'skipped — no station plugin'); return; }
     const mod = await loadShipPluginModule('ship-machine.mjs');
+    /* ⭐ 0581 PHASE F — SHADOWED DELIBERATELY. The module-level SHIP_ID/SHIP_NS are read at import
+       from whatever this DISK declares; inside a commissioned fleet the primary is the fixture's,
+       and every assertion below means "the hull they started on" either way. */
     const fleet = mod.loadFleet();
+    const SHIP_ID = fleet.primaryShipId, SHIP_NS = mod.shipNs(SHIP_ID);
+    expect(fleet.ships.length >= 2, '⛔ two hulls are really commissioned — no silent skip below this line',
+      JSON.stringify(fleet.ships.map((x) => x.shipId)));
     const other = fleet.ships.find((s) => s.shipId !== SHIP_ID);
-    if (!other) { expect(true, `this deployment declares ${fleet.ships.length} hull(s) — commission a second to exercise t0575-03`, 'reported'); return; }
 
     conns = await crewOf(server, [['crew-a', 5], ['crew-b', 5], ['crew-c', 6]]);
     const people = await loadShipPluginModule('people.mjs');
@@ -65,8 +71,14 @@ test('t0575-03 — ⭐⭐ MOVE ONE PERSON THROUGH THE SAME CODE PATH, AND FIND T
         `⭐ ${id} did NOT move — placeId is per PERSON, not a crew-level flag`,
         JSON.stringify(server.store.get(people.personPath(id))));
     }
-    expect(server.store.get(people.personPath('crew-b')).stationUid === null,
-      '⛔ and the mover lost their seat — a stationUid means nothing off the hull it belongs to',
+    /* ⭐⭐ 0581 PHASE C — THIS ASSERTION IS INVERTED, AND DELIBERATELY. It read
+       `stationUid === null` — "the mover lost their seat, a stationUid means nothing off the hull
+       it belongs to". RULED BY BRUCE, 2026-08-14: that is right about a BEACH and wrong about
+       ANOTHER SHIP. "A moved crew should all go to the SAME STATION THEY WERE ON, only on the NEW
+       SHIP." The seat-is-dropped rule survives intact for a stationless place — t0575-05 asserts
+       it, and t0575-03d below moves someone to a world and still expects null. */
+    expect(server.store.get(people.personPath('crew-b')).stationUid === 5,
+      '⭐ the mover KEEPS station 5 — on the destination hull (0581 C1)',
       JSON.stringify(server.store.get(people.personPath('crew-b'))));
 
     // ── and the OCCUPANCY PROJECTION followed on the ship they left ────────────────────────
@@ -79,18 +91,25 @@ test('t0575-03 — ⭐⭐ MOVE ONE PERSON THROUGH THE SAME CODE PATH, AND FIND T
     expect((server.store.get(`${SHIP_NS}/stations/6/occupants`) || []).includes('crew-c'),
       'while an untouched station is untouched', JSON.stringify(server.store.get(`${SHIP_NS}/stations/6/occupants`)));
   } finally { for (const c of conns) try { c.ws.close(); } catch {} await wait(200); await server.close(); }
+  });
 });
 
 test('t0575-03b — ⭐ AND THE BULK CASE IS THE SAME CALL WITH THE LIST LEFT OUT', async () => {
+  await withFleet(TWO_HULLS, async () => {
   const server = await createServer({ port: 0 });
   let conns = [];
   try {
     if (!server.stations().stations.length) { expect(true, 'skipped — no station plugin'); return; }
     const mod = await loadShipPluginModule('ship-machine.mjs');
     const people = await loadShipPluginModule('people.mjs');
+    /* ⭐ 0581 PHASE F — SHADOWED DELIBERATELY. The module-level SHIP_ID/SHIP_NS are read at import
+       from whatever this DISK declares; inside a commissioned fleet the primary is the fixture's,
+       and every assertion below means "the hull they started on" either way. */
     const fleet = mod.loadFleet();
+    const SHIP_ID = fleet.primaryShipId, SHIP_NS = mod.shipNs(SHIP_ID);
+    expect(fleet.ships.length >= 2, '⛔ two hulls are really commissioned — no silent skip below this line',
+      JSON.stringify(fleet.ships.map((x) => x.shipId)));
     const other = fleet.ships.find((s) => s.shipId !== SHIP_ID);
-    if (!other) { expect(true, 'one hull on this deployment — reported', 'reported'); return; }
 
     conns = await crewOf(server, [['all-a', 1], ['all-b', 5], ['all-c', 5]]);
     const res = await toolResult(server, 'ship_move_crew', { toPlaceId: other.shipId });
@@ -111,6 +130,7 @@ test('t0575-03b — ⭐ AND THE BULK CASE IS THE SAME CALL WITH THE LIST LEFT OU
       JSON.stringify(again));
     expect(again.refused.every((r) => r.reason === 'already-there'), 'and says why for each', JSON.stringify(again.refused));
   } finally { for (const c of conns) try { c.ws.close(); } catch {} await wait(200); await server.close(); }
+  });
 });
 
 test('t0575-03c — ⛔ AN UNKNOWN DESTINATION IS REFUSED, and nobody moves', async () => {
@@ -134,6 +154,7 @@ test('t0575-03c — ⛔ AN UNKNOWN DESTINATION IS REFUSED, and nobody moves', as
 });
 
 test('t0575-03d — ⭐ A PLACE WITHOUT STATIONS IS A VALID DESTINATION (this is the away party)', async () => {
+  await withFleet(TWO_HULLS, async () => {
   const server = await createServer({ port: 0 });
   let conns = [];
   try {
@@ -144,10 +165,14 @@ test('t0575-03d — ⭐ A PLACE WITHOUT STATIONS IS A VALID DESTINATION (this is
        If this deployment declares no non-ship place, that is a DATA gap, not a code gap — and the
        test says which, rather than passing quietly. */
     const nonShip = Object.values(server.store.get(placesMod.PLACES) || {}).find((p) => p && p.hasStations === false);
-    if (!nonShip) {
-      expect(true, 'this deployment declares no non-ship place — add one to ships.json `places` to exercise t0575-03d', 'reported');
-      return;
-    }
+    /* ⛔ 0581 PHASE F — this used to `return` with `expect(true, '…reported')` when the deployment
+       declared no non-ship place, and it DID exactly that on this box. The fixture fleet declares
+       one, so the away party is exercised or this FAILS. */
+    expect(!!nonShip, '⛔ the fixture fleet declares a non-ship place — no silent skip below this line',
+      JSON.stringify(Object.values(server.store.get(placesMod.PLACES) || {}).map((x) => x && x.placeId)));
+    if (!nonShip) return;
+    const mod = await loadShipPluginModule('ship-machine.mjs');
+    const SHIP_NS = mod.shipNs(mod.loadFleet().primaryShipId);
     conns = await crewOf(server, [['lander', 5]]);
     const res = await toolResult(server, 'ship_move_crew', { toPlaceId: nonShip.placeId, personIds: ['lander'] });
     expect(res.ok === true && res.moved.length === 1, 'the away party lands', JSON.stringify(res));
@@ -157,4 +182,5 @@ test('t0575-03d — ⭐ A PLACE WITHOUT STATIONS IS A VALID DESTINATION (this is
     expect(!((server.store.get(`${SHIP_NS}/stations/5/occupants`) || []).includes('lander')),
       'and the ship no longer lists them', JSON.stringify(server.store.get(`${SHIP_NS}/stations/5/occupants`)));
   } finally { for (const c of conns) try { c.ws.close(); } catch {} await wait(200); await server.close(); }
+  });
 });

@@ -125,6 +125,53 @@ export function loadShipPluginModule(file) {
   return import(pathToFileURL(join(REAL_PLUGINS, 'starship-ops', file)).href);
 }
 
+/*
+ * ⭐⭐ 0581 PHASE F — COMMISSION THE HULLS A TEST NEEDS, instead of skipping when the deployment
+ * has not supplied them.
+ *
+ * ⛔ THE DEFECT: `ships.json` is GITIGNORED DEPLOYMENT DATA. On CI, or any clean clone, the fleet
+ * is EMPTY — and `t0575-02`, `-03`, `-03p` and `-09d-real` each answered that by `return`ing with
+ * `expect(true, '…reported')`. ⇒ THE WHOLE MULTI-SHIP ACCEPTANCE SUITE SELF-SKIPPED AND REPORTED
+ * GREEN. `t0575-03d` did exactly that on this box. A test that cannot run must FAIL or COMMISSION
+ * WHAT IT NEEDS; passing by absence is the one thing it must never do.
+ * [[feedback-a-silent-skip-looks-exactly-like-success]]
+ *
+ * ⛔ THE HULLS ARE INVENTED AND OBVIOUSLY FICTIONAL, and this repo is PUBLIC: `t0531-01` fails any
+ * tracked file that spells a campaign value, and a fixture naming a real hull would be the same
+ * defect the guard exists for. `hull-alpha` / `hull-beta` are the 0514 fixture's own convention.
+ *
+ * ⚠ THE SEAM IS `PRESENTER_SHIP_FLEET_FILE`, read by ship-machine's `loadFleet` on EVERY call, so
+ * a server started inside `fn` picks it up. The previous value is restored even on a throw — a
+ * fixture that leaked this variable would silently re-point the NEXT test's deployment.
+ */
+export function commissionFleet(doc) {
+  const dir = mkdtempSync(join(tmpdir(), 'ap-fleet-'));
+  const file = join(dir, 'ships.json');
+  writeFileSync(file, JSON.stringify(doc, null, 2));
+  return file;
+}
+
+/** Run `fn` with a commissioned fleet in place. Returns whatever `fn` returns. */
+export async function withFleet(doc, fn) {
+  const file = commissionFleet(doc);
+  const prev = process.env.PRESENTER_SHIP_FLEET_FILE;
+  process.env.PRESENTER_SHIP_FLEET_FILE = file;
+  try { return await fn(file); }
+  finally {
+    if (prev === undefined) delete process.env.PRESENTER_SHIP_FLEET_FILE;
+    else process.env.PRESENTER_SHIP_FLEET_FILE = prev;
+  }
+}
+
+/** Two hulls and one non-ship place — the smallest fleet the multi-ship acceptance ids need. */
+export const TWO_HULLS = {
+  ships: [
+    { shipId: 'hull-alpha', name: 'HULL ALPHA', hullClass: null, primary: true },
+    { shipId: 'hull-beta', name: 'HULL BETA', hullClass: null },
+  ],
+  places: [{ placeId: 'landing-site', kind: 'world', label: 'LANDING SITE' }],
+};
+
 async function readShipKey() {
   try {
     const mod = await import(pathToFileURL(join(REAL_PLUGINS, 'starship-ops', 'ship-machine.mjs')).href);

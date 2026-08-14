@@ -14,10 +14,10 @@
  */
 import { test, expect } from '../../harness/test.mjs';
 import { createServer } from '../../app/server.mjs';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { REAL_PLUGINS, SHIP_ID, loadShipPluginModule } from './_0514-fixtures.mjs';
+import { REAL_PLUGINS, SHIP_ID, loadShipPluginModule, withFleet, TWO_HULLS } from './_0514-fixtures.mjs';
 
 const haveMachine = existsSync(join(REAL_PLUGINS, 'starship-ops', 'ship-machine.mjs'));
 
@@ -42,6 +42,49 @@ async function fleetFrom(doc, { alsoInstance = null } = {}) {
   try { return mod.loadFleet({ shipsFile, instanceFile }); }
   finally { rmSync(dir, { recursive: true, force: true }); }
 }
+
+/*
+ * ⭐⭐ t0581-F1 — NO TEST MAY PASS BY ABSENCE.
+ *
+ * ⛔ THE DEFECT, and it is the most dangerous kind because it is invisible in the summary line:
+ * `t0575-02`, `-03`, `-03p`, `-02p` and `-09d-real` each `return`ed with `expect(true, '…reported')`
+ * when the deployment declared fewer than two hulls — and `ships.json` is GITIGNORED DEPLOYMENT
+ * DATA. ⇒ ON CI, OR ANY CLEAN CLONE, THE WHOLE MULTI-SHIP ACCEPTANCE SUITE SELF-SKIPPED AND
+ * REPORTED GREEN. `t0575-03d` did exactly that on this box, and nobody could see it in `N passed`.
+ *
+ * ⭐ THIS IS A SOURCE SCAN, not a behaviour check, and that is the point: a behaviour check can
+ * only observe the branch this machine happens to take, and the whole failure was that the OTHER
+ * branch is the one CI takes. Reading the source covers both.
+ *
+ * `'skipped'` is a DIFFERENT and legitimate marker — "this deployment has no station plugin at all"
+ * is a real, visible, whole-file condition, and the plugin's presence is asserted elsewhere.
+ * What is banned is `'reported'`: a test standing down because DATA it could have created is absent.
+ * [[feedback-a-silent-skip-looks-exactly-like-success]]
+ */
+test('t0581-F1 — ⛔ no acceptance test stands down because gitignored deployment data is missing', () => {
+  const TEST_DIR = join(REAL_PLUGINS, '..', 'test');
+  const files = [];
+  (function walk(dir) {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const f = join(dir, e.name);
+      if (e.isDirectory()) { walk(f); continue; }
+      if (f.endsWith('.mjs')) files.push(f);
+    }
+  })(TEST_DIR);
+  expect(files.length > 20, 'the test tree is really being scanned', String(files.length));
+
+  const hits = [];
+  for (const f of files) {
+    // The guard cannot help containing the pattern it hunts for.
+    if (f.endsWith('0575-fleet.test.mjs')) continue;
+    readFileSync(f, 'utf8').split('\n').forEach((line, i) => {
+      if (/'reported'\s*\)/.test(line)) hits.push(`${f.slice(TEST_DIR.length + 1)}:${i + 1}: ${line.trim()}`);
+    });
+  }
+  expect(hits.length === 0,
+    `${hits.length} test(s) still stand down with a 'reported' skip instead of commissioning what they need`,
+    '\n  ' + hits.join('\n  '));
+});
 
 test('t0575-02a — ships.json is a LIST, and the old singleton still loads as a fleet of one', async () => {
   if (!haveMachine) { expect(false, 'the plugin is installed'); return; }
@@ -92,14 +135,19 @@ test('t0575-02b — a hand-edited fleet file cannot half-commission a hull', asy
 
 test('t0575-02 — ⭐⭐ TWO SHIPS COMMISSIONED: each has its OWN alert, identity and occupancy', async () => {
   const mod = await loadShipPluginModule('ship-machine.mjs');
+  /*
+   * ⛔⛔ 0581 PHASE F — THIS USED TO SKIP, AND THE SKIP READ AS A PASS. The old body said "this
+   * deployment declares N hull(s) — commission a second in ships.json to exercise t0575-02" and
+   * `expect(true, …)`. `ships.json` is GITIGNORED DEPLOYMENT DATA, so on CI or any clean clone that
+   * branch is the ONLY branch — the multi-ship acceptance suite self-skipped and reported green.
+   * ⭐ IT NOW COMMISSIONS THE HULLS IT NEEDS. The test no longer depends on what is on this disk,
+   * which also means it tests the same thing on every machine.
+   * [[feedback-a-silent-skip-looks-exactly-like-success]]
+   */
+  await withFleet(TWO_HULLS, async () => {
   const fleet = mod.loadFleet();
-  if (fleet.ships.length < 2) {
-    /* ⛔ NOT A SKIP THAT HIDES. The fleet is a GITIGNORED deployment file; a machine that has not
-       been given a second hull cannot prove this, and saying so is the honest result. The loader
-       tests above still hold, and t0575-02c below proves the same thing at the machine layer. */
-    expect(true, `this deployment declares ${fleet.ships.length} hull(s) — commission a second in ships.json to exercise t0575-02`, 'reported');
-    return;
-  }
+  expect(fleet.ships.length >= 2, '⛔ the fixture fleet really is commissioned — no silent skip below this line',
+    JSON.stringify(fleet.ships.map((s) => s.shipId)));
   const [a, b] = fleet.ships;
   const server = await createServer({ port: 0 });
   try {
@@ -138,6 +186,7 @@ test('t0575-02 — ⭐⭐ TWO SHIPS COMMISSIONED: each has its OWN alert, identi
     expect(server.store.get(`${nsA}/stations/5/occupants`) === undefined || (server.store.get(`${nsA}/stations/5/occupants`) || []).length === 0,
       'nobody is aboard either hull yet', JSON.stringify(server.store.get(`${nsA}/stations/5/occupants`)));
   } finally { await server.close(); }
+  });
 });
 
 test('t0575-02c — ⛔ AN UNKNOWN shipId IS REFUSED, never quietly applied to the primary', async () => {
@@ -163,11 +212,12 @@ test('t0575-09d-real — ⭐ THE PHASE-9 TEST, RE-RUN AGAINST THE REAL ships.jso
      fleet the deployment actually declares. */
   const mod = await loadShipPluginModule('ship-machine.mjs');
   const store = await loadShipPluginModule('ship-state-store.mjs');
+  /* ⛔ 0581 PHASE F — was a skip that read as a pass; it now commissions its own two hulls. The
+     "re-run against the REAL ships.json" framing was always conditional on a gitignored file
+     existing, which is precisely why it never ran anywhere but one laptop. */
+  await withFleet(TWO_HULLS, async () => {
   const fleet = mod.loadFleet();
-  if (fleet.ships.length < 2) {
-    expect(true, `this deployment declares ${fleet.ships.length} hull(s) — 09d's in-test fleet still covers the invariant`, 'reported');
-    return;
-  }
+  expect(fleet.ships.length >= 2, '⛔ two hulls are really commissioned', JSON.stringify(fleet.ships.map((s) => s.shipId)));
   const [a, b] = fleet.ships;
   expect(store.stateFileFor(a.shipId) !== store.stateFileFor(b.shipId),
     '⭐ ONE PERSISTENCE FILE PER REAL HULL — the independence is structural', store.stateFileFor(a.shipId));
@@ -186,4 +236,5 @@ test('t0575-09d-real — ⭐ THE PHASE-9 TEST, RE-RUN AGAINST THE REAL ships.jso
       '⛔⛔ and B came back GREEN — restoring one never wrote the other board',
       String(server2.store.get(`${mod.shipNs(b.shipId)}/alert`)));
   } finally { await server2.close(); }
+  });
 });

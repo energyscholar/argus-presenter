@@ -25,7 +25,7 @@ import { stationCensus, settleCensus, assertControl } from '../../harness/painte
 import { mkdirSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
-import { loadShipPluginModule, SHIP_ID } from '../unit/_0514-fixtures.mjs';
+import { loadShipPluginModule, SHIP_ID, withFleet, TWO_HULLS } from '../unit/_0514-fixtures.mjs';
 
 const SHOTS = join(dirname(fileURLToPath(import.meta.url)), '..', 'screenshots');
 async function shoot(page, name) {
@@ -69,15 +69,22 @@ const boardOf = async (p) => {
 };
 
 test('t0575-03p — ⭐⭐ THE CREW CHANGES SHIP AND THE STATION RE-DRESSES TO THE NEW HULL', async () => {
+  /* ⛔⛔ 0581 PHASE F — THIS USED TO SKIP WHEN THE DEPLOYMENT DECLARED ONE HULL, and `ships.json`
+     is GITIGNORED, so on CI the skip was the only branch: the painted multi-ship acceptance
+     reported green without ever opening a browser. It now COMMISSIONS the hulls it needs.
+     [[feedback-a-silent-skip-looks-exactly-like-success]] */
+  await withFleet(TWO_HULLS, async () => {
   const mod = await loadShipPluginModule('ship-machine.mjs');
   const fleet = mod.loadFleet();
-  const other = fleet.ships.find((s) => s.shipId !== SHIP_ID);
+  const home = fleet.ships.find((s) => s.shipId === fleet.primaryShipId) || fleet.ships[0];
+  const other = fleet.ships.find((s) => s.shipId !== home.shipId);
   const server = await createServer({ port: 0 });
   let browser = null;
   try {
     if (!server.stations().stations.length) { expect('skipped — no station plugin', true, 'skipped'); return; }
-    if (!other) { expect(`this deployment declares ${fleet.ships.length} hull(s) — commission a second to exercise t0575-03p`, true, 'reported'); return; }
-    const home = fleet.ships.find((s) => s.shipId === SHIP_ID) || fleet.ships[0];
+    expect('⛔ two hulls are really commissioned — no silent skip below this line', !!other,
+      JSON.stringify(fleet.ships.map((s) => s.shipId)));
+    if (!other) return;
 
     // Put the two hulls in DIFFERENT conditions, so "which board am I looking at" is answerable
     // from the pixels alone and not only from a name.
@@ -168,4 +175,5 @@ test('t0575-03p — ⭐⭐ THE CREW CHANGES SHIP AND THE STATION RE-DRESSES TO T
       server.store.get(`${mod.shipNs(home.shipId)}/alert`) === 'elevated',
       String(server.store.get(`${mod.shipNs(home.shipId)}/alert`)));
   } finally { if (browser) await browser.close(); await server.close(); }
+  });
 });

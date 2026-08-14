@@ -18,7 +18,7 @@ import { assertResources } from '../../harness/resources.mjs';
 import { mkdirSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
-import { loadShipPluginModule } from '../unit/_0514-fixtures.mjs';
+import { loadShipPluginModule, withFleet, TWO_HULLS } from '../unit/_0514-fixtures.mjs';
 
 const SHOTS = join(dirname(fileURLToPath(import.meta.url)), '..', 'screenshots');
 async function shoot(page, name) {
@@ -59,6 +59,10 @@ const bandOf = (p) =>
   });
 
 test('t0575-02p — ⭐ THE HULL A SEAT IS ON IS THE HULL WHOSE NAME IT WEARS, AND WHOSE ALERT IT SHOWS', async () => {
+  /* ⛔ 0581 PHASE F — the `else` branch below used to `expect(true, '…reported')` on a one-hull
+     deployment, so the SEPARATION half of this painted test never ran on a clean clone. It now
+     commissions two hulls, and the branch is gone. */
+  await withFleet(TWO_HULLS, async () => {
   const mod = await loadShipPluginModule('ship-machine.mjs');
   const fleet = mod.loadFleet();
   const server = await createServer({ port: 0 });
@@ -102,7 +106,8 @@ test('t0575-02p — ⭐ THE HULL A SEAT IS ON IS THE HULL WHOSE NAME IT WEARS, A
         `${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
       await shoot(cap, 'p5-other-hull-at-battle-stations-this-seat-UNAFFECTED.png');
     } else {
-      expect('this deployment has one hull — the separation is asserted at the store layer by t0575-02', true, 'reported');
+      expect('⛔ the fixture fleet really commissioned a second hull — no silent skip here',
+        false, JSON.stringify(fleet.ships.map((s) => s.shipId)));
     }
 
     // ── and the seat's OWN hull still obeys, so the check above is not "nothing works" ──────
@@ -114,4 +119,5 @@ test('t0575-02p — ⭐ THE HULL A SEAT IS ON IS THE HULL WHOSE NAME IT WEARS, A
     expect('⭐ CONTROL: this seat DOES follow its own hull', own && own.state === 'elevated', JSON.stringify(own));
     await shoot(cap, 'p5-own-hull-at-general-quarters-this-seat-FOLLOWS.png');
   } finally { if (browser) await browser.close(); await server.close(); }
+  });
 });
