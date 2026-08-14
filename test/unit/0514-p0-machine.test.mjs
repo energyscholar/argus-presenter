@@ -9,7 +9,9 @@
  * in the system plugin by Bruce's ruling (§4.1), and a test that could not see it would be
  * testing a different architecture from the one that ships.
  */
-import { test, expect } from '../../harness/test.mjs';
+// `check` (as `report`) prints its line whether it passes or fails — 0581 phase H needs a guard
+// that SAYS what it scanned on every run, not one that is silent until it fails.
+import { test, expect, check as report } from '../../harness/test.mjs';
 import { createServer } from '../../app/server.mjs';
 import { WebSocket } from 'ws';
 import { execSync } from 'child_process';
@@ -353,6 +355,218 @@ test('t0531-01 — NO campaign vocabulary in ANY tracked file (the public repo i
   expect(files.length === 0,
     `${files.length} tracked file(s) carry campaign vocabulary — move or neutralise them (plan 0531 P2–P4)`,
     '\n  ' + files.join('\n  '));
+});
+
+/* ══ 0581 PHASE H — THE GUARD ANSWERS OVER HISTORY, NOT ONLY THE WORKING TREE ═══════════════════
+ *
+ * ⛔⛔ WHY THIS EXISTS. `t0531-01` above reads `git ls-files` + `readFileSync`. Both name the
+ * WORKING TREE. It is therefore STRUCTURALLY INCAPABLE of seeing anything behind the tip: it
+ * reported clean throughout, and it would have reported clean forever, whatever sits in the
+ * commits already pushed to a PUBLIC remote. On 2026-08-14 a tree scan of this repo's history
+ * found a campaign NPC's name in the trees of TWELVE PUSHED COMMITS, absent at the tip — and this
+ * test, asking the same question over the whole guarded vocabulary, then found SEVENTY-SIX.
+ *
+ * ⭐ THE LESSON, AND IT GENERALISES: A TIP-BASED CHECK CANNOT ANSWER A HISTORY QUESTION. "Is this
+ * name in the repo" and "is this name in the working tree" are different questions, and the
+ * second was being used to answer the first for months.
+ *
+ * ⚠ SECOND-ORDER, PAID THE SAME DAY: the first count of exposed commits was ONE, and the true
+ * count is TWELVE. `git log -S` finds commits that ADD or REMOVE a string — NOT every commit
+ * whose TREE contains it. When the question is "who can see this", scan TREES, and say which scan
+ * you ran. That is why this test PRINTS its scope on every run instead of just going green.
+ *
+ * ── WHAT IS AND IS NOT DONE ABOUT THE TWELVE ──────────────────────────────────────────────────
+ * RULED BY BRUCE, 2026-08-14: LEAVE THE PUBLISHED HISTORY ALONE and fix the detector instead. No
+ * force-push, no public rewrite. ⇒ the exposure is ACCEPTED; the BLIND SPOT is not. The twelve are
+ * listed below by hash and date and REPORTED ON EVERY RUN as "known and accepted". ⛔ They must
+ * never become silent — an allow-list that prints nothing is indistinguishable from a clean repo,
+ * and that indistinguishability is the whole defect being fixed here.
+ *
+ * ── COST, AND THE INVARIANT THAT KEEPS IT CHEAP (H3) ──────────────────────────────────────────
+ * MEASURED on this box: the tip's 3.4 MB of tracked text takes ~5 s to candidate-hash; the 29.6 MB
+ * of unique blobs across all 229 commits takes roughly nine times that. Too slow for a check that
+ * must run at EVERY phase. So the scan is INCREMENTAL, on this invariant:
+ *
+ *   ⭐ EVERY COMMIT REACHABLE FROM HEAD IS TREE-SCANNED EXACTLY ONCE — either right now, or in
+ *      the recorded full scan below.
+ *
+ * The default run scans `SCANNED_THROUGH.commit..HEAD`. ⛔ Note that this range does NOT shrink
+ * when you push, which is the point: a range of `origin/master..HEAD` would quietly stop covering
+ * a commit the moment it was pushed — i.e. exactly when it starts to matter. The range shrinks
+ * only when a human runs the full scan and moves the marker, which is a deliberate, dated act.
+ *
+ *   PRESENTER_GUARD_HISTORY=full   scan every commit reachable from HEAD (~45 s here).
+ *
+ * ⚠ NOT SCANNED, and said out loud rather than left for the next reader to discover: commits
+ * reachable only from OTHER refs — notably `backup/pre-0581-A`, the pre-rewrite safety branch,
+ * which by construction still holds the un-redacted trees phase A removed from `master`. It is
+ * local-only and must not be deleted. `PRESENTER_GUARD_HISTORY=all` walks every ref, and will
+ * report that branch as dirty; that is correct, not a regression.
+ *
+ * ⚠ BINARIES ARE SCANNED HERE THOUGH `t0531-01` SKIPS THEM. One of the twelve commits carries a
+ * committed `__pycache__/*.pyc` whose constant pool holds the name in plain bytes. A `grep -I`
+ * heuristic is right for a source-tree lint and WRONG for an exposure question, because a
+ * compiled artifact is precisely the thing a human forgets to look at.
+ */
+
+/*
+ * The recorded full scan. ⛔ Move `commit`/`date` ONLY after actually running
+ * `PRESENTER_GUARD_HISTORY=full` and seeing it green — the invariant above is the whole basis for
+ * the default run being cheap, and a marker moved without a scan silently deletes coverage.
+ */
+const SCANNED_THROUGH = {
+  commit: '6db1e0ace0307d4bd77700a3668753f20138b99d',
+  date: '2026-08-14',
+  by: 'plan 0581 phase H — full tree scan of every commit reachable from this one',
+};
+
+/*
+ * KNOWN AND ACCEPTED — every PUSHED commit whose TREE carries campaign vocabulary, measured by the
+ * first full run of this test on 2026-08-14. Bruce ruled the published history stays as it is.
+ *
+ * ⛔⛔ THE PLAN SAID TWELVE. THE MEASUREMENT SAYS SEVENTY-SIX. The twelve were the commits carrying
+ * ONE campaign NPC's name; this test asks the same question `t0531-01` asks — the whole guarded
+ * token set — and over trees rather than a tip. Most of the extra are pre-neutrality: `mcp/tools.mjs`,
+ * `components/map/map.js`, `app/control.html` and a run of `test/live/` fixtures carried setting
+ * vocabulary until plan 0531 P2–P4 cleaned the tip. ⭐ That gap between "12" and "76" is the same
+ * error as the earlier "1" vs "12", one level up: a narrower scan, quoted as if it were the answer.
+ *
+ * Recorded by hash only — never by name, and never by what the hit was. ⛔ Nothing may be added
+ * here without a dated ruling: a new entry is a NEW EXPOSURE, not a new exemption.
+ */
+const ACCEPTED_HISTORY = [
+  '1adf8e1', 'a7db5bc', 'e9e5457', 'd1253d6', '4bed479', 'bf6ffda', '138e4be', 'bf72633', '50eb919',
+  '38af2fa', 'ad2e6f2', '706bc9f', '0284530', '82154d3', 'cf4f77f', 'b1a1abc', 'e1452a7', '3ed73d1',
+  '1e9340c', '97a21ac', '3e81bd1', '3986956', 'b5169fd', 'ca356cb', '4f54469', '69687b4', '9519252',
+  '4ca80eb', '41ab34b', '620e8b5', '4c239b3', 'a5a8fd1', 'de5b987', 'f9a919a', 'b6318a1', 'd0d912f',
+  'ea18c53', '03f3ef0', '5adb906', '4c85589', '357896e', 'f12a58c', '42d2d53', '4899e73', '2ae8dde',
+  '8a5854d', '83824d0', '61277c0', '82c72dc', '6b217e7', '87a5149', 'dd27276', '4061be3', '787b9e9',
+  '73b4ee5', 'd8dd2a0', '1be36b4', '850ad90', 'd869567', '395c0b6', '02c4763', 'f656498', '2123ad9',
+  'bf32349', 'cec7b87', 'd731aab', '4f38580', 'c0ae82e', '456bcd1', '463fc5e', 'd0f86c7', '89c5052',
+  '3955a71', 'eac5775', '71994b7', 'b2af033',
+];
+
+/*
+ * What those 76 trees carry, as measured — printed on every run so the acceptance is stated, not
+ * merely stored. ⛔ `tools/__pycache__/*.pyc` is on this list and is the reason binaries are read
+ * here: a compiled artifact carried the name in its constant pool while every text lint said clean.
+ */
+const ACCEPTED_SPAN = '2026-07-20 → 2026-08-12, in app/ · components/map · lib/ · mcp/ · docs/ · test/ · tools/*.py · tools/__pycache__/*.pyc';
+
+/** commit -> [{ blob, path }] for its FULL tree, via one `ls-tree -r` per commit. */
+function treesOf(commits) {
+  const out = new Map();
+  for (const c of commits) {
+    const raw = execSync(`git ls-tree -r ${c}`, { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    const entries = [];
+    for (const line of raw.split('\n')) {
+      const m = /^\d+ blob ([0-9a-f]{40})\t(.*)$/.exec(line);
+      if (m) entries.push({ blob: m[1], path: m[2] });
+    }
+    out.set(c, entries);
+  }
+  return out;
+}
+
+/** Read many blobs in ONE `git cat-file --batch`, and return the set that carries a guarded token. */
+function dirtyBlobs(shas) {
+  if (!shas.length) return new Set();
+  const buf = execSync('git cat-file --batch', {
+    cwd: ROOT, input: shas.join('\n') + '\n', maxBuffer: 512 * 1024 * 1024,
+  });
+  const dirty = new Set();
+  let pos = 0;
+  while (pos < buf.length) {
+    const nl = buf.indexOf(0x0a, pos);
+    if (nl < 0) break;
+    const [sha, type, size] = buf.subarray(pos, nl).toString('utf8').split(' ');
+    if (type !== 'blob') break;                     // a missing object would desynchronise the stream
+    const n = Number(size);
+    const body = buf.subarray(nl + 1, nl + 1 + n);
+    if (firstHit(body.toString('utf8'), TOKEN_HASHES) !== null) dirty.add(sha);
+    pos = nl + 1 + n + 1;
+  }
+  return dirty;
+}
+
+test('t0531-02 / t0581-H1 — campaign vocabulary in ANY COMMIT TREE, not just the working tree', () => {
+  const mode = process.env.PRESENTER_GUARD_HISTORY || 'incremental';
+  const markerKnown = (() => {
+    try { execSync(`git merge-base --is-ancestor ${SCANNED_THROUGH.commit} HEAD`, { cwd: ROOT, stdio: 'ignore' }); return true; }
+    catch { return false; }
+  })();
+
+  let spec;
+  if (mode === 'full') spec = 'HEAD';
+  else if (mode === 'all') spec = '--all';
+  else {
+    // ⛔ A marker that is not an ancestor of HEAD means the record is STALE or the branch was
+    // rewritten. Falling back to a full scan is the only safe answer; going green is not.
+    spec = markerKnown ? `${SCANNED_THROUGH.commit}..HEAD` : 'HEAD';
+  }
+
+  const commits = execSync(`git rev-list ${spec}`, { cwd: ROOT, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })
+    .split('\n').filter(Boolean);
+  const trees = treesOf(commits);
+
+  const uniq = [...new Set([].concat(...[...trees.values()].map((es) => es.map((e) => e.blob))))];
+  const dirty = dirtyBlobs(uniq);
+
+  // Report scope BEFORE the verdict, and unconditionally — a guard that only speaks when it fails
+  // teaches the reader that silence means "everything was checked", which is what went wrong here.
+  report(`SCOPE: mode=${mode}, rev-list ${spec} -> ${commits.length} commit(s), ${uniq.length} unique blob(s)`, true);
+  if (mode === 'incremental') {
+    report(`SCOPE: commits at or before ${SCANNED_THROUGH.commit.slice(0, 7)} were tree-scanned on ${SCANNED_THROUGH.date}; ` +
+      `refs not reachable from HEAD are NOT scanned (PRESENTER_GUARD_HISTORY=all walks every ref)`, true);
+  }
+  report(`KNOWN AND ACCEPTED (Bruce, 2026-08-14 — the published history stays as it is): ` +
+    `${ACCEPTED_HISTORY.length} pushed commit tree(s), ${ACCEPTED_SPAN}`, true);
+
+  /*
+   * ⭐ THE BREAK-TEST LEVER, and it is deliberately part of the shipped test rather than an edit
+   * someone makes and forgets to undo. `PRESENTER_GUARD_HISTORY_NO_ACCEPT=1` drops the acceptance
+   * list, so the guard can be SEEN GOING RED on the real exposed commits at any time, by anyone,
+   * without touching the source. ⛔ It can only make the guard stricter, never weaker, which is the
+   * only kind of lever that is safe to leave lying about.
+   */
+  const noAccept = process.env.PRESENTER_GUARD_HISTORY_NO_ACCEPT === '1';
+  const accepted = noAccept ? new Set() : new Set(ACCEPTED_HISTORY);
+  if (noAccept) report('BREAK-TEST: acceptance list DISABLED — every dirty tree in range must now be reported', true);
+  const offences = [];
+  let seenAccepted = 0;
+  for (const [c, entries] of trees) {
+    // The tip guard's ALLOW_LIST applies here too, and for the same reason: this file cannot help
+    // containing the vocabulary it hunts for, in every version of itself that has ever existed.
+    const bad = entries.filter((e) => dirty.has(e.blob) && !ALLOW_LIST.includes(e.path)).map((e) => e.path);
+    if (!bad.length) continue;
+    if (accepted.has(c.slice(0, 7))) { seenAccepted++; continue; }
+    const when = execSync(`git show -s --format=%ad --date=short ${c}`, { cwd: ROOT, encoding: 'utf8' }).trim();
+    offences.push(`${c.slice(0, 7)} ${when}  ${bad.join(' ')}`);   // paths only — never the hit
+  }
+  report(`this run met ${seenAccepted} of the ${ACCEPTED_HISTORY.length} accepted commit tree(s) in its range`, true);
+
+  expect(offences.length === 0,
+    `${offences.length} commit tree(s) carry campaign vocabulary and are NOT on the dated accepted list`,
+    '\n  ' + offences.join('\n  '));
+});
+
+/*
+ * ⭐ H2 — THE ACCEPTED LIST IS ITSELF UNDER GUARD, so it cannot rot into a blanket exemption.
+ * Every entry must still resolve to a real commit that is an ancestor of the marker. An entry that
+ * no longer resolves means the record is stale; an entry that is NOT behind the marker would be
+ * exempting something the incremental run is supposed to be checking.
+ */
+test('t0581-H2 — every accepted-history entry still resolves and sits behind the scan marker', () => {
+  const stale = [];
+  for (const short of ACCEPTED_HISTORY) {
+    try {
+      execSync(`git rev-parse --verify ${short}^{commit}`, { cwd: ROOT, stdio: 'ignore' });
+      execSync(`git merge-base --is-ancestor ${short} ${SCANNED_THROUGH.commit}`, { cwd: ROOT, stdio: 'ignore' });
+    } catch { stale.push(short); }
+  }
+  expect(stale.length === 0,
+    `${stale.length} accepted-history entr(ies) no longer resolve, or are not behind ${SCANNED_THROUGH.commit.slice(0, 7)}`,
+    stale.join(' '));
 });
 
 test('t0514-28 — CORE carries no machine and no domain vocabulary; deleting the plugin leaves a working Presenter', async () => {
