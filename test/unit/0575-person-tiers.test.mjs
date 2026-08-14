@@ -2,19 +2,35 @@
  * Plan 0575 PHASE 7 — PERSON TIERS, AND THE PROMOTION BETWEEN THEM.
  *
  * Bruce, 2026-08-13: "most NPCs will have a STUBBED state machine… the enemy officers and all
- * [a named NPC]'s marines will need full state machines… we do not necessarily need a state machine for the
- * food handler, nor the dishwasher in the back room."
+ * [a named NPC]'s marines will need full state machines… we do not necessarily need a state
+ * machine for the food handler, nor the dishwasher in the back room."
+ *
+ * ⛔ THE NAME IS REDACTED AND THAT IS NOT PEDANTRY. This repo is PUBLIC; the plan it implements is
+ * private. Quoting Bruce verbatim put a campaign NPC's name into a tracked file and t0531-01 —
+ * "no campaign vocabulary in ANY tracked file" — caught it on the full-suite run, which is exactly
+ * the job that guard exists to do. The quote loses nothing that matters: what the sentence is
+ * FOR is "some NPCs need machines and most do not".
  *
  * ⛔ NO PAINTED SURFACE (brief §4 names 2, 3 and 7), and none is invented. Nothing renders a tier.
  * Verified at the model layer, against the LOCAL rules bundle.
  *
- * ⚠⚠ AND THE RULES PROVENANCE IS NOT WHAT PLAN §4 SAYS. §4 cites `02-personal-combat-rules.md §22`
- * for both halves. The local bundle has the damage chain at §14/§15 (p.74) and the pooled-Hits
- * abstraction at §27, ANIMALS IN COMBAT (p.80-81) — where it reads "Hits: Total damage before
- * death. All damage applied to Hits (NOT STR/DEX/END)." `Hits` appears NOWHERE ELSE in the bundle:
+ * ⚠⚠ THE RULES PROVENANCE, AND §4's CITATION IS CORRECT. Plan §4 cites
+ * `02-personal-combat-rules.md §22` and §22 is exactly right for the EXACT tier: "Apply to END
+ * first / Overflow to STR or DEX (target's choice) / STR or DEX = 0: unconscious / All three
+ * physical stats = 0: dead" (§22 DAMAGE, INJURY AND DEATH, p.74, 78-79). ⚠ The bundle states that
+ * same rule TWICE — the earlier copy sits under §14/§15 — and reading only the second copy is how
+ * a reviewer talks themselves into "the plan cited the wrong section". It did not.
+ *
+ * ⛔ THE REAL AND NARROWER DEFECT: §22 supports ONLY THE EXACT HALF. The POOLED half has no §22
+ * basis at all. Its basis is §27 ANIMALS IN COMBAT (p.80-81) — "Hits: Total damage before death.
+ * All damage applied to Hits (NOT STR/DEX/END)" — and `Hits` appears NOWHERE ELSE in the bundle:
  * there is no character-level Hits pool in MgT2e. So the stub is a published construct EXTENDED to
- * humanoids, not a rule that already covered them, and the two tiers' unconsciousness predicates
- * genuinely differ. These tests assert what is actually true and refuse to assert what is not.
+ * humanoid rank-and-file, not a rule that already covered them, and the two tiers' unconsciousness
+ * predicates genuinely differ. These tests assert what is true and refuse to assert what is not.
+ *
+ * ⭐ RULED BY BRUCE, 2026-08-14: KEEP BOTH PREDICATES. Promotion does not preserve status and
+ * cannot — at 20 damage against 10/10/10 the overflow zeroes a characteristic whichever one is
+ * chosen. The rule tags and the demonstrated disagreement below ARE the answer, not a placeholder.
  */
 import { test, expect } from '../../harness/test.mjs';
 import { existsSync } from 'fs';
@@ -75,7 +91,7 @@ test('t0575-06 — ⭐⭐ A STUB PROMOTES TO FULL WITH POOLED HITS SPLIT INTO EN
     '30 pooled becomes 10/10/10', JSON.stringify(whole.chars));
   expect(!whole.status.dead && !whole.status.unconscious, 'and they are unharmed', JSON.stringify(whole.status));
 
-  // Damaged: 18/30 ⇒ 12 damage. §14: END first (10), then the CHOSEN overflow (2 off STR).
+  // Damaged: 18/30 ⇒ 12 damage. §22: END first (10), then the CHOSEN overflow (2 off STR).
   const hurt = tiers.promoteStub({ hits: 18, hitsMax: 30 });
   expect(hurt.chars.END === 0 && hurt.chars.STR === 8 && hurt.chars.DEX === 10,
     '⭐ damage runs END-FIRST then overflows — it is NOT spread evenly', JSON.stringify(hurt.chars));
@@ -84,18 +100,18 @@ test('t0575-06 — ⭐⭐ A STUB PROMOTES TO FULL WITH POOLED HITS SPLIT INTO EN
   expect(hurt.chars.END + hurt.chars.STR + hurt.chars.DEX === 18, 'the characteristics sum to the hits that were left',
     JSON.stringify(hurt.chars));
 
-  /* ⛔ THE OVERFLOW TARGET IS THE TARGET'S CHOICE (§14 step 3), so it is an ARGUMENT. A constant
+  /* ⛔ THE OVERFLOW TARGET IS THE TARGET'S CHOICE (§22 step 4), so it is an ARGUMENT. A constant
      here would be the system making a player's decision for them, mid-boarding-action. */
   const chooseDex = tiers.promoteStub({ hits: 18, hitsMax: 30 }, { overflowTo: 'DEX' });
   expect(chooseDex.chars.DEX === 8 && chooseDex.chars.STR === 10,
     'choosing DEX puts the overflow on DEX', JSON.stringify(chooseDex.chars));
   expect(chooseDex.overflowTo === 'DEX', 'and the choice is RECORDED, so it is auditable afterwards', chooseDex.overflowTo);
 
-  // §14 step 4: further damage goes to the remaining physical characteristic.
+  // §22 step 5: further damage goes to the remaining physical characteristic.
   const deep = tiers.promoteStub({ hits: 5, hitsMax: 30 });
   expect(deep.chars.END === 0 && deep.chars.STR === 0 && deep.chars.DEX === 5,
     'past END and STR, the rest comes off DEX', JSON.stringify(deep.chars));
-  expect(deep.status.unconscious === true, 'and STR at 0 means unconscious (§14 step 5)', JSON.stringify(deep.status));
+  expect(deep.status.unconscious === true, 'and STR at 0 means unconscious (§22 step 5)', JSON.stringify(deep.status));
 
   // Endpoints: dead stays dead, and nobody is resurrected by being promoted.
   const dead = tiers.promoteStub({ hits: 0, hitsMax: 30 });
@@ -109,7 +125,7 @@ test('t0575-06b — ⚠ THE TWO TIERS DISAGREE IN THE MIDDLE, AND THAT IS DECLAR
   if (!haveTiers) { expect(false, 'person-tiers.mjs is installed'); return; }
   const tiers = await loadShipPluginModule('person-tiers.mjs');
   /* ⛔ THE HONEST CLAIM. §27's pooled rule calls someone unconscious at 1/10 of starting Hits;
-     §14 calls them unconscious when STR or DEX hits 0. Those are different predicates over the
+     §22 calls them unconscious when STR or DEX hits 0. Those are different predicates over the
      same person, and asserting they agree would be the rules contradiction t0575-06 forbids.
      They agree at the ENDPOINTS, and in between the FULL tier is the more precise one — which is
      the reason to promote, not an argument against it. */
@@ -117,7 +133,7 @@ test('t0575-06b — ⚠ THE TWO TIERS DISAGREE IN THE MIDDLE, AND THAT IS DECLAR
   const s = tiers.stubStatus(stub);
   const f = tiers.promoteStub(stub).status;
   expect(s.unconscious === true, 'the POOLED rule (§27) says unconscious at 3/30', JSON.stringify(s));
-  expect(f.unconscious === true, 'and here the exact rule (§14) agrees, because STR reached 0', JSON.stringify(f));
+  expect(f.unconscious === true, 'and here the exact rule (§22) agrees, because STR reached 0', JSON.stringify(f));
 
   const mid = { hits: 12, hitsMax: 30 };                  // 18 damage: END 10, STR 8 ⇒ STR is 2, not 0
   const sm = tiers.stubStatus(mid), fm = tiers.promoteStub(mid).status;
@@ -131,14 +147,14 @@ test('t0575-06b — ⚠ THE TWO TIERS DISAGREE IN THE MIDDLE, AND THAT IS DECLAR
   expect(se.unconscious !== fe.unconscious,
     '⭐⭐ SO THE PREDICATES DIFFER, DEMONSTRABLY. Each tier reports which rule it applied.',
     `${se.rule} vs ${fe.rule}`);
-  expect(/§27/.test(se.rule) && /§14/.test(fe.rule), 'and each names its own source', `${se.rule} | ${fe.rule}`);
+  expect(/§27/.test(se.rule) && /§22/.test(fe.rule), 'and each names its own source', `${se.rule} | ${fe.rule}`);
 });
 
 test('t0575-06c — a pool that cannot be split is REFUSED, and declared characteristics win', async () => {
   if (!haveTiers) { expect(false, 'person-tiers.mjs is installed'); return; }
   const tiers = await loadShipPluginModule('person-tiers.mjs');
   /* ⛔ A pool of 1 or 2 cannot become three characteristics without one of them being 0 at FULL
-     health — which §14 reads as unconscious or dead. Refuse, rather than invent a distribution
+     health — which §22 reads as unconscious or dead. Refuse, rather than invent a distribution
      that quietly makes an uninjured person unconscious. */
   for (const hitsMax of [0, 1, 2]) {
     const r = tiers.promoteStub({ hits: hitsMax, hitsMax });
@@ -155,9 +171,9 @@ test('t0575-06c — a pool that cannot be split is REFUSED, and declared charact
   expect(tiers.promotionIsConsistent({ hits: 20, hitsMax: 26, chars: { END: 6, STR: 12, DEX: 8 } }, declared).ok,
     'and it is consistent', 'no');
 
-  // Remainders are deterministic, in §14's own order.
+  // Remainders are deterministic, in §22's own order.
   expect(JSON.stringify(tiers.splitPool(31)) === JSON.stringify({ END: 11, STR: 10, DEX: 10 }),
-    '31 splits 11/10/10 — remainder to END first', JSON.stringify(tiers.splitPool(31)));
+    '31 splits 11/10/10 — remainder to END first (§22 order)', JSON.stringify(tiers.splitPool(31)));
   expect(JSON.stringify(tiers.splitPool(32)) === JSON.stringify({ END: 11, STR: 11, DEX: 10 }),
     'and 32 to END then STR', JSON.stringify(tiers.splitPool(32)));
 });
@@ -172,7 +188,7 @@ test('t0575-06d — promotion through the REGISTRY: mid-scene, once, and it buil
   const promoted = people.promote('marine', { overflowTo: 'DEX' });
   expect(promoted && promoted.tier === 'full', 'promoted mid-scene', JSON.stringify(promoted));
   expect(promoted.chars.END === 0 && promoted.chars.DEX === 8 && promoted.chars.STR === 10,
-    'with the pool split through §14, honouring the choice', JSON.stringify(promoted.chars));
+    'with the pool split through §22, honouring the choice', JSON.stringify(promoted.chars));
   expect(promoted.needsFullState === true, '⭐ promotion IS the decision that they need a machine',
     String(promoted.needsFullState));
   expect(machinesBuilt() === 1, 'and one was built', String(machinesBuilt()));
