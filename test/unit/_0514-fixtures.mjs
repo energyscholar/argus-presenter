@@ -128,7 +128,11 @@ export function loadShipPluginModule(file) {
 async function readShipKey() {
   try {
     const mod = await import(pathToFileURL(join(REAL_PLUGINS, 'starship-ops', 'ship-machine.mjs')).href);
-    const id = mod.loadShipInstance().shipId || mod.UNCOMMISSIONED_SHIP_ID;
+    /* ⭐ 0575 P5 — ASK FOR THE FLEET'S PRIMARY, not for "the" ship. There may be several hulls
+       now, and `SHIP_ID` below means the one a joining participant is seated on — which is what
+       every test using it has always meant, back when it was the only one there was. */
+    const id = (mod.loadFleet ? mod.loadFleet().primaryShipId : mod.loadShipInstance().shipId)
+      || mod.UNCOMMISSIONED_SHIP_ID;
     return { id, ns: mod.shipNs(id) };
   } catch (e) { return { id: 'unknown', ns: 'ships/unknown' }; }
 }
