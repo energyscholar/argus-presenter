@@ -21,6 +21,7 @@ import { test, check as expect } from '../../harness/test.mjs';
 import { createServer } from '../../app/server.mjs';
 import { launch, until, wait } from '../../harness/multi.mjs';
 import { assertResources } from '../../harness/resources.mjs';
+import { stationCensus, assertControl } from '../../harness/painted.mjs';
 import { mkdirSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
@@ -52,23 +53,20 @@ async function seat(browser, server, uid, name) {
   return p;
 }
 
-const frameOf = (p) => p.frames().find((f) => f !== p.mainFrame()) || null;
-
-/** Everything the station screen is SHOWING about which ship it belongs to. */
-const boardOf = (p) =>
-  frameOf(p).evaluate(() => {
-    const nameEl = document.querySelector('#apShipName');
-    const band = document.querySelector('.ap-alertband');
-    const nr = nameEl ? nameEl.getBoundingClientRect() : { width: 0, height: 0 };
-    const br = band ? band.getBoundingClientRect() : { width: 0, height: 0 };
-    return {
-      shipName: nameEl ? (nameEl.textContent || '').trim() : null,
-      nameBox: [Math.round(nr.width), Math.round(nr.height)],
-      alert: band ? band.getAttribute('data-alert') : null,
-      alertLabel: band ? band.getAttribute('data-alert-label') : null,
-      alertBox: [Math.round(br.width), Math.round(br.height)],
-    };
-  });
+/*
+ * ⛔ 0581 PHASE B — THIS USED TO BE `p.frames().find(f => f !== p.mainFrame())`.
+ * That takes the first frame that is not the top one, which is not a claim about the glass. Two
+ * measured consequences, both of which this test suffered: re-resolving the seat TEARS THE FRAME
+ * DOWN and builds a new one, so the read either lands on a stale frame and returns plausible
+ * numbers for a screen nobody is looking at, or lands mid-teardown and throws `Execution context
+ * was destroyed`. The census walks the TOP document's own `<iframe>` elements, keeps only those
+ * with a non-zero box, and skips any that vanish mid-read — so a torn-down frame comes back
+ * MISSING and `until(...)` retries, instead of coming back healthy.
+ */
+const boardOf = async (p) => {
+  const c = (await stationCensus(p)).chosen;
+  return c ? { shipName: c.shipName, nameBox: c.nameBox, alert: c.alert, alertLabel: c.alertLabel, alertBox: c.bandBox } : null;
+};
 
 test('t0575-03p — ⭐⭐ THE CREW CHANGES SHIP AND THE STATION RE-DRESSES TO THE NEW HULL', async () => {
   const mod = await loadShipPluginModule('ship-machine.mjs');
@@ -94,7 +92,13 @@ test('t0575-03p — ⭐⭐ THE CREW CHANGES SHIP AND THE STATION RE-DRESSES TO T
       { timeout: 8000, label: 'the home hull’s condition reaches the seat' });
 
     const before = await boardOf(pil);
+    const censusBefore = await stationCensus(pil);
     console.log(`      [painted] BEFORE the move ${JSON.stringify(before)}`);
+    console.log(`      [census] BEFORE ${JSON.stringify(censusBefore.frames)}`);
+    /* ⭐ t0581-B1 — the control element, BEFORE as well as after. Asserting it only on the state
+       under test would leave "was the screen ever there" unanswered, and a control that has only
+       been seen in one state is the same untested gate this phase exists to retire. */
+    assertControl(expect, censusBefore, 'BEFORE');
     expect('the seat is on the home hull, wearing its name', before.shipName === home.name, `${before.shipName} vs ${home.name}`);
     expect('and showing ITS condition (YELLOW)', before.alert === 'elevated' && before.alertLabel === 'YELLOW', JSON.stringify(before));
     await shoot(pil, 'p6-BEFORE-move-seat-on-home-hull-YELLOW.png');
@@ -114,8 +118,38 @@ test('t0575-03p — ⭐⭐ THE CREW CHANGES SHIP AND THE STATION RE-DRESSES TO T
       { timeout: 9000, label: 'the NEW hull’s condition reaches the same screen' });
 
     const after = await boardOf(pil);
+    const censusAfter = await stationCensus(pil);
     console.log(`      [painted] AFTER the move ${JSON.stringify(after)}`);
+    console.log(`      [census] AFTER ${JSON.stringify(censusAfter.frames)}`);
     await shoot(pil, 'p6-AFTER-move-same-seat-now-on-other-hull-RED.png');
+
+    /* ⭐⭐ t0581-B1, ON THE STATE THAT LIED. Everything below this line was already true on
+       2026-08-13 while the screenshot showed a hex background, a role chip and an alert band and
+       NOTHING ELSE. The control element is what separates "the value is right" from "the value is
+       right and the screen is gone". */
+    const controlOk = assertControl(expect, censusAfter, 'AFTER');
+    // ⛔ A missing frame must FAIL here, never throw a TypeError two lines down and be read as an
+    // infrastructure problem. `boardOf` can honestly return null, so say so as an assertion.
+    if (!after) { expect('AFTER: a visible frame answered at all', false, JSON.stringify(censusAfter.frames)); return; }
+
+    /*
+     * ⛔ NOT A FIX. The brief allows ZERO fix attempts on a painted-gate failure, so nothing below
+     * changes what is asserted or when. This MEASURES how long the art takes to settle and shoots
+     * it again, so the failure arrives with a number and a second image instead of an opinion.
+     * ⭐ The measurement is the deliverable — see the settle line and the two screenshots.
+     */
+    if (!controlOk) {
+      const t0 = Date.now();
+      let settled = null, last = null;
+      while (Date.now() - t0 < 8000) {
+        const c = (await stationCensus(pil)).chosen;
+        last = c;
+        if (c && c.textOpacity && c.textOpacity[1] >= 0.9 && c.visibleChrome >= 3) { settled = Date.now() - t0; break; }
+        await wait(200);
+      }
+      console.log(`      [settle] the art reached the control bar ${settled === null ? 'NEVER within 8000ms' : `after ${settled}ms`}; last=${JSON.stringify(last && last.chromeDetail)}`);
+      await shoot(pil, 'p6-AFTER-move-CONTROL-FAILED-then-settled.png');
+    }
 
     expect('⭐⭐ THE SAME SCREEN NOW WEARS THE OTHER HULL’S NAME',
       after.shipName === other.name && after.shipName !== before.shipName,
