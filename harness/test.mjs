@@ -36,6 +36,37 @@ if (!process.env.PRESENTER_SESSION_LOG_DIR) {
   process.on('exit', () => { try { rmSync(scratchLogDir, { recursive: true, force: true }); } catch {} });
 }
 
+/*
+ * ── Plan 0575 P9 — A PLUGIN'S DURABLE STATE IS ISOLATED PER TEST ────────────────────────────
+ *
+ * A plugin may now keep state that OUTLIVES the server, under $PRESENTER_PLUGIN_STATE_DIR
+ * (default: XDG state, never the checkout). That is correct for a deployment and would be two
+ * separate disasters in a suite:
+ *
+ *   1. across the machine — a run would write into a human's real state directory, so running
+ *      the tests would change what the next real session comes up holding;
+ *   2. across the SUITE — one test's saved state is the next test's boot state. A test that
+ *      changes something and a test that asserts the value at boot would then pass or fail on
+ *      their ORDER IN THE FILE LISTING, which is the worst kind of intermittent: it looks like
+ *      flake, it bisects to nothing, and it is nobody's diff.
+ *
+ * ⭐ So this is fixed BY CONSTRUCTION rather than by asking each test to remember: `runRegistered`
+ * points the variable at a fresh, never-created subdirectory before every test, so isolation is
+ * not something a new test can forget to opt into. Two servers started INSIDE one test still
+ * share a directory — which is exactly what a restart test needs.
+ *
+ * An explicit setting by the operator still wins outright, so a run can be pointed somewhere
+ * deliberately. Set at IMPORT for the same reason as the block above: a file can be direct-run.
+ */
+const PLUGIN_STATE_ENV = 'PRESENTER_PLUGIN_STATE_DIR';
+let _scratchPluginState = null;
+if (!process.env[PLUGIN_STATE_ENV]) {
+  _scratchPluginState = mkdtempSync(join(tmpdir(), 'ap-test-plugin-state-'));
+  process.env[PLUGIN_STATE_ENV] = _scratchPluginState;
+  process.on('exit', () => { try { rmSync(_scratchPluginState, { recursive: true, force: true }); } catch {} });
+}
+let _stateSeq = 0;
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
 const TEST_DIR = join(ROOT, 'test');
@@ -128,6 +159,10 @@ export async function runRegistered({ only = null, tests = REG, quiet = false } 
     if (!match(t)) continue;
     const tier = tierOf(t.file);
     byTier[tier] = byTier[tier] || { passed: 0, failed: 0 };
+    // 0575 P9 — a fresh, empty plugin-state directory per test (see the note at the top of this
+    // file). Not created here: a plugin that persists nothing must leave nothing behind, and one
+    // that does will mkdir on its first write.
+    if (_scratchPluginState) process.env[PLUGIN_STATE_ENV] = join(_scratchPluginState, 't' + (_stateSeq++));
     _active = { failed: false };
     let err = null;
     try { await t.fn(); } catch (e) { err = e; }
