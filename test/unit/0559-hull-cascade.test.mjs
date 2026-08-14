@@ -7,8 +7,8 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { readFileSync, readdirSync } from 'node:fs';
+import { dirname, join, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadChart } from '../../plugins/starship-ops/ship-machine.mjs';
 import { makeMachineFactory, makeStarshipFactory, commissionFromChart } from '../../plugins/starship-ops/hull-factory.mjs';
@@ -59,9 +59,72 @@ test('t0559-04 — ORTHOGONALITY: an alert order disturbs neither power nor nav'
 });
 
 test('t0559-05 — sending produces STORE OPS, and the factory never touches the wire', () => {
+  /*
+   * ⛔ 0581 PHASE E — THIS ASSERTION USED TO PIN A DEAD PATH. It read `ship/alert`, the pre-0575
+   * singleton namespace, and after the rename NOTHING READS THAT PREFIX. So the test passed
+   * BECAUSE the write went nowhere: it asserted the defect and therefore could never fail.
+   * ⭐ It is UPDATED, not deleted. Deleting it would have removed the only thing that can ever
+   * catch the path going wrong again; asserting the namespaced form keeps the test able to fail.
+   * The id is INSTANCE-SCOPED — `test-hull` is INSTANCE.shipId above, so this also proves the op
+   * carries the hull it came from and a second commissioned ship cannot land on the first's key.
+   */
   const s = ship();
   const r = s.send('general-quarters');
-  assert.deepEqual(r.ops, [{ path: 'ship/alert', verb: 'set', value: 'elevated' }]);
+  assert.deepEqual(r.ops, [{ path: `ships/${INSTANCE.shipId}/alert`, verb: 'set', value: 'elevated' }]);
+  assert.equal(r.ops[0].path, 'ships/test-hull/alert', 'spelled out, so a wrong template literal is visible');
+});
+
+/*
+ * t0575-01 — ⛔ NO STORE PATH BEGINS `ship/`. Plan 0575 §6, finally enforced rather than checked
+ * by hand once. This is the guard that `t0559-05` above could not be, because a single deepEqual
+ * only sees the op it was handed; this reads the SOURCE and so covers the paths no test calls.
+ *
+ * ⚠ COMMENTS DO NOT COUNT and that is a deliberate exemption, not a loophole. Two of the four
+ * historical hits (`alert-band.js`, `stations/stations.py`) are prose explaining the OLD name and
+ * why it still resolves — deleting that prose to satisfy a grep would destroy the memory that
+ * stops the prefix coming back, exactly as 0574's log records for the alert-band bus guard. What
+ * is scanned is code: a literal `ship/` reachable by the runtime.
+ *
+ * ⭐ PROVEN ABLE TO FAIL, and MEASURED, not asserted: on 2026-08-14 the pre-0581 literal was
+ * re-inserted into the installed artifact's `send` and this test went RED, printing
+ *   hull-factory.mjs:79: const ops = changes.map(c => ({ path: `ship/${c.region}`, ... }));
+ * alongside `t0559-05`. ⚠ The line number is the ARTIFACT's, not the source's — the two differ by
+ * this file's own comment block, which is why it is quoted from the run rather than from reading.
+ * It has now been seen in BOTH states, which `t0559-05` alone never had been.
+ */
+test('t0575-01 — no store path begins `ship/` anywhere in the plugin (the singleton is gone)', () => {
+  const exts = new Set(['.mjs', '.js', '.json', '.html', '.py', '.css', '.md']);
+  const files = [];
+  (function walk(dir) {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, e.name);
+      if (e.isDirectory()) { if (e.name !== 'node_modules') walk(p); continue; }
+      if (exts.has(extname(e.name))) files.push(p);
+    }
+  })(PLUGIN);
+  assert.ok(files.length > 10, `the plugin must actually be present to scan (found ${files.length})`);
+
+  // Strip comments so the exemption above is applied by construction, not by an allow-list of
+  // file:line pairs that would rot the moment either file is edited.
+  const decomment = (text, ext) => {
+    let t = text;
+    if (ext === '.html') t = t.replace(/<!--[\s\S]*?-->/g, '');
+    if (ext === '.py') t = t.replace(/^\s*#.*$/gm, '');
+    else t = t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '').replace(/^\s*\*.*$/gm, '');
+    return t;
+  };
+
+  // `ships/` does NOT contain `ship/`, so the plural namespace is not a false positive. The
+  // leading class stops `starship/` and `airship/` counting as the singleton root.
+  const SINGLETON = /(^|[^A-Za-z0-9_-])ship\//;
+  const hits = [];
+  for (const f of files) {
+    const body = decomment(readFileSync(f, 'utf8'), extname(f));
+    body.split('\n').forEach((line, i) => {
+      if (SINGLETON.test(line)) hits.push(`${f.slice(PLUGIN.length + 1)}:${i + 1}: ${line.trim()}`);
+    });
+  }
+  assert.deepEqual(hits, [], `store paths still beginning \`ship/\`:\n  ${hits.join('\n  ')}`);
 });
 
 test('t0559-06 — an unknown event is refused, never thrown, and changes nothing', () => {
