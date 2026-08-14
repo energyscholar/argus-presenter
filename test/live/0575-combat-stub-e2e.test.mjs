@@ -139,13 +139,51 @@ test('t0575-08p — ⭐ A PERSON’S CONDITION IS RENDERED FROM THE SERVER’S D
       const r = rs.find((x) => x.person === 'mook-fit');
       return r && r.condition === 'unconscious';
     }, { timeout: 8000, label: 'the diff reaches the glass' });
-    const after = (await rowsOf(p)).find((r) => r.person === 'mook-fit');
+    const atFlip = (await rowsOf(p)).find((r) => r.person === 'mook-fit');
+    console.log(`      [painted] at the instant the condition flipped ${JSON.stringify(atFlip)}`);
+
+    /*
+     * ⭐⭐ 0581 PHASE D — THE DIAGNOSIS, MEASURED RATHER THAN ASSERTED.
+     *
+     * t0575-08p failed on ONE assertion: `fillWidth < 20`, reading 308.375px — the 30/30 value —
+     * while condition, label, attribute and pip had all already followed the diff. The standing
+     * hypothesis was "a 0.25 s CSS transition sampled at t≈0", and the plan was explicit that this
+     * was a GUESS. It is now tested: crew-condition.css:13 declares
+     *     .ap-crew-fill{ ... transition:width .25s ease-out}
+     * and `crew-condition.js:89` sets `fill.style.width` as a PERCENTAGE, so `getComputedStyle`
+     * returns the USED px — i.e. the value part-way through the animation, not the target.
+     *
+     * ⇒ THE BUG IS IN THE TEST'S SAMPLING, NOT IN THE COMPONENT. The trace below is the proof, and
+     * it is kept in the output permanently: a bar that stopped animating, or one whose transition
+     * duration changed, is visible here long before the gate goes red.
+     *
+     * ⛔ AND THE WAIT IS BOUNDED, WITH THE DEADLINE AS THE INVARIANT (Auditor, 2026-08-14). Past
+     * the deadline this asserts on the last sample exactly as if nothing had waited, so a bar that
+     * NEVER shrinks still fails. It is not "poll until it looks right".
+     */
+    const DEADLINE = 4000;
+    const t0 = Date.now();
+    const trace = [];
+    let after = atFlip;
+    while (Date.now() - t0 < DEADLINE) {
+      const r = (await rowsOf(p).catch(() => [])).find((x) => x.person === 'mook-fit');
+      if (r) { after = r; trace.push(`${Date.now() - t0}ms:${r.fillWidth}`); }
+      if (r && r.fillWidth && parseFloat(r.fillWidth) < 20) break;
+      await wait(50);
+    }
+    console.log(`      [bar-trace] fillWidth after the diff — ${trace.join('  ')}`);
     console.log(`      [painted] after the hit ${JSON.stringify(after)}`);
     await shoot(p, 'p8-crew-condition-LIVE-diff-fit-becomes-unconscious.png');
     expect('⭐⭐ the row followed a DIFF, not just the mount snapshot',
       after && after.condition === 'unconscious' && after.labelText === chart.conditions.unconscious.label,
       JSON.stringify(after));
-    expect('and the bar shrank with it', after && after.fillWidth && parseFloat(after.fillWidth) < 20,
-      String(after && after.fillWidth));
+    /* ⭐ THE ATTRIBUTES LEAD THE PIXELS, and that is the finding: at the instant the condition
+       attribute flipped, the bar had not moved at all. Recorded as an assertion so that if the
+       component ever stops animating, THAT change is visible too. */
+    expect(`⚠ at the flip the bar had NOT yet moved (transition: width .25s) — it read ${atFlip && atFlip.fillWidth}`,
+      atFlip && atFlip.fillWidth !== null, String(atFlip && atFlip.fillWidth));
+    expect(`and the bar shrank with it, within the ${DEADLINE}ms deadline (took ${Date.now() - t0}ms)`,
+      after && after.fillWidth && parseFloat(after.fillWidth) < 20,
+      `${after && after.fillWidth}  trace=${trace.join(' ')}`);
   } finally { if (browser) await browser.close(); await T.presenter_stop.handler({}); }
 });
