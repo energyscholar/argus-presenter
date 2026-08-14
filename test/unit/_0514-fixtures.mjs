@@ -113,6 +113,18 @@ export function makeArtPluginsDir(over = {}) {
  * The fallback is the plugin's OWN uncommissioned default, and it applies only when the plugin is
  * not installed — a case every test using this already guards with `haveMachine`/a station check.
  */
+/*
+ * ⭐ 0575 P2 — IMPORT A SYSTEM-PLUGIN MODULE BY FILE NAME, never by path.
+ *
+ * The audit fix behind V6 (RESUME §4.1) was exactly this: a test spelling the gitignored install
+ * tree's path reached out of this PUBLIC repo into a deployment artifact. `REAL_PLUGINS` is the
+ * one hop this repo is allowed to know, and it lives here. A new test asks for `'places.mjs'` and
+ * never learns where that is — which is also what keeps the stray-test count at seven.
+ */
+export function loadShipPluginModule(file) {
+  return import(pathToFileURL(join(REAL_PLUGINS, 'starship-ops', file)).href);
+}
+
 async function readShipKey() {
   try {
     const mod = await import(pathToFileURL(join(REAL_PLUGINS, 'starship-ops', 'ship-machine.mjs')).href);
