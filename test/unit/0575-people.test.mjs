@@ -15,7 +15,7 @@
 import { test, expect } from '../../harness/test.mjs';
 import { createServer } from '../../app/server.mjs';
 import { WebSocket } from 'ws';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { REAL_PLUGINS, SHIP_ID, SHIP_NS, loadShipPluginModule, wait, connect } from './_0514-fixtures.mjs';
 
@@ -31,6 +31,119 @@ async function bareCrew(withStations = ['hull-a']) {
   });
   return { mod, people, written };
 }
+
+/*
+ * ⭐⭐ 0581 PHASE C — A MOVED CREW KEEPS THE STATION IT WAS ON.
+ *
+ * RULED BY BRUCE, 2026-08-14: *"A moved crew should all go to the SAME STATION THEY WERE ON, only
+ * on the NEW SHIP."* Fallback, in his words: *"if station doesn't exist then you seat them as
+ * OBSERVER station. That's what Observer is for: it's a catch-all for 'you're on the ship but not
+ * seated at a station'."* Confirmed for the station-FULL case too — never bump, never refuse.
+ *
+ * ⛔ THE REGISTRY IS READ FROM THE SHIPPED MANIFEST, not written out here. `stationDefaultUid` and
+ * every `maxOccupants` come from the deployment's own plugin.json, so this test cannot pass because
+ * a fixture agreed with a hardcoded 13 — and a deployment that renumbered its stations would still
+ * be tested against ITS numbering. ⛔ The uid is never spelled in an assertion below.
+ */
+const MANIFEST = (() => {
+  try { return JSON.parse(readFileSync(join(REAL_PLUGINS, 'starship-ops', 'plugin.json'), 'utf8')); }
+  catch { return null; }
+})();
+
+async function crewWithRegistry(withStations = ['hull-a', 'hull-b']) {
+  const mod = await loadShipPluginModule('people.mjs');
+  const written = new Map();
+  const list = (MANIFEST && MANIFEST.stations) || [];
+  const people = mod.createPeople({
+    write: (p, v) => written.set(p, v),
+    placeHasStations: (id) => withStations.includes(id),
+    stationsAt: (id) => (withStations.includes(id) ? list : []),
+    stationDefaultUid: () => (MANIFEST ? MANIFEST.stationDefaultUid : null),
+  });
+  return { mod, people, written, list, defaultUid: MANIFEST && MANIFEST.stationDefaultUid };
+}
+
+/** The first station in the manifest with the given capacity, so nothing below names a uid. */
+const stationWithCap = (list, cap) => list.find((s) => s.maxOccupants === cap) || null;
+
+test('t0581-C1 — ⭐⭐ A MOVED PERSON KEEPS THEIR stationUid ON THE DESTINATION HULL', async () => {
+  if (!havePeople || !MANIFEST) { expect(false, 'people.mjs and the station manifest are installed'); return; }
+  const { people, list, defaultUid } = await crewWithRegistry();
+  // A station with room for more than one, so this test is about KEEPING and not about capacity.
+  const roomy = list.find((s) => s.maxOccupants === null || s.maxOccupants > 1);
+  expect(!!roomy, 'the manifest declares a station with room for more than one', JSON.stringify(list.map((s) => s.maxOccupants)));
+  if (!roomy) return;
+
+  people.upsert({ personId: 'p1', placeId: 'hull-a' });
+  people.seat('p1', roomy.stationUid);
+  expect(people.stationUidOf('p1') === roomy.stationUid, 'seated on hull-a', String(people.stationUidOf('p1')));
+
+  const moved = people.moveTo('p1', 'hull-b');
+  expect(moved && moved.placeId === 'hull-b', 'they are on the other hull', JSON.stringify(moved));
+  expect(moved.stationUid === roomy.stationUid,
+    '⭐⭐ THE SAME STATION, ON THE NEW SHIP — not null, and not the default',
+    `${roomy.stationUid} -> ${moved.stationUid}`);
+  expect(moved.stationUid !== defaultUid || roomy.stationUid === defaultUid,
+    '⛔ and this is a real result, not the Observer fallback dressed up as one',
+    `kept=${moved.stationUid} default=${defaultUid}`);
+  expect(people.occupantsOf('hull-a', roomy.stationUid).length === 0,
+    'the station they left no longer lists them', JSON.stringify(people.occupantsOf('hull-a', roomy.stationUid)));
+  expect(people.occupantsOf('hull-b', roomy.stationUid).includes('p1'),
+    'and the destination hull does', JSON.stringify(people.occupantsOf('hull-b', roomy.stationUid)));
+});
+
+test('t0581-C2 — the destination HAS NO SUCH STATION ⇒ Observer, read from the manifest', async () => {
+  if (!havePeople || !MANIFEST) { expect(false, 'people.mjs and the station manifest are installed'); return; }
+  const mod = await loadShipPluginModule('people.mjs');
+  const list = MANIFEST.stations || [];
+  const roomy = list.find((s) => s.maxOccupants === null || s.maxOccupants > 1);
+  /* hull-b is a hull with a REDUCED station list — the person's station is simply not on it. This
+     is a different case from "a beach has no stations at all" (t0575-05), and it is the one Bruce's
+     Observer ruling is about. */
+  const people = mod.createPeople({
+    write: () => {},
+    placeHasStations: (id) => ['hull-a', 'hull-b'].includes(id),
+    stationsAt: (id) => (id === 'hull-a' ? list : list.filter((s) => s.stationUid !== roomy.stationUid)),
+    stationDefaultUid: () => MANIFEST.stationDefaultUid,
+  });
+  people.upsert({ personId: 'p1', placeId: 'hull-a' });
+  people.seat('p1', roomy.stationUid);
+  const moved = people.moveTo('p1', 'hull-b');
+  expect(moved.stationUid === MANIFEST.stationDefaultUid,
+    '⭐ seated at the DECLARED DEFAULT — the catch-all, asked for by name',
+    `${moved.stationUid} vs stationDefaultUid ${MANIFEST.stationDefaultUid}`);
+  expect(moved.stationUid !== null, '⛔ NOT null — they are on the ship, just not at a station', String(moved.stationUid));
+});
+
+test('t0581-C3 — the destination station is FULL ⇒ Observer. ⛔ Never bump, never refuse', async () => {
+  if (!havePeople || !MANIFEST) { expect(false, 'people.mjs and the station manifest are installed'); return; }
+  const { people, list, defaultUid } = await crewWithRegistry();
+  const single = stationWithCap(list, 1);          // the manifest's own one-seat stations
+  expect(!!single, 'the manifest declares a station with maxOccupants: 1', JSON.stringify(list.map((s) => s.maxOccupants)));
+  if (!single) return;
+
+  // Someone is ALREADY in that chair on the destination hull.
+  people.upsert({ personId: 'sitting', placeId: 'hull-b' });
+  people.seat('sitting', single.stationUid);
+  people.upsert({ personId: 'arriving', placeId: 'hull-a' });
+  people.seat('arriving', single.stationUid);
+
+  const moved = people.moveTo('arriving', 'hull-b');
+  expect(moved !== null, '⛔ THE MOVE IS NOT REFUSED — they are on the ship either way', JSON.stringify(moved));
+  expect(moved.placeId === 'hull-b', 'and they really did arrive', JSON.stringify(moved));
+  expect(moved.stationUid === defaultUid, '⭐ the arriving person goes to Observer', String(moved.stationUid));
+  expect(people.stationUidOf('sitting') === single.stationUid,
+    '⛔⛔ AND THE PERSON ALREADY IN THE CHAIR WAS NOT BUMPED', String(people.stationUidOf('sitting')));
+  expect(people.occupantsOf('hull-b', single.stationUid).length === 1,
+    'the capped station still holds exactly one', JSON.stringify(people.occupantsOf('hull-b', single.stationUid)));
+
+  /* ⭐ AND THE OUTCOME DOES NOT DEPEND ON ITERATION ORDER, which is what makes a bulk move safe:
+     a second arrival for the same chair gets the same answer as the first. */
+  people.upsert({ personId: 'arriving2', placeId: 'hull-a' });
+  people.seat('arriving2', single.stationUid);
+  const m2 = people.moveTo('arriving2', 'hull-b');
+  expect(m2.stationUid === defaultUid, 'the next one in the loop gets the same answer', String(m2.stationUid));
+});
 
 test('t0575-05 — ⭐ A PERSON ON A WORLD OR AN EVA POINT HOLDS NO stationUid, AND NOTHING BREAKS', async () => {
   if (!havePeople) { expect(false, 'people.mjs is installed (run tools/install-system-plugins.sh)'); return; }

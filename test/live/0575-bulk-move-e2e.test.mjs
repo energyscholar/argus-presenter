@@ -21,7 +21,7 @@ import { test, check as expect } from '../../harness/test.mjs';
 import { createServer } from '../../app/server.mjs';
 import { launch, until, wait } from '../../harness/multi.mjs';
 import { assertResources } from '../../harness/resources.mjs';
-import { stationCensus, assertControl } from '../../harness/painted.mjs';
+import { stationCensus, settleCensus, assertControl } from '../../harness/painted.mjs';
 import { mkdirSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
@@ -117,11 +117,28 @@ test('t0575-03p — ⭐⭐ THE CREW CHANGES SHIP AND THE STATION RE-DRESSES TO T
     await until(async () => { const b = await boardOf(pil); return b && b.alert === 'action'; },
       { timeout: 9000, label: 'the NEW hull’s condition reaches the same screen' });
 
-    const after = await boardOf(pil);
-    const censusAfter = await stationCensus(pil);
+    /*
+     * ⭐⭐ 0581 PHASE B — WAIT FOR THE ART TO SETTLE, WITH THE DEADLINE AS THE INVARIANT.
+     * ⛔ NOT "poll until it looks right": past 4000 ms this returns unsettled and the control
+     * assertion below fails on the last census, exactly as if nothing had waited. The deadline is
+     * DERIVED (Auditor, 2026-08-14): measured settle 771 ms; the slowest freeze animation in
+     * stations.py is begin=1.5s + dur=2s ≈ 3.5 s worst case. The 11/19/27 s animations in that
+     * file are `repeatCount="indefinite"` ambient effects and nothing waits on them.
+     * ⭐ The actual time is PRINTED every run: a settle creeping toward the deadline is an early
+     * warning that a bare pass/fail would throw away.
+     */
+    const settle = await settleCensus(pil, { deadlineMs: 4000 });
+    const censusAfter = settle.census;
+    const after = censusAfter.chosen
+      ? { shipName: censusAfter.chosen.shipName, nameBox: censusAfter.chosen.nameBox, alert: censusAfter.chosen.alert, alertLabel: censusAfter.chosen.alertLabel, alertBox: censusAfter.chosen.bandBox }
+      : null;
+    console.log(`      [settle] the art reached the control bar after ${settle.ms}ms (deadline ${settle.deadlineMs}ms, settled=${settle.settled})`);
     console.log(`      [painted] AFTER the move ${JSON.stringify(after)}`);
     console.log(`      [census] AFTER ${JSON.stringify(censusAfter.frames)}`);
     await shoot(pil, 'p6-AFTER-move-same-seat-now-on-other-hull-RED.png');
+
+    expect(`⭐ the art SETTLED within the ${settle.deadlineMs}ms deadline (took ${settle.ms}ms) — the deadline IS the invariant`,
+      settle.settled === true, JSON.stringify(censusAfter.chosen && censusAfter.chosen.chromeDetail));
 
     /* ⭐⭐ t0581-B1, ON THE STATE THAT LIED. Everything below this line was already true on
        2026-08-13 while the screenshot showed a hex background, a role chip and an alert band and
@@ -132,24 +149,8 @@ test('t0575-03p — ⭐⭐ THE CREW CHANGES SHIP AND THE STATION RE-DRESSES TO T
     // infrastructure problem. `boardOf` can honestly return null, so say so as an assertion.
     if (!after) { expect('AFTER: a visible frame answered at all', false, JSON.stringify(censusAfter.frames)); return; }
 
-    /*
-     * ⛔ NOT A FIX. The brief allows ZERO fix attempts on a painted-gate failure, so nothing below
-     * changes what is asserted or when. This MEASURES how long the art takes to settle and shoots
-     * it again, so the failure arrives with a number and a second image instead of an opinion.
-     * ⭐ The measurement is the deliverable — see the settle line and the two screenshots.
-     */
-    if (!controlOk) {
-      const t0 = Date.now();
-      let settled = null, last = null;
-      while (Date.now() - t0 < 8000) {
-        const c = (await stationCensus(pil)).chosen;
-        last = c;
-        if (c && c.textOpacity && c.textOpacity[1] >= 0.9 && c.visibleChrome >= 3) { settled = Date.now() - t0; break; }
-        await wait(200);
-      }
-      console.log(`      [settle] the art reached the control bar ${settled === null ? 'NEVER within 8000ms' : `after ${settled}ms`}; last=${JSON.stringify(last && last.chromeDetail)}`);
-      await shoot(pil, 'p6-AFTER-move-CONTROL-FAILED-then-settled.png');
-    }
+    // ⛔ A failing control gets its own image, kept: a painted failure is evidence, not noise.
+    if (!controlOk) await shoot(pil, 'p6-AFTER-move-CONTROL-FAILED.png');
 
     expect('⭐⭐ THE SAME SCREEN NOW WEARS THE OTHER HULL’S NAME',
       after.shipName === other.name && after.shipName !== before.shipName,

@@ -147,6 +147,44 @@ export async function stationCensus(page) {
   return { frames: seen, chosen };
 }
 
+/** True when a census answers the control bar — the same predicate `assertControl` asserts. */
+export function controlMet(census, { minChrome = 3, minPeakOpacity = 0.9 } = {}) {
+  const c = census && census.chosen;
+  return !!(c && c.hasScreen && c.hasSvg && c.svgBox[0] > 0 && c.svgBox[1] > 0 && c.hit === true
+    && c.chrome >= minChrome && c.visibleChrome >= minChrome
+    && c.textOpacity && c.textOpacity[1] >= minPeakOpacity);
+}
+
+/**
+ * ⭐⭐ WAIT FOR THE ART TO SETTLE — WITH THE DEADLINE ITSELF AS THE INVARIANT.
+ *
+ * ⛔ THIS IS NOT "poll until it looks right". An unbounded retry would hide a screen that NEVER
+ * settles, which is a worse bug than the one it papers over. The contract is *"the art settles
+ * within `deadlineMs`"*: past the deadline this returns unsettled and the caller's `assertControl`
+ * fails loudly on the last census, exactly as if no wait had happened.
+ *
+ * `deadlineMs = 4000` is DERIVED, not chosen (Auditor's ruling, 2026-08-14): the measured
+ * control-bar settle on this box is 771 ms, and the slowest freeze in stations.py is
+ * `begin=1.5s` + `dur=2s` ≈ 3.5 s worst case. 4000 clears the source's own worst case with margin
+ * and is ~5x the measured value, while still failing on a genuine hang. ⛔ The 11 s / 19 s / 27 s
+ * animations in that file are `repeatCount="indefinite"` ambient effects, NOT fade-ins — nothing
+ * should ever wait on them.
+ *
+ * ⭐ ALWAYS RETURNS `ms`, AND CALLERS SHOULD PRINT IT. A bare pass/fail throws away the early
+ * warning: a settle time creeping toward the deadline is the signal that something has regressed
+ * long before the gate goes red.
+ */
+export async function settleCensus(page, { deadlineMs = 4000, every = 150, bar = {} } = {}) {
+  const t0 = Date.now();
+  let census = await stationCensus(page);
+  while (!controlMet(census, bar) && Date.now() - t0 < deadlineMs) {
+    await new Promise((r) => setTimeout(r, every));
+    census = await stationCensus(page);
+  }
+  const ms = Date.now() - t0;
+  return { census, ms, settled: controlMet(census, bar), deadlineMs };
+}
+
 /**
  * t0581-B1 — THE CONTROL ASSERTION. Call it in every painted check, alongside (never instead of)
  * whatever that check is really about.
