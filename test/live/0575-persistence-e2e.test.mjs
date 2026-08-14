@@ -26,6 +26,26 @@ import { test, check as expect } from '../../harness/test.mjs';
 import { createServer } from '../../app/server.mjs';
 import { launch, until, wait } from '../../harness/multi.mjs';
 import { assertResources } from '../../harness/resources.mjs';
+import { mkdirSync } from 'fs';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
+
+/*
+ * ⭐ THE EVIDENCE. A painted check that leaves no image is a claim; one that leaves an image is a
+ * record somebody else can disagree with. Shots land in the gitignored test/screenshots/ and are
+ * named so they are interpretable WITHOUT this file's narration — the reviewer sees them as a
+ * batch, out of context, and a shot that needs a caption has failed its job.
+ */
+const SHOTS = join(dirname(fileURLToPath(import.meta.url)), '..', 'screenshots');
+async function shoot(page, name) {
+  try {
+    mkdirSync(SHOTS, { recursive: true });
+    const file = join(SHOTS, name);
+    await page.screenshot({ path: file });
+    console.log(`      [shot] ${file}`);
+    return file;
+  } catch (e) { console.log(`      [shot] FAILED ${name} — ${e && e.message}`); return null; }
+}
 
 /** Seat a real browser at a station, exactly as a player's link does (same recipe as 0565). */
 async function seat(browser, server, uid, name) {
@@ -107,6 +127,7 @@ test('t0575-09b — ⛔⛔ A SHIP AT BATTLE STATIONS SURVIVES A RESTART, STILL A
       { timeout: 8000, label: 'the band goes RED on the Captain’s own screen' });
     const after = await paintedBand(page);
     report('after the order', after);
+    await shoot(page, 'p9-alert-BEFORE-restart-captain-seat-RED.png');
     return after;
   });
   if (first === 'no-stations') { expect('skipped — no station plugin on this deployment', true, 'skipped'); return; }
@@ -119,6 +140,7 @@ test('t0575-09b — ⛔⛔ A SHIP AT BATTLE STATIONS SURVIVES A RESTART, STILL A
   const after = await withSeat(2, 'Pilot Probe', async ({ page }) => {
     const b = await paintedBand(page);
     report('AFTER RESTART, a different seat', b);
+    await shoot(page, 'p9-alert-AFTER-restart-pilot-seat-still-RED.png');
     return b;
   });
   if (after === 'no-stations') { expect('skipped — no station plugin', true, 'skipped'); return; }
@@ -152,6 +174,7 @@ test('t0575-09 — ⭐ BRUCE’S SENTENCE: set CONDITION GREEN once, restart, an
       { timeout: 8000, label: 'GREEN' });
     const b = await paintedBand(page);
     report('CONDITION GREEN, set once', b);
+    await shoot(page, 'p9-green-BEFORE-restart-captain-seat-GREEN.png');
     return b;
   });
   if (first === 'no-stations') { expect('skipped — no station plugin', true, 'skipped'); return; }
@@ -162,6 +185,7 @@ test('t0575-09 — ⭐ BRUCE’S SENTENCE: set CONDITION GREEN once, restart, an
   const after = await withSeat(2, 'Pilot Probe', async ({ page }) => {
     const b = await paintedBand(page);
     report('AFTER RESTART', b);
+    await shoot(page, 'p9-green-AFTER-restart-pilot-seat-still-GREEN.png');
     return b;
   });
   if (after === 'no-stations') { expect('skipped — no station plugin', true, 'skipped'); return; }
