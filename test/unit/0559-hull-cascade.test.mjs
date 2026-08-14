@@ -23,7 +23,8 @@ const ship = () => commissionFromChart(loadChart(), HULL, INSTANCE);
 
 test('t0559-01 — YELLOW ALERT IS REACHABLE (it was not: `elevated` had no transition into it)', () => {
   const s = ship();
-  assert.equal(s.state().alert, 'normal');
+  // 0575 P1c — a freshly commissioned hull boots at `unknown`, not `normal`.
+  assert.equal(s.state().alert, 'unknown');
   assert.equal(s.send('general-quarters').ok, true);
   assert.equal(s.state().alert, 'elevated', 'general-quarters must reach elevated');
 });

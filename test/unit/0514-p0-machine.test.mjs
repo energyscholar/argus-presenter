@@ -54,7 +54,9 @@ test('t0514-00 — the system plugin is installed (every Phase 0 test below need
 test('t0514-23 — orthogonal regions advance INDEPENDENTLY: an alert event does not disturb nav', async () => {
   const m = await bareMachine();
   const before = m.state();
-  expect(before.alert === 'normal' && before.nav === 'docked' && before.power === 'standard', 'all three regions start at their initial state', JSON.stringify(before));
+  // ⭐ 0575 P1c — alert now starts at `unknown`, NOT `normal`. A hull nobody has given an order
+  // must not assert Condition Green; it has simply never reported.
+  expect(before.alert === 'unknown' && before.nav === 'docked' && before.power === 'standard', 'all three regions start at their initial state', JSON.stringify(before));
   const res = m.send('battle-stations');
   const after = m.state();
   expect(res.changed && after.alert === 'action', 'the alert region moved', JSON.stringify(res));
@@ -111,7 +113,10 @@ test('t0514-27 — each region publishes its active state to the store at ships/
   const { ns } = await shipKey();
   const server = await createServer({ port: 0 });
   try {
-    expect(server.store.get(`${ns}/alert`) === 'normal', `${ns}/alert seeded at load`, String(server.store.get(`${ns}/alert`)));
+    // ⭐ 0575 P1c / t0575-1c — seeded at `unknown`, and explicitly NOT at `normal`: a board that
+    // reads GREEN before anyone has said so is the ship asserting a condition it never reported.
+    expect(server.store.get(`${ns}/alert`) === 'unknown', `${ns}/alert seeded at load`, String(server.store.get(`${ns}/alert`)));
+    expect(server.store.get(`${ns}/alert`) !== 'normal', 'and a freshly booted hull does NOT claim GREEN', String(server.store.get(`${ns}/alert`)));
     expect(server.store.get(`${ns}/nav`) === 'docked', `${ns}/nav seeded at load`, String(server.store.get(`${ns}/nav`)));
     await server.callPluginTool('ship_event', { event: 'battle-stations' });
     expect(server.store.get(`${ns}/alert`) === 'action', 'a transition writes through to the store', String(server.store.get(`${ns}/alert`)));
@@ -447,7 +452,8 @@ test('t0514-45 — a PARTICIPANT can READ the ship alert, and a component watchi
     // path (`d.state.ships[id]…`), and each guards on its own root — so a rename that stopped at
     // the store would leave every one of them fetching `undefined`, failing CLOSED and LOOKING FINE.
     const sh = snap.state.ships && snap.state.ships[id];
-    expect(sh && sh.alert === 'normal', 'and it reaches the participant SNAPSHOT — not blank',
+    // 0575 P1c — the boot value is `unknown`; what this test asserts is that it ARRIVES, not what it is.
+    expect(sh && sh.alert === 'unknown', 'and it reaches the participant SNAPSHOT — not blank',
       JSON.stringify(snap.state.ships));
     expect(sh && sh.identity && sh.identity.shipId === id, 'the identity is filed under its own key — one name, not two',
       JSON.stringify(sh && sh.identity));
@@ -479,5 +485,5 @@ test('t0514-28b — the chart is DATA: adding a region is a plugin edit, not a c
   const m = mod.createShipMachine(chart, {});
   expect(m.state().hull === 'intact', 'the new region is live with no engine change', JSON.stringify(m.state()));
   m.send('hull-breach');
-  expect(m.state().hull === 'breached' && m.state().alert === 'normal', 'and it is orthogonal to the rest', JSON.stringify(m.state()));
+  expect(m.state().hull === 'breached' && m.state().alert === 'unknown', 'and it is orthogonal to the rest', JSON.stringify(m.state()));
 });
