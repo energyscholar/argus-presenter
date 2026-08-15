@@ -1,0 +1,342 @@
+/*
+ * Plan 0584 — MULTI-SHIP GETS ITS CONTROLS, AND THE CONTROLS ARE CLICKED.
+ *
+ * ⛔⛔ THE DEFECT THIS FILE EXISTS TO CLOSE, NAMED: **OBSERVABLE IS NOT OPERABLE.** Plan 0575's own
+ * painted acceptance drove EVERY multi-ship state change through `server.callPluginTool(...)`. The
+ * browser watched; it never acted. That proved the model observable and never operable — and it is
+ * why Bruce opened the live app on 2026-08-14 and found nothing to click, with four of five plugin
+ * tools carrying no control anywhere.
+ *
+ * ⇒ ⭐ EVERY STATE CHANGE BELOW IS DRIVEN BY A REAL `change` EVENT ON A REAL `<select>` IN A REAL
+ * BROWSER. A test that calls a plugin tool to move somebody proves nothing this file is for. Tool
+ * calls appear here for exactly two things, both of which are SETUP or READ-BACK and neither of
+ * which is the action under test: putting two hulls into different alert conditions so "which board
+ * am I looking at" is answerable from the pixels, and reading state back to check the guard.
+ *
+ * ⭐ 0581 B — AND EVERY PAINTED READ CARRIES A CONTROL ELEMENT. A value-under-test cannot vouch for
+ * the screen that carries it: `t0575-03p` asserted a real element with a real box and passed while
+ * the station screen was blank. `assertControl` asks the whole screen to answer, and `settleCensus`
+ * bounds the wait at 4000 ms WITH THE DEADLINE ITSELF AS THE ASSERTION — past it the check runs on
+ * the last sample, so a screen that never settles still fails.
+ *
+ * ⛔ NEVER `frames().find(f => f !== mainFrame())`. A detached or stale frame answers `evaluate()`
+ * with entirely plausible numbers; `glassFrames` walks the top document's own `<iframe>` elements
+ * and keeps only those the human can actually see.
+ *
+ * NAMES: invented and obviously fictional throughout (plan 0529 §0 / guard t0531-01). The hulls come
+ * from the `TWO_HULLS` fixture, which commissions what it needs rather than skipping when the
+ * gitignored deployment file is absent — a test that cannot run must FAIL or COMMISSION, never pass
+ * by absence.
+ *
+ * ⚠ RESOURCES: 6.4 GB, ZERO SWAP, 36 prior OOM kills. One browser at a time, closed before the next
+ * is opened, `assertResources` before each launch.
+ */
+import { test, check as expect } from '../../harness/test.mjs';
+import { createServer } from '../../app/server.mjs';
+import { launch, until, wait } from '../../harness/multi.mjs';
+import { assertResources } from '../../harness/resources.mjs';
+import { settleCensus, assertControl, glassFrames } from '../../harness/painted.mjs';
+import { loadShipPluginModule, withFleet, TWO_HULLS } from '../unit/_0514-fixtures.mjs';
+import { mkdirSync } from 'fs';
+import { join } from 'path';
+
+/*
+ * ⭐ THE EVIDENCE. ⚠ `evidence/` is GITIGNORED and that is correct — the durable record is the
+ * measured values printed below, never the PNGs.
+ */
+const SHOTS = process.env.PRESENTER_EVIDENCE_DIR
+  || join(process.env.HOME || '/tmp', 'software', 'has-anyone-looked', 'evidence', '0584');
+async function shoot(page, name) {
+  try {
+    mkdirSync(SHOTS, { recursive: true });
+    const file = join(SHOTS, name);
+    await page.screenshot({ path: file });
+    console.log(`      [shot] ${file}`);
+    return file;
+  } catch (e) { console.log(`      [shot] FAILED ${name} — ${e && e.message}`); return null; }
+}
+
+/** Every literal DOM value this file read, printed so the run report can quote it verbatim. */
+function report(tag, v) { console.log(`      [painted] ${tag} ${JSON.stringify(v)}`); }
+
+async function onGlass(page, fn, arg) {
+  const gs = await glassFrames(page);
+  for (const g of gs) {
+    try { const v = await g.frame.evaluate(fn, arg); if (v != null) return v; }
+    catch { /* torn down mid-read — try the next visible frame, never report it healthy */ }
+  }
+  return null;
+}
+
+/** Seat a real browser at a station, exactly as a player's link does (the 0565 recipe). */
+async function seat(browser, server, uid, name) {
+  const p = await browser.newPage();
+  await p.setViewport({ width: 1280, height: 800 });
+  await p.goto(`${server.url()}/?stationUID=${uid}&n=${encodeURIComponent(name)}`,
+               { waitUntil: 'domcontentloaded' });
+  await wait(1200);
+  await p.evaluate(() => document.getElementById('cfg-station')?.click());   // "show my station"
+  await wait(1500);
+  return p;
+}
+
+/** The move control, read as literal DOM — geometry included, because placement is the design. */
+const readMove = (p) => onGlass(p, () => {
+  const box = (el) => { if (!el) return null; const r = el.getBoundingClientRect();
+    return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height),
+             bottom: Math.round(r.bottom), right: Math.round(r.right) }; };
+  const w = document.querySelector('.ap-move');
+  const sel = w ? w.querySelector('.ap-move-where') : null;
+  const st = w ? w.querySelector('.ap-move-status') : null;
+  return {
+    present: !!w,
+    hasSelect: !!sel,
+    here: w ? w.getAttribute('data-here') : null,
+    destinations: w ? w.getAttribute('data-destinations') : null,
+    kinds: w ? w.getAttribute('data-kinds') : null,
+    options: sel ? [...sel.options].map((o) => o.value) : [],
+    optionLabels: sel ? [...sel.options].map((o) => o.textContent) : [],
+    optionKinds: sel ? [...sel.options].map((o) => o.getAttribute('data-kind')) : [],
+    value: sel ? sel.value : null,
+    ack: w ? w.getAttribute('data-ack') : null,
+    reason: w ? w.getAttribute('data-ack-reason') : null,
+    message: w ? w.getAttribute('data-ack-message') : null,
+    statusText: st ? (st.textContent || '') : '',
+    wrapBox: box(w), selectBox: box(sel), statusBox: box(st),
+    // the NEIGHBOUR, because "attach, don't add" is a claim about geometry and must be measured
+    ordersBox: box(document.querySelector('.ap-orders')),
+    pipBox: box(document.querySelector('#apAlertPip')),
+    nameBox: box(document.querySelector('#apShipName')),
+    shipName: (document.querySelector('#apShipName') || {}).textContent || null,
+    viewport: [window.innerWidth, window.innerHeight],
+  };
+});
+
+/** ⭐ THE ACTION. A real value change AND a real `change` event on the real control. */
+const chooseDestination = (p, placeId) => onGlass(p, (id) => {
+  const sel = document.querySelector('.ap-move-where');
+  if (!sel) return { ok: false, why: 'no select' };
+  if (![...sel.options].some((o) => o.value === id)) {
+    return { ok: false, why: 'no such destination', have: [...sel.options].map((o) => o.value) };
+  }
+  sel.value = id;
+  sel.dispatchEvent(new Event('change', { bubbles: true }));
+  return { ok: true, value: sel.value };
+}, placeId);
+
+const toolResult = async (server, name, args) => {
+  const r = await server.callPluginTool(name, args);
+  return r && Object.prototype.hasOwnProperty.call(r, 'result') ? r.result : r;
+};
+
+test('t0584-C1 / t0584-C4 — ⭐⭐ THE CAPTAIN SWITCHES HIS OWN HULL BY CLICKING A SELECT, and the guard follows him', async () => {
+  await withFleet(TWO_HULLS, async () => {
+    const mod = await loadShipPluginModule('ship-machine.mjs');
+    const fleet = mod.loadFleet();
+    const home = fleet.ships.find((s) => s.shipId === fleet.primaryShipId) || fleet.ships[0];
+    const other = fleet.ships.find((s) => s.shipId !== home.shipId);
+    const server = await createServer({ port: 0 });
+    let browser = null;
+    try {
+      if (!server.stations().stations.length) { expect('skipped — no station plugin', true, 'skipped'); return; }
+      expect('⛔ two hulls are really commissioned — no silent skip below this line', !!other,
+        JSON.stringify(fleet.ships.map((s) => s.shipId)));
+      if (!other) return;
+
+      /* SETUP ONLY, and it is not the action under test: the two hulls are put in DIFFERENT
+         conditions so "which board am I looking at" is answerable from the pixels, not only from a
+         name a client could have remembered. */
+      await toolResult(server, 'ship_event', { event: 'general-quarters', shipId: home.shipId });   // YELLOW
+      await toolResult(server, 'ship_event', { event: 'battle-stations', shipId: other.shipId });   // RED
+
+      assertResources({ needMB: 900, label: '0584 C1 painted' });
+      browser = await launch();
+      const cap = await seat(browser, server, 1, 'Captain Probe');
+      await until(() => server.presence().length >= 1, { label: 'seated' });
+      const userId = server.presence()[0].userId;
+
+      const settleBefore = await settleCensus(cap, { deadlineMs: 4000 });
+      console.log(`      [settle] BEFORE ${settleBefore.ms} ms of a ${settleBefore.deadlineMs} ms deadline, settled=${settleBefore.settled}`);
+      expect('⛔ THE DEADLINE IS THE ASSERTION — the art settled inside 4000 ms',
+        settleBefore.settled, `ms=${settleBefore.ms} census=${JSON.stringify(settleBefore.census.chosen)}`);
+      assertControl(expect, settleBefore.census, 't0584-C1 BEFORE');
+
+      const before = await readMove(cap);
+      report('the Captain’s move control', before);
+      expect('⭐ THERE IS SOMETHING TO CLICK — the control is present, is a select, and is PAINTED',
+        before && before.present && before.hasSelect
+          && before.selectBox.w > 0 && before.selectBox.h > 0, JSON.stringify(before));
+      expect('it knows where he is, from the store and not from a literal',
+        before.here === home.shipId, `${before.here} vs ${home.shipId}`);
+      expect('⭐ and the OTHER hull is offered as a destination, by its commissioned label',
+        (before.options || []).includes(other.shipId)
+          && before.optionLabels[before.options.indexOf(other.shipId)] === other.name,
+        JSON.stringify({ options: before.options, labels: before.optionLabels }));
+      expect('⛔ the hull he is ALREADY ON is not offered — a control whose only outcome is a refusal',
+        !(before.options || []).includes(home.shipId), JSON.stringify(before.options));
+      expect('and one NEUTRAL option, so the control has a resting position that is not an order',
+        (before.options || []).filter((v) => v === '').length === 1, JSON.stringify(before.options));
+
+      /* ⭐ ATTACH, DON'T ADD — asserted as GEOMETRY, because that is the only form in which the
+         claim can be false. The control must sit in the header column WITH the ship name it
+         changes, and it must not sit on top of the alert select that shares that column. */
+      const overlap = (a, b) => !!(a && b && a.x < b.right && b.x < a.right && a.y < b.bottom && b.y < a.bottom);
+      report('geometry', { move: before.wrapBox, orders: before.ordersBox, pip: before.pipBox, name: before.nameBox });
+      expect('⛔⛔ THE TWO CONTROLS DO NOT OVERLAP (a percentage once put one ON TOP of the other)',
+        !overlap(before.wrapBox, before.ordersBox),
+        `move=${JSON.stringify(before.wrapBox)} orders=${JSON.stringify(before.ordersBox)}`);
+      expect('⭐ it is in the SHIP-NAME COLUMN — same left edge as the alert pip and the order select',
+        before.wrapBox.x === before.pipBox.x && before.wrapBox.x === before.ordersBox.x,
+        JSON.stringify([before.wrapBox.x, before.pipBox.x, before.ordersBox.x]));
+      expect('⭐ and it is SMALL — the whole control is under 2% of the console',
+        (before.wrapBox.w * before.wrapBox.h) / (before.viewport[0] * before.viewport[1]) < 0.02,
+        `${before.wrapBox.w}x${before.wrapBox.h} of ${before.viewport.join('x')}`);
+      await shoot(cap, '0584-C1-01-captain-console-move-select-under-alert-select.png');
+
+      /* ── ⭐⭐ THE CLICK. This is the whole plan. ────────────────────────────────────────────── */
+      const chose = await chooseDestination(cap, other.shipId);
+      expect('⭐⭐ THE HULL WAS CHOSEN ON A REAL SELECT — no tool call moved anybody',
+        chose && chose.ok === true, JSON.stringify(chose));
+
+      await until(async () => { const m = await readMove(cap); return m && m.here === other.shipId; },
+        { timeout: 9000, label: 'the control reports him on the other hull' });
+
+      const settleAfter = await settleCensus(cap, { deadlineMs: 4000 });
+      console.log(`      [settle] AFTER ${settleAfter.ms} ms of a ${settleAfter.deadlineMs} ms deadline, settled=${settleAfter.settled}`);
+      expect(`⭐ the art SETTLED within the ${settleAfter.deadlineMs} ms deadline (took ${settleAfter.ms} ms) — the deadline IS the invariant`,
+        settleAfter.settled === true,
+        JSON.stringify(settleAfter.census.chosen && settleAfter.census.chosen.chromeDetail));
+      const controlOk = assertControl(expect, settleAfter.census, 't0584-C1 AFTER');
+      if (!controlOk) await shoot(cap, '0584-C1-CONTROL-FAILED.png');
+
+      const after = await readMove(cap);
+      const board = settleAfter.census.chosen;
+      report('after the click', { move: after, board: board && { shipName: board.shipName, alert: board.alert, alertLabel: board.alertLabel, nameBox: board.nameBox, pipBox: board.pipBox } });
+      await shoot(cap, '0584-C1-02-same-seat-now-on-the-other-hull-RED.png');
+
+      /* ⭐⭐ THE SEAT RE-DRESSED ITSELF. 0575 needed `server.stationSet(...)` to make this happen;
+         the control now asks for its own redraw over core's self-scoped `station-show`. */
+      expect('⭐⭐ THE SAME SCREEN NOW WEARS THE OTHER HULL’S NAME',
+        board && board.shipName === other.name && board.shipName !== home.name,
+        `${home.name} -> ${board && board.shipName}`);
+      expect('⭐⭐ AND SHOWS THE OTHER HULL’S CONDITION (RED), not the one he left (YELLOW)',
+        board && board.alert === 'action' && board.alertLabel === 'RED', JSON.stringify(board && { alert: board.alert, label: board.alertLabel }));
+      expect('⛔ NON-ZERO BOUNDING BOXES on the name and on the pip',
+        board && board.nameBox[0] > 0 && board.nameBox[1] > 0 && board.pipBox[0] > 0 && board.pipBox[1] > 0,
+        JSON.stringify([board && board.nameBox, board && board.pipBox]));
+      expect('the control now offers the hull he LEFT, and no longer the one he is on',
+        (after.options || []).includes(home.shipId) && !(after.options || []).includes(other.shipId),
+        JSON.stringify(after.options));
+
+      /* ⭐ HE KEPT HIS STATION. 0581 C's ruling: a crew keeps the station it was on, on the new
+         hull — `seatOnArrival`, and it still answers null for a place with no stations. */
+      const person = server.store.get(`people/${userId}`);
+      report('the person record', person);
+      expect('⭐ he is on the other hull in the PERSON registry — the single source of that fact',
+        person && String(person.placeId) === String(other.shipId), JSON.stringify(person));
+      expect('⭐ and he KEPT HIS STATION across the move (0581 C — a crew keeps its seat on a new hull)',
+        person && person.stationUid === 1, JSON.stringify(person));
+
+      /*
+       * ── t0584-C4 — ⛔ THE AUTHORITY CONSEQUENCE, TESTED RATHER THAN ASSUMED ────────────────
+       * Phase 4's guard follows the PERSON'S PLACE, so switching hull must lose him command of the
+       * one he left and gain it on the one he joined. Both halves are asserted: a guard that
+       * refused everything would pass the first on its own.
+       */
+      const st = await loadShipPluginModule('seat-authority.mjs');
+      const left = server.store.get(`${mod.shipNs(home.shipId)}/alert`);
+      const joinedBefore = server.store.get(`${mod.shipNs(other.shipId)}/alert`);
+
+      /* ⛔ ADDRESSED TO THE HULL HE LEFT — the exact `not-your-ship` case (t0575-04). Driven from
+         the browser, because a guard that has only been exercised in-process is a gate nobody has
+         seen fail from the outside. */
+      const forged = await onGlass(cap, (id) =>
+        !!(window.Argus && window.Argus.emit
+           && (window.Argus.emit('ship-order', { event: 'stand-down', shipId: id }) || true)), home.shipId);
+      expect('the forged order reached the wire', forged === true, String(forged));
+      await wait(2000);
+      const leftAfter = server.store.get(`${mod.shipNs(home.shipId)}/alert`);
+      report('the hull he left', { before: left, after: leftAfter });
+      expect('⛔⛔ t0584-C4 — THE HULL HE LEFT DID NOT MOVE: the guard refused `not-your-ship`',
+        leftAfter === left && leftAfter === 'elevated', `${left} -> ${leftAfter}`);
+      expect('and REFUSAL is the module’s own named reason, not a string this test invented',
+        st.REFUSAL.NOT_YOUR_SHIP === 'not-your-ship', JSON.stringify(st.REFUSAL));
+
+      /* ⭐ AND THE OTHER HALF: he DOES command the hull he joined, from the same seat. */
+      const commanded = await onGlass(cap, () => {
+        const sel = document.querySelector('.ap-orders-select');
+        if (!sel) return { ok: false, why: 'no order select' };
+        if (![...sel.options].some((o) => o.value === 'stand-down')) return { ok: false, have: [...sel.options].map((o) => o.value) };
+        sel.value = 'stand-down';
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        return { ok: true };
+      });
+      expect('he still has an order control on the new hull', commanded && commanded.ok === true, JSON.stringify(commanded));
+      await until(() => server.store.get(`${mod.shipNs(other.shipId)}/alert`) === 'normal',
+        { timeout: 9000, label: 'the hull he JOINED obeys him' });
+      const joinedAfter = server.store.get(`${mod.shipNs(other.shipId)}/alert`);
+      report('the hull he joined', { before: joinedBefore, after: joinedAfter });
+      expect('⭐ t0584-C4 — AND HE COMMANDS THE HULL HE JOINED, from the same seat (place, not identity)',
+        joinedAfter === 'normal' && joinedBefore === 'action', `${joinedBefore} -> ${joinedAfter}`);
+      await shoot(cap, '0584-C1-03-guard-follows-him-old-hull-unmoved.png');
+    } finally { if (browser) await browser.close(); await server.close(); }
+  });
+});
+
+test('t0584-C1b — ⛔ A SEAT THAT MAY NOT MOVE PEOPLE GETS NO CONTROL, and a hostile client is refused IN WORDS', async () => {
+  /* Two claims, and the second is the one that matters. "No control" is cheap to get right and
+     proves nothing about the server: the entitlement is computed server-side, so the check that
+     counts is what happens when a client sends the message anyway. 0565's bar — the failure being
+     guarded is not "the wrong person moved the crew", it is "the wrong person acted, nothing
+     happened, and nothing said why". */
+  await withFleet(TWO_HULLS, async () => {
+    const mod = await loadShipPluginModule('ship-machine.mjs');
+    const fleet = mod.loadFleet();
+    const home = fleet.ships.find((s) => s.shipId === fleet.primaryShipId) || fleet.ships[0];
+    const other = fleet.ships.find((s) => s.shipId !== home.shipId);
+    const server = await createServer({ port: 0 });
+    let browser = null;
+    try {
+      if (!server.stations().stations.length) { expect('skipped — no station plugin', true, 'skipped'); return; }
+      assertResources({ needMB: 900, label: '0584 C1b painted' });
+      browser = await launch();
+      const pil = await seat(browser, server, 2, 'Pilot Probe');       // uid 2 is not the Captain
+      await until(() => server.presence().length >= 1, { label: 'seated' });
+      const userId = server.presence()[0].userId;
+
+      const settle = await settleCensus(pil, { deadlineMs: 4000 });
+      console.log(`      [settle] ${settle.ms} ms of a ${settle.deadlineMs} ms deadline, settled=${settle.settled}`);
+      expect('⛔ THE DEADLINE IS THE ASSERTION — the art settled inside 4000 ms', settle.settled,
+        `ms=${settle.ms} census=${JSON.stringify(settle.census.chosen)}`);
+      assertControl(expect, settle.census, 't0584-C1b');
+
+      const m0 = await readMove(pil);
+      report('the Pilot’s console', m0);
+      expect('⛔ the Pilot is offered NO move control at all (entitlement is computed server-side)',
+        !m0 || m0.present === false, JSON.stringify(m0));
+
+      const wasAt = server.store.get(`people/${userId}`);
+      const sent = await onGlass(pil, (id) =>
+        !!(window.Argus && window.Argus.emit
+           && (window.Argus.emit('ship-move', { toPlaceId: id }) || true)), other.shipId);
+      expect('a hostile client can put the move on the wire', sent === true, String(sent));
+      await wait(2000);
+
+      const nowAt = server.store.get(`people/${userId}`);
+      report('the Pilot’s person record', { before: wasAt, after: nowAt });
+      expect('⛔⛔ HE DID NOT MOVE — the seat guard refused a message no control of his could send',
+        nowAt && String(nowAt.placeId) === String(home.shipId), JSON.stringify(nowAt));
+
+      /* ⛔ AND THE REFUSAL SPEAKS. It is written where his console would be listening, with the
+         action named so the alert select cannot mistake it for a verdict of its own. */
+      const ack = server.store.get(`${mod.shipNs(home.shipId)}/ack/${userId}`);
+      report('the refusal', ack);
+      expect('⛔ THE DENY SPEAKS — a reason and a MESSAGE IN WORDS, not silence',
+        ack && ack.ok === false && typeof ack.message === 'string' && /\S/.test(ack.message),
+        JSON.stringify(ack));
+      expect('and it is tagged with the ACTION, so the alert select does not display it',
+        ack && ack.action === mod.MOVE_EVENT, JSON.stringify(ack));
+      await shoot(pil, '0584-C1b-pilot-has-no-move-control-and-did-not-move.png');
+    } finally { if (browser) await browser.close(); await server.close(); }
+  });
+});

@@ -1415,6 +1415,18 @@
     if (frame && e.source !== frame.contentWindow) return;   // only our iframe
     if (ws.readyState !== 1) return;
     if (d.type === 'op') ws.send(JSON.stringify({ t:'op', path:d.path, verb:d.verb, value:d.value, opId:d.opId }));
+    // Plan 0584 C1 — A COMPONENT MAY ASK FOR ITS OWN SEAT TO BE RE-SHOWN. This is core's own
+    // `station-show` verb, and it is SELF-SCOPED AND UNGATED by core's own argument (server.mjs,
+    // "the six messages that put something on a screen"): it shows you only what is already yours,
+    // so a participant may always call it and it can never reach anybody else's display. The ⟲/▣
+    // buttons in the config panel already send exactly this frame; the only new thing is that the
+    // component which just changed WHICH SEAT YOU HAVE can ask for the redraw itself, instead of
+    // leaving a player looking at the board of a ship they are no longer on until they remember to
+    // press a button. ⛔ Deliberately NOT `station-select` (which WRITES a seat) and NOT
+    // `station-share` (which reaches the room) — neither is self-scoped in the same way.
+    // ⛔ It is relayed rather than passed through as a `result`, because it is a request to the
+    // HOST about this viewer's own display, not an answer to be broadcast to controllers.
+    else if (d.type === 'station-show') ws.send(JSON.stringify({ t:'station-show' }));
     else ws.send(JSON.stringify({ t:'result', msg: d }));
   });
 
