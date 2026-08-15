@@ -125,6 +125,23 @@ export function loadShipPluginModule(file) {
   return import(pathToFileURL(join(REAL_PLUGINS, 'starship-ops', file)).href);
 }
 
+/**
+ * ⭐⭐ 0584 — THE SAME ONE HOP, FOR A FILE THAT IS NOT A MODULE.
+ *
+ * ⛔ WHY IT EXISTS: `test/component/0571-order-select.test.mjs` spelled
+ * `join(HERE, '../../plugins/…')` and became the EIGHTH file to reach out of this PUBLIC repo into
+ * a GITIGNORED INSTALL ARTIFACT — the breach `RESUME-MULTISHIP` §4 had already fixed once, and the
+ * one `t0574-V6` holds at seven. A test coupled to the install tree breaks when the install
+ * changes, and it is asserting against an artifact rather than against a source.
+ *
+ * ⚠ AND THE GATE THAT SHOULD HAVE CAUGHT IT DID NOT FAIL — it was simply not reported. 0571's run
+ * named V1 and omitted V6, which read exactly like a pass. ⭐ AN ABSENT GATE IS INDISTINGUISHABLE
+ * FROM A PASSED ONE, so this helper exists to make the right thing the easy thing: a test asks for
+ * `'ship-chart.json'` and never learns where that is. `REAL_PLUGINS` is the one hop this repo is
+ * allowed to know, and it lives HERE and nowhere else.
+ */
+export function shipPluginFile(file) { return join(REAL_PLUGINS, 'starship-ops', file); }
+
 /*
  * ⭐⭐ 0581 PHASE F — COMMISSION THE HULLS A TEST NEEDS, instead of skipping when the deployment
  * has not supplied them.

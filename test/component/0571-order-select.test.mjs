@@ -19,14 +19,23 @@
 import { test, check as expect } from '../../harness/test.mjs';
 import { drive } from '../../harness/drive.mjs';
 import { readFileSync, existsSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { shipPluginFile } from '../unit/_0514-fixtures.mjs';
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-const PLUGIN = join(HERE, '../../plugins/starship-ops');
-const CHART_PATH = join(PLUGIN, 'ship-chart.json');
+/*
+ * ⛔⛔ THIS USED TO REACH UP OUT OF `test/` AND NAME THE INSTALL TREE DIRECTLY, AND THAT WAS A
+ * REGRESSION THIS FILE INTRODUCED (plan 0571 A4, commit 572f128). `argus-presenter/plugins/` is a
+ * GITIGNORED ARTIFACT TREE installed from repertory; a test in this PUBLIC repo that names it is
+ * asserting against an install output rather than a source, and it breaks when the install does. It is
+ * the breach `RESUME-MULTISHIP` §4 fixed once already, and `t0574-V6` exists to hold the offender
+ * count at SEVEN — this file made it eight.
+ *
+ * ⚠ AND THE GATE DID NOT FAIL; IT WENT UNREPORTED. 0571's run named V1 and omitted V6. ⭐ AN ABSENT
+ * GATE READS EXACTLY LIKE A PASSED GATE — which is why the fix is a helper (`shipPluginFile`) that
+ * makes the right thing the easy thing, and not a note asking the next author to remember.
+ */
+const CHART_PATH = shipPluginFile('ship-chart.json');
 const have = existsSync(CHART_PATH);
-const MANIFEST = have ? JSON.parse(readFileSync(join(PLUGIN, 'plugin.json'), 'utf8')) : null;
+const MANIFEST = have ? JSON.parse(readFileSync(shipPluginFile('plugin.json'), 'utf8')) : null;
 
 const SHIP = 'component-probe-hull';     // an invented fixture id, never a campaign one
 const USER = 'probe-user';
