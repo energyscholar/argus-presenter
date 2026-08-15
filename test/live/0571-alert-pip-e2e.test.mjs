@@ -152,6 +152,15 @@ test('t0571-02 — ⭐ THE PIP FOLLOWS THE SHIP through UNKNOWN → GREEN → YE
     expect('⛔ AND THE BAND IS GONE — no .ap-alertband, no dot, no label, no gloss anywhere',
       first && first.bands === 0 && first.dots === 0 && first.labels === 0 && first.glosses === 0,
       JSON.stringify(first));
+    /* ⛔ Whatever state the hull came up in — persistence means it is not always `unknown` — the
+       pip must be wearing THAT state's chart colour and THAT state's chart wording. Asserting
+       "it is unknown" here would be asserting the fixture, and would go red the first time a
+       previous run left the ship somewhere else. */
+    expect('on arrival the pip already agrees with the chart for whatever state the hull is in',
+      first && first.state && states[first.state]
+        && first.fill === rgb(states[first.state].colour)
+        && first.titleText === states[first.state].tooltip,
+      JSON.stringify({ read: first, chart: first && states[first.state] }));
     await shoot(pil, '0571-pip-01-on-arrival-no-band.png');
 
     /* ⛔ CHANGE THE STATE AND LOOK AGAIN — the only check that separates a live indicator from a
@@ -174,6 +183,12 @@ test('t0571-02 — ⭐ THE PIP FOLLOWS THE SHIP through UNKNOWN → GREEN → YE
       expect(`${want}: and the colour the server published agrees with it`,
         got && String(got.colourAttr).toLowerCase() === String(states[want].colour).toLowerCase(),
         String(got && got.colourAttr));
+      /* ⭐ 0571 A3 — THE WORDS COME FROM THE CHART TOO. A 5.5-unit square has no room for a
+         label, so the wording is a native SVG <title> the browser shows on hover; the component
+         renders only what it was handed. Compared against the chart, never against a literal. */
+      expect(`${want}: the tooltip is the CHART's wording, drawn into the pip's <title>`,
+        got && got.titleText === states[want].tooltip && got.tooltipAttr === states[want].tooltip,
+        `want ${JSON.stringify(states[want].tooltip)} got title=${JSON.stringify(got && got.titleText)} attr=${JSON.stringify(got && got.tooltipAttr)}`);
       expect(`${want}: still a non-zero box, still no band`,
         got && got.box[0] > 0 && got.box[1] > 0 && got.bands === 0, JSON.stringify(got));
       await shoot(pil, `0571-pip-${seen.length}-${want}.png`);

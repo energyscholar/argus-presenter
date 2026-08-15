@@ -85,6 +85,56 @@ test('t0571-03 — ⭐ the tooltip and the colours come from the CHART: the comp
     JSON.stringify(found));
 });
 
+test('t0571-04 — ⛔ AN UNHEARD STATION DOES NOT CLAIM A CONDITION: the at-rest pip wears NO condition colour', () => {
+  if (!have) { expect(true, 'skipped — no station plugin'); return; }
+  /*
+   * ⚠ AMENDED BY 0571 §2·0. The plan as written said the at-rest fill stays AMBER, because a
+   * station that has never heard from the ship must not claim Condition Green. That reasoning is
+   * still right and its implementation is obsolete: 0575 P1c turned exactly that condition into a
+   * real state, `unknown`, with its own achromatic chart colour. So the invariant is asserted as
+   * what it always meant — the at-rest pip is not any CONDITION's colour — rather than as one
+   * hard-coded hue that would have to be re-agreed every time the palette moves.
+   */
+  const states = chart().regions.alert.states;
+  const atRest = String(states.unknown.colour).toLowerCase();
+  const conditions = Object.entries(states).filter(([n]) => n !== 'unknown')
+    .map(([n, d]) => [n, String(d.colour).toLowerCase()]);
+  const clash = conditions.filter(([, c]) => c === atRest);
+  expect(clash.length === 0,
+    '⛔ the at-rest colour is distinct from every condition colour — a station with no report must '
+    + 'never be mistakable for one reporting a condition',
+    `atRest=${atRest} conditions=${JSON.stringify(conditions)}`);
+
+  const wrong = svgs().filter((f) => {
+    const m = readFileSync(join(STATIONS, f), 'utf8').match(/id="apAlertPip"[^>]*fill="([^"]*)"/);
+    return !m || conditions.some(([, c]) => c === String(m[1]).toLowerCase());
+  });
+  expect(wrong.length === 0,
+    '⛔ and no generated station is shipped wearing one',
+    wrong.join(', '));
+});
+
+test('t0571-03b — every alert state carries a tooltip, and `unknown`’s does not read like an alert level', () => {
+  if (!have) { expect(true, 'skipped — no station plugin'); return; }
+  const states = chart().regions.alert.states;
+  /* ⭐ ASSERTED OVER THE STATE SET, not for `unknown` specifically (0571 A3) — otherwise the fifth
+     state added repeats the amendment that produced this test. */
+  const noTip = Object.entries(states).filter(([, d]) => !d.tooltip || !String(d.tooltip).trim());
+  expect(noTip.length === 0, 'every alert state declares a `tooltip`',
+    JSON.stringify(noTip.map(([n]) => n)));
+
+  /* ⛔ `unknown` is the ABSENCE of a report, not a quieter condition than green (0575 §5a.1). A
+     tooltip claiming a condition would undo the state's entire reason for existing. It is checked
+     structurally: it must not reuse any OTHER state's label, which is what "reads like an alert
+     level" means here without writing campaign words down. */
+  const others = Object.entries(states).filter(([n]) => n !== 'unknown').map(([, d]) => String(d.label || ''));
+  const tip = String((states.unknown || {}).tooltip || '');
+  const leaks = others.filter((l) => l && new RegExp(l, 'i').test(tip));
+  expect(leaks.length === 0,
+    '⛔ `unknown`’s tooltip names no alert condition — it reports the absence of a report',
+    `tooltip=${JSON.stringify(tip)} leaked=${JSON.stringify(leaks)}`);
+});
+
 test('t0571-05b — ⭐ `unknown` CANNOT BE ORDERED, and it is structural: the order set is exactly the three', () => {
   if (!have) { expect(true, 'skipped — no station plugin'); return; }
   /*
