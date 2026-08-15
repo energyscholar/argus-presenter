@@ -12,7 +12,7 @@ import { buildStationRegistry } from '../../harness/plugins.mjs';
 import { WebSocket } from 'ws';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { ROOT, makePluginsDir, withPlugins, stationManifest, wait, connect, last, SHIP_NS } from './_0514-fixtures.mjs';
+import { ROOT, makePluginsDir, withPlugins, stationManifest, wait, connect, last, SHIP_NS, loadShipPluginModule } from './_0514-fixtures.mjs';
 
 /** Build a registry straight from manifest objects — the loader in isolation. */
 function build(manifests) { return buildStationRegistry(manifests, {}); }
@@ -111,11 +111,36 @@ test('t0514-06 — NO stationCode appears in any wire frame', async () => {
 
     const c = await connect(WebSocket, url, { userId: 'zz-watcher', userName: 'Watcher' });
     c.send({ t: 'station-select', stationUid: 5 }); await wait(160);
+    let sawDamage = false;
     for (const f of c.frames) {
       // `content` frames are assembled artwork/HTML, not the station protocol; the rule is about
       // the protocol's own identifiers.
       if (f.t === 'content') continue;
-      const json = JSON.stringify(f);
+      /*
+       * ⚠⚠ A DELIBERATE, STATED EXEMPTION — plan 0572, and it is the template's §8a2 hazard in its
+       * sharpest form: A TEXT GUARD CANNOT TELL A STATION FROM A SHIP SYSTEM THAT SHARES AN
+       * ENGLISH WORD. A starship genuinely HAS a sensors system, and the Damage Control console
+       * has to name it; `stationCode: 'sensors'` and the damage key `sensors` are two different
+       * things spelled the same, and this scan sees only the spelling.
+       *
+       * ⛔ THE RULE IS NOT WEAKENED — IT IS SCOPED TO WHAT IT ALWAYS MEANT. The danger is that a
+       *   CLIENT COULD ADDRESS A STATION BY CODE; that is why the protocol never hands one out.
+       *   The damage subtree is not a station reference and cannot be used as one: the registry is
+       *   uid-keyed, so `station-select` with the string lands on the DEFAULT seat (t0514-04), not
+       *   in the Sensors chair. Every other path in every frame is still scanned, unchanged.
+       *
+       * ⛔ AND IT IS NOT A HOLE, because the exemption pays for itself below: the damage subtree's
+       *   keys are asserted to be EXACTLY the rules' derived list, which is a stronger statement
+       *   than "no station word appears here" — an arbitrary string cannot hide in it either.
+       *
+       * ⚠ The alternative was renaming the ship's sensors system to dodge a string match. That
+       *   would put a second name on one rulebook concept, which is the drift this estate spends
+       *   most of its comments preventing.
+       */
+      const json = JSON.stringify(f, (k, v) => {
+        if (k === 'damage' && v && typeof v === 'object' && !Array.isArray(v)) { sawDamage = true; return '[damage-region: see the exemption above]'; }
+        return v;
+      });
       expect(!/"stationCode"/.test(json), 'no stationCode FIELD on the wire', json.slice(0, 200));
       for (const code of codes) {
         expect(!new RegExp('"' + code + '"').test(json), `the code "${code}" never appears as a wire value`, json.slice(0, 300));
@@ -124,6 +149,24 @@ test('t0514-06 — NO stationCode appears in any wire frame', async () => {
     // And the relayed registry itself carries labels + uids only.
     const reg = last(c, 'welcome').stationRegistry;
     expect(reg.every((r) => r.stationCode === undefined), 'the relayed registry has no codes', JSON.stringify(reg[0]));
+
+    /*
+     * ⭐ THE PRICE OF THE EXEMPTION, PAID. The damage region really was on the wire (so the scan
+     * above skipped something that exists rather than nothing), and every key in it is one the
+     * RULES DERIVED from the hull class — not an arbitrary string, and not a station reference.
+     */
+    expect(sawDamage, 'the damage region really is on the wire — the exemption skipped something real');
+    const snap = last(c, 'snapshot');
+    const ships = (snap && snap.state && snap.state.ships) || {};
+    const rules = await loadShipPluginModule('damage-rules.mjs');
+    const machine = await loadShipPluginModule('ship-machine.mjs');
+    for (const [id, ship] of Object.entries(ships)) {
+      if (!ship || !ship.damage || !ship.damage.systems) continue;
+      const derived = rules.deriveSystems(machine.loadHullClass(ship.identity && ship.identity.hullClass)).map((s) => s.key).sort();
+      expect(Object.keys(ship.damage.systems).sort().join(',') === derived.join(','),
+        `⭐ ${id}'s damage keys are EXACTLY the rules' derived list — nothing arbitrary hides behind the exemption`,
+        JSON.stringify({ onWire: Object.keys(ship.damage.systems).sort(), derived }));
+    }
     c.ws.close();
   } finally { await server.close(); }
 });

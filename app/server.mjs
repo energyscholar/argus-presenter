@@ -1277,7 +1277,13 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       } else if (m.t === 'result') {
         if (c) c.lastActive = Date.now();   // ATT: beat answer/continue + poll vote = deliberate human interaction
         // Authoritative identity from the connection, NOT the client payload.
-        const r = Object.assign({}, m.msg, { userId: c.userId, userName: c.userName, channel: c.userId });
+        // Plan 0572 §3.3: the ROLE is stamped here for the same reason and from the same source as
+        // the userId beside it. A plugin guard that must answer "is this actor the operator?" had
+        // no way to ask — the neutral plugin context offers store/allowRead/on/addTool/stations and
+        // nothing that carries a role — so it would have had to read a presence snapshot, which is
+        // a SECOND, CACHEABLE source for a fact this connection already knows. It stays off the
+        // wire: pushResult below names its forwarded fields explicitly and does not include it.
+        const r = Object.assign({}, m.msg, { userId: c.userId, userName: c.userName, role: c.role, channel: c.userId });
         shimAnswer(c, r);      // D2: poll vote (and generic answer) -> store op
         emit('result', r);     // map view/click/pointer are store ops now (E1-E4) — no relay
         // PRIM-results: track last result per prompt and forward to CONTROL roles ONLY (OPSEC:

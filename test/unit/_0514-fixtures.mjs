@@ -180,6 +180,54 @@ export async function withFleet(doc, fn) {
   }
 }
 
+/*
+ * ⭐⭐ 0572 — COMMISSION A HULL **CLASS**, for the same reason `withFleet` commissions a hull.
+ *
+ * The Damage Control diagram's systems are DERIVED from a hull class (thrust -> M-Drive, jump ->
+ * J-Drive, hardpoints -> Weapons), so a test of that derivation needs a class on disk. ⛔ IT MUST
+ * BE AN INVENTED ONE: this repo is PUBLIC and `t0531-01` fails any tracked file that spells a
+ * campaign or published-product value, so a fixture naming a real hull class would be the same
+ * defect the guard exists for.
+ *
+ * ⚠ THE SEAM IS `PRESENTER_SHIP_HULL_DIR`, read by ship-machine's `loadHullClass` on EVERY call,
+ * so a server started inside `fn` picks it up. Restored even on a throw — a fixture that leaked
+ * this variable would silently re-point the NEXT test's deployment at a directory in /tmp.
+ */
+export function withHulls(classes, fn) {
+  const dir = mkdtempSync(join(tmpdir(), 'ap-hulls-'));
+  for (const c of classes) writeFileSync(join(dir, `${c.classId}.json`), JSON.stringify(c, null, 2));
+  const prev = process.env.PRESENTER_SHIP_HULL_DIR;
+  process.env.PRESENTER_SHIP_HULL_DIR = dir;
+  return (async () => {
+    try { return await fn(dir); }
+    finally {
+      if (prev === undefined) delete process.env.PRESENTER_SHIP_HULL_DIR;
+      else process.env.PRESENTER_SHIP_HULL_DIR = prev;
+    }
+  })();
+}
+
+/**
+ * An invented hull class that declares all three derivable systems, plus a tonnage so the hull
+ * pool has a size. ⛔ Every value here is made up; nothing is quoted from a published product.
+ */
+export const CLASS_ALPHA = Object.freeze({
+  classId: 'alpha-class', label: 'Alpha Class', tl: 9, tonnage: 500,
+  jump: 2, thrust: 3, hardpoints: 2,
+});
+
+/** ⭐ The same class with NO drives and NO guns — `t0572-02`'s negative half, as a fixture. */
+export const CLASS_TUG = Object.freeze({
+  classId: 'tug-class', label: 'Tug Class', tl: 8, tonnage: 200,
+  jump: 0, thrust: 0, hardpoints: 0,
+});
+
+/** A one-hull fleet flying `alpha-class`, for the damage-region tests. */
+export const ONE_ALPHA = {
+  ships: [{ shipId: 'hull-alpha', name: 'HULL ALPHA', hullClass: CLASS_ALPHA.classId, primary: true }],
+  places: [],
+};
+
 /** Two hulls and one non-ship place — the smallest fleet the multi-ship acceptance ids need. */
 export const TWO_HULLS = {
   ships: [

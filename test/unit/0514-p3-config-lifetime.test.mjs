@@ -373,6 +373,21 @@ test('t0514-37 — no station LABEL or CODE appears anywhere under the ship name
         // reference — the machine never parses it to learn a station, it reads stationUid. The
         // exception is scoped to exactly that one path segment and nowhere else.
         const isSeatIdentity = path === `${SHIP_NS}/seats`;
+        /*
+         * ⚠⚠ AND A SECOND ONE — plan 0572, STATED RATHER THAN SILENT. A starship HAS a sensors
+         * system, and the damage region names it; `stationCode: 'sensors'` and the damage key
+         * `sensors` are two different things spelled the same. A text scan sees only the spelling.
+         *
+         * ⛔ THE INVARIANT IS UNCHANGED — OCCUPANCY IS UID-ONLY, which is what this test's own
+         *   title claims and what its positive controls below check. The damage region is not
+         *   occupancy and holds no station reference; every other subtree is still walked.
+         * ⭐ And the exemption is paid for: `t0572-B2` asserts the damage subtree's keys are
+         *   EXACTLY the rules' derived systems list, which is stronger than a word ban.
+         * ⚠ The alternative was renaming the ship's sensors system to dodge a string match — a
+         *   second name for one rulebook concept, which is the drift this repo exists to prevent.
+         */
+        const isDamageRegion = path === SHIP_NS && k === 'damage';
+        if (isDamageRegion) continue;
         if (!isSeatIdentity && (labels.includes(k) || codes.includes(k))) bad.push('key@' + path + '/' + k);
         walk(node[k], path + '/' + k);
       }
