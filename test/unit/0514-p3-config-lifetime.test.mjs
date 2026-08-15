@@ -381,8 +381,15 @@ test('t0514-37 — no station LABEL or CODE appears anywhere under the ship name
          * ⛔ THE INVARIANT IS UNCHANGED — OCCUPANCY IS UID-ONLY, which is what this test's own
          *   title claims and what its positive controls below check. The damage region is not
          *   occupancy and holds no station reference; every other subtree is still walked.
-         * ⭐ And the exemption is paid for: `t0572-B2` asserts the damage subtree's keys are
-         *   EXACTLY the rules' derived systems list, which is stronger than a word ban.
+         * ⭐ AND THE EXEMPTION IS PAID FOR, IN TWO PLACES A READER CAN GO AND CHECK:
+         *     - `t0514-06` (0514-p1-registry.test.mjs), which takes the same exemption on the wire
+         *       and then asserts the damage keys are EXACTLY `deriveSystems(hullClass)`;
+         *     - `t0572-02 (state)` (0572-damage-station.test.mjs), which asserts the same thing
+         *       against the store, and its negative half — a hull with no drives has no drive rows.
+         *   That is STRONGER than the word ban it replaces: a word ban only stops thirteen strings,
+         *   whereas "the keys are exactly the derived list" stops every string that is not one.
+         * ⛔ DO NOT DELETE THIS EXEMPTION AS TIDYING. Removing it does not restore a protection; it
+         *   breaks a passing suite for a collision that is two English words, not a defect.
          * ⚠ The alternative was renaming the ship's sensors system to dodge a string match — a
          *   second name for one rulebook concept, which is the drift this repo exists to prevent.
          */
