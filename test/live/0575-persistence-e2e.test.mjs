@@ -95,11 +95,15 @@ const paintedBand = (p) =>
     };
   });
 
+/* ⭐ 0571 — the three buttons became one select. `sel.value = x` alone fires nothing, so the
+   value is set AND a real `change` event dispatched, or the driver would quietly stop driving. */
 const clickOrder = (p, ev) =>
   frameOf(p).evaluate((e) => {
-    const b = document.querySelector(`.ap-order[data-order="${e}"]`);
-    if (!b) return false;
-    b.click();
+    const sel = document.querySelector('.ap-orders-select');
+    if (!sel) return false;
+    if (![...sel.options].some((o) => o.value === e)) return false;
+    sel.value = e;
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
     return true;
   }, ev);
 
@@ -131,7 +135,7 @@ test('t0575-09b — ⛔⛔ A SHIP AT BATTLE STATIONS SURVIVES A RESTART, STILL A
     const before = await paintedBand(page);
     report('boot (fresh state dir)', before);
     expect('a freshly booted hull reads UNKNOWN, not GREEN', before && before.alert === 'unknown', JSON.stringify(before));
-    expect('the button exists and was clicked', await clickOrder(page, 'battle-stations'), 'no button');
+    expect('the option exists and was chosen', await clickOrder(page, 'battle-stations'), 'no such option');
     await until(async () => { const b = await paintedBand(page); return b && b.alert === 'action'; },
       { timeout: 8000, label: 'the band goes RED on the Captain’s own screen' });
     const after = await paintedBand(page);
@@ -176,10 +180,10 @@ test('t0575-09 — ⭐ BRUCE’S SENTENCE: set CONDITION GREEN once, restart, an
   const first = await withSeat(1, 'Captain Probe', async ({ page }) => {
     // Reach GREEN the way a Captain does: the ship must first be somewhere else, or `stand-down`
     // from `unknown` would be indistinguishable from a boot that never heard anything.
-    expect('battle stations first, so GREEN is a state we ARRIVED at', await clickOrder(page, 'battle-stations'), 'no button');
+    expect('battle stations first, so GREEN is a state we ARRIVED at', await clickOrder(page, 'battle-stations'), 'no such option');
     await until(async () => { const b = await paintedBand(page); return b && b.alert === 'action'; },
       { timeout: 8000, label: 'RED' });
-    expect('then the Captain stands the ship down', await clickOrder(page, 'stand-down'), 'no button');
+    expect('then the Captain stands the ship down', await clickOrder(page, 'stand-down'), 'no such option');
     await until(async () => { const b = await paintedBand(page); return b && b.alert === 'normal'; },
       { timeout: 8000, label: 'GREEN' });
     const b = await paintedBand(page);

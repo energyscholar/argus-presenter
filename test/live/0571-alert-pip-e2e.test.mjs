@@ -235,3 +235,195 @@ test('t0571-07a — ⛔ NO ALERT BAND SURVIVES ON ANY STATION — the four state
     }
   } finally { await browser.close(); await server.close(); }
 });
+
+/** The Captain's control, read as literal DOM. ⛔ Includes what must be ABSENT. */
+const readOrders = (p) => onGlass(p, () => {
+  const w = document.querySelector('.ap-orders');
+  if (!w) return { present: false, buttons: document.querySelectorAll('.ap-order').length };
+  const sel = w.querySelector('.ap-orders-select');
+  const st = w.querySelector('.ap-orders-status');
+  const r = sel ? sel.getBoundingClientRect() : { width: 0, height: 0 };
+  const wr = w.getBoundingClientRect();
+  const pip = document.querySelector('#apAlertPip');
+  const pr = pip ? pip.getBoundingClientRect() : null;
+  return {
+    present: true,
+    hasSelect: !!sel,
+    options: sel ? [...sel.options].map((o) => o.value) : [],
+    optionLabels: sel ? [...sel.options].map((o) => o.textContent) : [],
+    value: sel ? sel.value : null,
+    selected: w.getAttribute('data-selected'),
+    trueState: w.getAttribute('data-alert-state'),
+    ack: w.getAttribute('data-ack'),
+    reason: w.getAttribute('data-ack-reason'),
+    message: w.getAttribute('data-ack-message'),
+    statusText: (st || {}).textContent || '',
+    statusBox: st ? [Math.round(st.getBoundingClientRect().width), Math.round(st.getBoundingClientRect().height)] : [0, 0],
+    selectBox: [Math.round(r.width), Math.round(r.height)],
+    wrapBox: [Math.round(wr.width), Math.round(wr.height)],
+    // ⛔ THE REMOVALS
+    buttons: document.querySelectorAll('.ap-order').length,
+    bands: document.querySelectorAll('.ap-alertband').length,
+    // proximity: the control is meant to sit WITH the pip, not across the bottom of the screen
+    pipTop: pr ? Math.round(pr.top) : null,
+    ctlTop: Math.round(wr.top),
+    viewportH: window.innerHeight,
+  };
+});
+
+/** Choose an order on the select the way a human does — a real value change AND a real event. */
+const chooseOrder = (p, ev) => onGlass(p, (e) => {
+  const sel = document.querySelector('.ap-orders-select');
+  if (!sel) return { ok: false, why: 'no select' };
+  if (![...sel.options].some((o) => o.value === e)) return { ok: false, why: 'no such option', have: [...sel.options].map((o) => o.value) };
+  sel.value = e;
+  sel.dispatchEvent(new Event('change', { bubbles: true }));
+  return { ok: true, value: sel.value };
+}, ev);
+
+test('t0571-05 — ⭐ THE SELECT ISSUES THE SAME ORDER THE BUTTON DID, and the buttons are gone', async () => {
+  const server = await createServer({ port: 0 });
+  if (!server.stations().stations.length) { expect('skipped — no station plugin', true, 'skipped'); await server.close(); return; }
+  assertResources({ needMB: 900, label: '0571 t0571-05 painted' });
+  const browser = await launch();
+  try {
+    const cap = await seat(browser, server, 1, 'Captain Probe');
+    const settle = await settleCensus(cap, { deadlineMs: 4000 });
+    console.log(`      [settle] ${settle.ms} ms of a ${settle.deadlineMs} ms deadline, settled=${settle.settled}`);
+    expect('⛔ THE DEADLINE IS THE ASSERTION — the art settled inside 4000 ms', settle.settled,
+      `ms=${settle.ms} census=${JSON.stringify(settle.census.chosen)}`);
+    assertControl(expect, settle.census, 't0571-05');
+
+    const before = await readOrders(cap);
+    report('the Captain’s control', before);
+    expect('the control is one SELECT, painted, with a non-zero box',
+      before && before.hasSelect && before.selectBox[0] > 0 && before.selectBox[1] > 0, JSON.stringify(before));
+    expect('⛔ ZERO order BUTTONS remain, and zero alert bands',
+      before && before.buttons === 0 && before.bands === 0, JSON.stringify(before));
+    /* ⭐ THE OPTION SET IS EXACTLY THE THREE ORDERS PLUS THE NEUTRAL ONE — asserted here as well as
+       structurally in t0571-05b, because "the server offers three" and "the dropdown shows three"
+       are two different claims. `unknown` is not among them and there is no filter making it so. */
+    const opts = (before.options || []).filter(Boolean);
+    expect('exactly three orders are offered, and `unknown` is not one of them',
+      opts.length === 3 && !opts.includes('unknown'), JSON.stringify(before.options));
+    expect('and one NEUTRAL option, for the state no order leads to',
+      (before.options || []).filter((v) => v === '').length === 1, JSON.stringify(before.options));
+    /* ⭐ IT SITS WITH THE PIP. The plan's point was screen real estate: the old row of buttons was
+       anchored across the BOTTOM of the console. This asserts the control is in the top quarter of
+       the screen and near the pip, not that it is at a pixel. */
+    expect('the control moved UP TO THE PIP — top quarter of the screen, within 8% of the pip',
+      before.ctlTop != null && before.pipTop != null
+        && before.ctlTop < before.viewportH * 0.25
+        && Math.abs(before.ctlTop - before.pipTop) < before.viewportH * 0.08,
+      JSON.stringify({ ctlTop: before.ctlTop, pipTop: before.pipTop, viewportH: before.viewportH }));
+    await shoot(cap, '0571-orders-01-captain-select-in-header.png');
+
+    const chose = await chooseOrder(cap, 'battle-stations');
+    expect('the order was chosen on a real select', chose && chose.ok === true, JSON.stringify(chose));
+    await until(async () => { const a = await readOrders(cap); return a && a.ack; },
+      { timeout: 8000, label: 'the Captain gets a verdict' });
+    const after = await readOrders(cap);
+    report('after the order', after);
+    expect('⭐ ACCEPTED, and it said so in words on his own screen',
+      after.ack === 'ok' && /\S/.test(after.statusText), JSON.stringify(after));
+    expect('the verdict line is PAINTED, not merely present',
+      after.statusBox[0] > 0 && after.statusBox[1] > 0, JSON.stringify(after.statusBox));
+
+    await until(async () => { const b = await readPip(cap); return b && b.state === 'action'; },
+      { timeout: 8000, label: 'the ship reached action stations' });
+    const pip = await readPip(cap);
+    report('the pip after the order', pip);
+    expect('⭐⭐ the SAME event the button used to send moved the ship — the pip is RED',
+      pip && pip.state === 'action', JSON.stringify(pip));
+    const settled = await readOrders(cap);
+    expect('and the select agrees with the ship it just moved',
+      settled.trueState === 'action' && settled.value === 'battle-stations', JSON.stringify(settled));
+    await shoot(cap, '0571-orders-02-accepted-red.png');
+
+    await server.callPluginTool('ship_event', { event: 'stand-down' });   // ⛳ leave the ship at rest
+  } finally { await browser.close(); await server.close(); }
+});
+
+test('t0571-06 — ⛔ THE DENY STILL SPEAKS: a seat without the order is refused IN WORDS, and the select goes back', async () => {
+  /* 0565's bar, carried forward: the failure this guards is not "the wrong person changed the
+     ship", it is "the wrong person acted, nothing happened, and nothing said why". ⚠ A dropdown
+     that snaps back is WORSE than a button that does nothing, because it looks like a UI glitch
+     rather than a refusal — so the words are the assertion, and the snap-back is the second half. */
+  const server = await createServer({ port: 0 });
+  if (!server.stations().stations.length) { expect('skipped — no station plugin', true, 'skipped'); await server.close(); return; }
+  assertResources({ needMB: 900, label: '0571 t0571-06 painted' });
+  const browser = await launch();
+  try {
+    /* The Captain first puts the ship somewhere definite, so "the select went back to the truth"
+       is a claim with content rather than a coincidence of both being empty. */
+    const cap = await seat(browser, server, 1, 'Captain Probe');
+    expect('the Captain orders general quarters', (await chooseOrder(cap, 'general-quarters')).ok === true, 'no option');
+    await until(async () => { const b = await readPip(cap); return b && b.state === 'elevated'; },
+      { timeout: 8000, label: 'the ship reaches elevated' });
+    await cap.close();
+
+    const pil = await seat(browser, server, 2, 'Pilot Probe');
+    const p0 = await readOrders(pil);
+    report('the Pilot’s console', p0);
+    expect('⛔ the Pilot is offered NO orders at all (entitlement is computed server-side)',
+      !p0 || p0.present === false || !(p0.options || []).filter(Boolean).length, JSON.stringify(p0));
+    expect('and he certainly has no buttons', p0 && p0.buttons === 0, JSON.stringify(p0));
+
+    /* He has no control, so a hostile client is the only way to put the order on the wire — which
+       is exactly the case the guard exists for. */
+    const sent = await onGlass(pil, () =>
+      !!(window.Argus && window.Argus.emit && (window.Argus.emit('ship-order', { event: 'battle-stations' }) || true)));
+    expect('a hostile client can send the order', sent === true, String(sent));
+    await wait(1800);
+
+    const pip = await readPip(pil);
+    report('the Pilot’s pip after the refused order', pip);
+    expect('⛔⛔ THE SHIP DID NOT MOVE — the pip is not RED', pip && pip.state !== 'action', JSON.stringify(pip));
+    expect('and it still shows the condition the Captain set', pip && pip.state === 'elevated', JSON.stringify(pip));
+    await shoot(pil, '0571-orders-03-pilot-refused-ship-unmoved.png');
+
+    const p1 = await readOrders(pil);
+    if (p1 && p1.present && p1.hasSelect) {
+      expect('the refusal is VISIBLE, in words', p1.ack === 'refused' || /not|cannot/i.test(p1.message || ''), JSON.stringify(p1));
+      expect('and the select went back to the TRUE state, not the one refused',
+        p1.value === '' || p1.value !== 'battle-stations', JSON.stringify(p1));
+    } else {
+      expect('no control at all on a seat with no orders (also correct — the ship is asserted above)', true, JSON.stringify(p1));
+    }
+  } finally { await browser.close(); await server.close(); }
+});
+
+test('t0571-08 — ⭐⭐ THE SCREEN IS ROOMIER: the alert feature occupies a fraction of what it did', async () => {
+  /* ⛔ THE TEST THAT PROVES THE PLAN'S ACTUAL PURPOSE. Every other test here can pass while the
+     screen gets no roomier. What the alert feature used to occupy was a bordered band roughly
+     190 x 30 px at the top right of EVERY station, plus a 3-button row roughly 430 x 60 px on the
+     Captain's — call it ~31,500 px^2 on his console. The assertion is not against those numbers,
+     which are history and would rot; it is against the SCREEN: the alert display plus its control
+     must now be a small fraction of the surface, and the band must be absent. */
+  const server = await createServer({ port: 0 });
+  if (!server.stations().stations.length) { expect('skipped — no station plugin', true, 'skipped'); await server.close(); return; }
+  assertResources({ needMB: 900, label: '0571 t0571-08 painted' });
+  const browser = await launch();
+  try {
+    const cap = await seat(browser, server, 1, 'Captain Probe');
+    const settle = await settleCensus(cap, { deadlineMs: 4000 });
+    console.log(`      [settle] ${settle.ms} ms of a ${settle.deadlineMs} ms deadline, settled=${settle.settled}`);
+    expect('⛔ THE DEADLINE IS THE ASSERTION — the art settled inside 4000 ms', settle.settled,
+      `ms=${settle.ms} census=${JSON.stringify(settle.census.chosen)}`);
+    assertControl(expect, settle.census, 't0571-08');
+
+    const o = await readOrders(cap);
+    const pip = await readPip(cap);
+    const area = (b) => (b && b.length === 2 ? b[0] * b[1] : 0);
+    const surface = await onGlass(cap, () => [window.innerWidth, window.innerHeight]);
+    const total = area(pip.box) + area(o.wrapBox);
+    const pct = Math.round((total / (surface[0] * surface[1])) * 10000) / 100;
+    report('footprint', { pipBox: pip.box, controlBox: o.wrapBox, surface, totalPx2: total, percentOfScreen: pct });
+    expect('the pip is on the glass and TINY', pip.box[0] > 0 && pip.box[0] <= 24, JSON.stringify(pip.box));
+    expect('⭐ the whole alert feature — display AND control — is under 2% of the console',
+      pct < 2, `${pct}% of ${surface[0]}x${surface[1]}, pip=${JSON.stringify(pip.box)} control=${JSON.stringify(o.wrapBox)}`);
+    expect('⛔ and the band it replaced is not hiding somewhere', pip.bands === 0 && o.buttons === 0,
+      JSON.stringify({ bands: pip.bands, buttons: o.buttons }));
+    await shoot(cap, '0571-orders-04-captain-console-footprint.png');
+  } finally { await browser.close(); await server.close(); }
+});

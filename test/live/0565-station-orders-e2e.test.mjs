@@ -52,7 +52,13 @@ async function panel(p) {
     const w = document.querySelector('.ap-orders');
     if (!w) return null;
     return {
-      buttons: [...document.querySelectorAll('.ap-order')].map((b) => b.getAttribute('data-order')),
+      /* ⭐ 0571 — THE THREE BUTTONS ARE GONE; the control is one compact select. The panel's
+         headless surface is unchanged, so only the way the options are enumerated moved. */
+      buttons: [...document.querySelectorAll('.ap-orders-select option')]
+        .map((o) => o.getAttribute('data-order')).filter(Boolean),
+      selected: w.getAttribute('data-selected'),
+      trueState: w.getAttribute('data-alert-state'),
+      realButtons: document.querySelectorAll('.ap-order').length,
       ack: w.getAttribute('data-ack'),
       reason: w.getAttribute('data-ack-reason'),
       message: w.getAttribute('data-ack-message'),
@@ -62,11 +68,16 @@ async function panel(p) {
   });
 }
 
+/* ⭐ 0571 — A REAL SELECTION ON A REAL SELECT. `sel.value = x` alone fires nothing, which is how
+   a driver quietly stops driving anything: the assertion downstream would then be measuring the
+   test, not the component. The value is set AND a real `change` event dispatched. */
 const clickOrder = (p, ev) =>
   frameOf(p).evaluate((e) => {
-    const b = document.querySelector(`.ap-order[data-order="${e}"]`);
-    if (!b) return false;
-    b.click();
+    const sel = document.querySelector('.ap-orders-select');
+    if (!sel) return false;
+    if (![...sel.options].some((o) => o.value === e)) return false;
+    sel.value = e;
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
     return true;
   }, ev);
 
@@ -107,7 +118,7 @@ test('t0565-01 — ⭐ THE CAPTAIN GIVES AN ORDER AND THIRTEEN STATIONS CHANGE',
       `${JSON.stringify(capBefore)} vs ${JSON.stringify(pilBefore)}`);
 
     // ── the Captain presses BATTLE STATIONS on his own screen ─────────────────
-    expect('the button exists and was clicked', await clickOrder(cap, 'battle-stations'), 'no button');
+    expect('the option exists and was chosen', await clickOrder(cap, 'battle-stations'), 'no such option');
     await until(async () => { const a = await panel(cap); return a && a.ack; },
       { timeout: 6000, label: 'the Captain gets a verdict' });
 
