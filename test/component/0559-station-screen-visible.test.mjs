@@ -76,7 +76,10 @@ const GEOMETRY = () => {
   const mount = document.getElementById('ap-mount');
   const wrap = document.querySelector('.ap-stationscreen');
   const svg = document.querySelector('.ap-ss-art svg');
-  const band = document.querySelector('.ap-ss-alert');
+  /* ⭐ 0571 — THE BAND IS GONE and `.ap-ss-alert` is now a deliberately ZERO-SIZE mount host, so
+     measuring it would measure nothing. The alert display is `#apAlertPip`, the 5.5 x 5.5 unit
+     square in the station header, and that is what has to land on the art. */
+  const band = document.querySelector('#apAlertPip');
   const box = (e) => { if (!e) return null; const b = e.getBoundingClientRect(); return { w: Math.round(b.width), h: Math.round(b.height), x: Math.round(b.x), y: Math.round(b.y) }; };
   return {
     fullbleed: !!(mount && mount.classList.contains('ap-fullbleed')),
@@ -113,7 +116,7 @@ test('t0559-27 — EVERY station that declares a screen paints, not just the fir
   }
 });
 
-test('t0559-28 — the alert band lands ON the art, inside the frame, at 16:10 and 4:3', async () => {
+test('t0559-28 — the alert pip lands ON the art, inside the frame, at 16:10 and 4:3', async () => {
   /* The band is positioned in PERCENT of a container that had zero height, so it was pinned to the
      top edge regardless of the artwork. Checking two aspects is the point: `preserveAspectRatio:
      slice` moves the art under the band, and a percentage that is right at one aspect can be wrong
@@ -124,11 +127,13 @@ test('t0559-28 — the alert band lands ON the art, inside the frame, at 16:10 a
     const r = await drive({ component: desc.component, opts: desc.opts, requires: desc.requires, viewport, probe: GEOMETRY });
     const g = r.probe;
     const tag = `${viewport.width}x${viewport.height}`;
-    expect(`${tag}: the band rendered`, g.band && g.band.w > 0 && g.band.h > 0, JSON.stringify(g.band));
-    expect(`${tag}: the band is INSIDE the art box`,
+    /* ⚠ 0571 — the pip is 5.5 of 800 viewBox units, so at 1280 wide it is ~9 px. NON-ZERO is the
+       assertion; "big enough to see" never was one, and 1004x0 is still the failure being caught. */
+    expect(`${tag}: the pip rendered`, g.band && g.band.w > 0 && g.band.h > 0, JSON.stringify(g.band));
+    expect(`${tag}: the pip is INSIDE the art box`,
       g.band && g.svg && g.band.x >= g.svg.x && g.band.y >= g.svg.y
         && g.band.x + g.band.w <= g.svg.x + g.svg.w && g.band.y + g.band.h <= g.svg.y + g.svg.h,
-      `band ${JSON.stringify(g.band)} vs art ${JSON.stringify(g.svg)}`);
+      `pip ${JSON.stringify(g.band)} vs art ${JSON.stringify(g.svg)}`);
   }
 });
 

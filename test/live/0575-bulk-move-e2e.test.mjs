@@ -65,7 +65,7 @@ async function seat(browser, server, uid, name) {
  */
 const boardOf = async (p) => {
   const c = (await stationCensus(p)).chosen;
-  return c ? { shipName: c.shipName, nameBox: c.nameBox, alert: c.alert, alertLabel: c.alertLabel, alertBox: c.bandBox } : null;
+  return c ? { shipName: c.shipName, nameBox: c.nameBox, alert: c.alert, alertLabel: c.alertLabel, alertBox: c.pipBox } : null;
 };
 
 test('t0575-03p — ⭐⭐ THE CREW CHANGES SHIP AND THE STATION RE-DRESSES TO THE NEW HULL', async () => {
@@ -137,7 +137,7 @@ test('t0575-03p — ⭐⭐ THE CREW CHANGES SHIP AND THE STATION RE-DRESSES TO T
     const settle = await settleCensus(pil, { deadlineMs: 4000 });
     const censusAfter = settle.census;
     const after = censusAfter.chosen
-      ? { shipName: censusAfter.chosen.shipName, nameBox: censusAfter.chosen.nameBox, alert: censusAfter.chosen.alert, alertLabel: censusAfter.chosen.alertLabel, alertBox: censusAfter.chosen.bandBox }
+      ? { shipName: censusAfter.chosen.shipName, nameBox: censusAfter.chosen.nameBox, alert: censusAfter.chosen.alert, alertLabel: censusAfter.chosen.alertLabel, alertBox: censusAfter.chosen.pipBox }
       : null;
     console.log(`      [settle] the art reached the control bar after ${settle.ms}ms (deadline ${settle.deadlineMs}ms, settled=${settle.settled})`);
     console.log(`      [painted] AFTER the move ${JSON.stringify(after)}`);

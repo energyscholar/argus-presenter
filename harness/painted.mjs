@@ -68,6 +68,10 @@ export async function stationCensus(page) {
     let c;
     try {
       c = await g.frame.evaluate(() => {
+      /* ⚠ 0571 — ROUNDED, and the pip is small enough that rounding matters: at 1280 wide it is
+         5.5 * 1280/800 = 8.8 px, which rounds to 9. A pip that reported [0,0] here would be the
+         1004x0 failure again, so the rounding is kept but the values are printed, never trusted
+         to be "about right". */
       const box = (el) => {
         if (!el) return [0, 0];
         const r = el.getBoundingClientRect();
@@ -77,7 +81,11 @@ export async function stationCensus(page) {
       const art = document.querySelector('.ap-ss-art');
       const svg = art ? art.querySelector('svg') : null;
       const texts = svg ? Array.from(svg.querySelectorAll('text')).filter((t) => (t.textContent || '').trim().length) : [];
-      const band = document.querySelector('.ap-alertband');
+      /* ⭐ 0571 — THE ALERT BAND IS GONE. The alert display is `#apAlertPip`, the 5.5 x 5.5 unit
+         square in the station header, carrying the same data-* headless surface the band did.
+         ⚠ It is 5.5 of 800 viewBox units wide, so its painted box is single-digit pixels — a
+         non-zero check on it is still meaningful, a "looks big enough" one never was. */
+      const band = document.querySelector('#apAlertPip');
       const nameEl = document.querySelector('#apShipName');
 
       // ⭐ HIT TEST. A box is a promise about layout; this is a question about the glass. Ask the
@@ -131,7 +139,8 @@ export async function stationCensus(page) {
         hasSvg: !!svg, svgBox: box(svg),
         chrome: texts.length,
         hit,
-        hasBand: !!band, bandBox: box(band),
+        hasPip: !!band, pipBox: box(band),
+        alertTooltip: band ? band.getAttribute('data-alert-tooltip') : null,
         shipName: nameEl ? (nameEl.textContent || '').trim() : null,
         nameBox: box(nameEl),
         alert: band ? band.getAttribute('data-alert') : null,

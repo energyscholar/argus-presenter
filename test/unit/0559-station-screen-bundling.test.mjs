@@ -101,7 +101,10 @@ test('t0559-24 — ⭐ END TO END: assembling a station screen SHIPS the compone
   for (const c of ['station-screen', 'alert-band']) {
     assert.ok(html.includes(`register('${c}'`), `assembled page must contain ${c}'s registration`);
   }
-  assert.ok(html.includes('ap-alertband'), 'and its stylesheet');
+  /* ⭐ 0571 — the band is gone, so the stylesheet is checked by what it styles NOW: the alert pip
+     in the station header. The assertion is still "the component's CSS shipped", not "the CSS says
+     any particular thing". */
+  assert.ok(html.includes('apAlertPip'), 'and its stylesheet');
   /* ⚠ NOT `!html.includes('No component registered')` — that string is the ELSE branch of the
      assembled page's own boot script and is present in every page ever assembled. Asserting its
      absence tests the template, not the outcome. What matters is that `has()` will find the name,

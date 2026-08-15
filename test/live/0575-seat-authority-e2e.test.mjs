@@ -62,7 +62,8 @@ const panel = (p) =>
 
 const bandOf = (p) =>
   frameOf(p).evaluate(() => {
-    const b = document.querySelector('.ap-alertband');
+    /* ⭐ 0571 — THE BAND IS GONE; the alert display is the 5.5x5.5 pip in the station header. */
+    const b = document.querySelector('#apAlertPip');
     return b ? { state: b.getAttribute('data-alert'), label: b.getAttribute('data-alert-label') } : null;
   });
 

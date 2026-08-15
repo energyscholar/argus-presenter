@@ -64,25 +64,34 @@ const frameOf = (p) => p.frames().find((f) => f !== p.mainFrame()) || null;
 /**
  * ⭐ THE PAINTED READ. Not `data-alert` alone: the attribute could be right while nothing is drawn
  * (a component mounted at 1004×0 is the estate's own worst case). So this also takes the pip's
- * COMPUTED background colour — which arrives from the chart, through the store, through the diff,
- * through `--ab` — and the bounding box of the band and the pip.
+ * COMPUTED fill — which arrives from the chart, through the store, through the diff, onto the
+ * element — and its bounding box.
+ *
+ * ⭐⭐ 0571 — AND THE BAND IT USED TO READ NO LONGER EXISTS. Bruce, 2026-08-13: "Alert Status is a
+ * SMALL FEATURE and should take up SMALL SPACE." The bordered band at the top right of all
+ * thirteen screens is gone; the display is `#apAlertPip`, the 5.5 x 5.5 unit square the station
+ * art has always drawn immediately left of the ship's name, repainted from outside. `bandGone` is
+ * asserted alongside the colour, because "the new thing works" and "the old thing was removed" are
+ * two claims and this plan is mostly the second one.
  */
 const paintedBand = (p) =>
   frameOf(p).evaluate(() => {
-    const b = document.querySelector('.ap-alertband');
+    const b = document.querySelector('#apAlertPip');
     if (!b) return null;
-    const dot = b.querySelector('.ap-ab-dot');
     const br = b.getBoundingClientRect();
-    const dr = dot ? dot.getBoundingClientRect() : { width: 0, height: 0 };
+    const t = b.querySelector('title');
     return {
       alert: b.getAttribute('data-alert'),
       label: b.getAttribute('data-alert-label'),
       colourAttr: b.getAttribute('data-alert-colour'),
-      labelText: (b.querySelector('.ap-ab-label') || {}).textContent || '',
-      glossText: (b.querySelector('.ap-ab-gloss') || {}).textContent || '',
-      pipFill: dot ? getComputedStyle(dot).backgroundColor : null,
-      bandBox: [Math.round(br.width), Math.round(br.height)],
-      pipBox: [Math.round(dr.width), Math.round(dr.height)],
+      tooltipAttr: b.getAttribute('data-alert-tooltip'),
+      titleText: t ? (t.textContent || '') : null,
+      pipFill: getComputedStyle(b).fill,
+      pipBox: [Math.round(br.width), Math.round(br.height)],
+      // ⛔ the removals, read as literal DOM facts rather than believed
+      bandGone: !document.querySelector('.ap-alertband'),
+      dotGone: !document.querySelector('.ap-ab-dot'),
+      buttonsGone: document.querySelectorAll('.ap-order').length === 0,
     };
   });
 
@@ -156,10 +165,11 @@ test('t0575-09b — ⛔⛔ A SHIP AT BATTLE STATIONS SURVIVES A RESTART, STILL A
     after && after.pipFill === 'rgb(224, 82, 82)', String(after && after.pipFill));
   expect('and the colour the server published agrees with it',
     after && String(after.colourAttr).toLowerCase() === '#e05252', String(after && after.colourAttr));
-  expect('the label is drawn, in words', after && after.labelText === 'RED', JSON.stringify(after && after.labelText));
-  expect('⛔ NON-ZERO BOUNDING BOX — the band is on the glass, not merely in the DOM',
-    after && after.bandBox[0] > 0 && after.bandBox[1] > 0, JSON.stringify(after && after.bandBox));
-  expect('and so is the pip', after && after.pipBox[0] > 0 && after.pipBox[1] > 0, JSON.stringify(after && after.pipBox));
+  expect('the condition is named on the element, in words', after && after.label === 'RED', JSON.stringify(after && after.label));
+  expect('⛔ NON-ZERO BOUNDING BOX — the pip is on the glass, not merely in the DOM',
+    after && after.pipBox[0] > 0 && after.pipBox[1] > 0, JSON.stringify(after && after.pipBox));
+  expect('⭐ 0571 — AND THE BAND IT REPLACED IS GONE from the DOM, band, dot and all',
+    after && after.bandGone && after.dotGone, JSON.stringify(after));
 });
 
 test('t0575-09 — ⭐ BRUCE’S SENTENCE: set CONDITION GREEN once, restart, and it is still green', async () => {
@@ -196,8 +206,9 @@ test('t0575-09 — ⭐ BRUCE’S SENTENCE: set CONDITION GREEN once, restart, an
     after && after.alert !== 'unknown', JSON.stringify(after));
   expect('the pip is filled with the GREEN colour, computed off the live element',
     after && after.pipFill === 'rgb(63, 185, 80)', String(after && after.pipFill));
-  expect('the label is drawn, in words', after && after.labelText === 'GREEN', JSON.stringify(after && after.labelText));
-  expect('⛔ NON-ZERO BOUNDING BOX on both band and pip',
-    after && after.bandBox[0] > 0 && after.bandBox[1] > 0 && after.pipBox[0] > 0 && after.pipBox[1] > 0,
-    JSON.stringify([after && after.bandBox, after && after.pipBox]));
+  expect('the condition is named on the element, in words', after && after.label === 'GREEN', JSON.stringify(after && after.label));
+  expect('⛔ NON-ZERO BOUNDING BOX on the pip',
+    after && after.pipBox[0] > 0 && after.pipBox[1] > 0, JSON.stringify(after && after.pipBox));
+  expect('⭐ 0571 — and no band, no dot and no order BUTTONS anywhere on this screen',
+    after && after.bandGone && after.dotGone && after.buttonsGone, JSON.stringify(after));
 });

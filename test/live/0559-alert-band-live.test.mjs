@@ -26,7 +26,9 @@ const readBand = async (page) => {
   const f = page.frames().find((x) => x !== page.mainFrame());
   if (!f) return null;
   return f.evaluate(() => {
-    const b = document.querySelector('.ap-alertband');
+    /* ⭐ 0571 — THE BAND IS GONE. The headless surface moved onto `#apAlertPip` with the display
+       itself: same attribute names, one element instead of a band, a dot, a label and a gloss. */
+    const b = document.querySelector('#apAlertPip');
     return b ? { state: b.getAttribute('data-alert'), label: b.getAttribute('data-alert-label'),
                  colour: b.getAttribute('data-alert-colour') } : null;
   });
