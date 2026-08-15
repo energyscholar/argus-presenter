@@ -94,6 +94,13 @@ const readMove = (p) => onGlass(p, () => {
     here: w ? w.getAttribute('data-here') : null,
     destinations: w ? w.getAttribute('data-destinations') : null,
     kinds: w ? w.getAttribute('data-kinds') : null,
+    movers: w ? w.getAttribute('data-movers') : null,
+    whoValue: w ? w.getAttribute('data-who') : null,
+    movedYou: w ? w.getAttribute('data-ack-moved-you') : null,
+    whoOptions: w && w.querySelector('.ap-move-who') ? [...w.querySelector('.ap-move-who').options].map((o) => o.value) : [],
+    whoLabels: w && w.querySelector('.ap-move-who') ? [...w.querySelector('.ap-move-who').options].map((o) => o.textContent) : [],
+    whoBox: (() => { const e = w ? w.querySelector('.ap-move-who') : null; if (!e) return null;
+      const r = e.getBoundingClientRect(); return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height), bottom: Math.round(r.bottom), right: Math.round(r.right) }; })(),
     options: sel ? [...sel.options].map((o) => o.value) : [],
     optionLabels: sel ? [...sel.options].map((o) => o.textContent) : [],
     optionKinds: sel ? [...sel.options].map((o) => o.getAttribute('data-kind')) : [],
@@ -111,6 +118,18 @@ const readMove = (p) => onGlass(p, () => {
     viewport: [window.innerWidth, window.innerHeight],
   };
 });
+
+/** ⭐ C2 — pick WHO moves, on the real roster select, with a real `change` event. */
+const chooseMover = (p, personId) => onGlass(p, (id) => {
+  const sel = document.querySelector('.ap-move-who');
+  if (!sel) return { ok: false, why: 'no who select' };
+  if (![...sel.options].some((o) => o.value === id)) {
+    return { ok: false, why: 'no such mover', have: [...sel.options].map((o) => o.value) };
+  }
+  sel.value = id;
+  sel.dispatchEvent(new Event('change', { bubbles: true }));
+  return { ok: true, value: sel.value };
+}, personId);
 
 /** ⭐ THE ACTION. A real value change AND a real `change` event on the real control. */
 const chooseDestination = (p, placeId) => onGlass(p, (id) => {
@@ -337,6 +356,130 @@ test('t0584-C1b — ⛔ A SEAT THAT MAY NOT MOVE PEOPLE GETS NO CONTROL, and a h
       expect('and it is tagged with the ACTION, so the alert select does not display it',
         ack && ack.action === mod.MOVE_EVENT, JSON.stringify(ack));
       await shoot(pil, '0584-C1b-pilot-has-no-move-control-and-did-not-move.png');
+    } finally { if (browser) await browser.close(); await server.close(); }
+  });
+});
+
+test('t0584-C2 — ⭐⭐ THE ROSTER SELECT SENDS A CREWMATE TO THE OTHER HULL, and the mover keeps their station', async () => {
+  /*
+   * C2, driven by a real click on a real control. ⭐ THE SECOND CLAIM IS THE INTERESTING ONE: the
+   * person who is sent KEEPS THEIR STATION on the destination hull (0581 C — `seatOnArrival`), so
+   * `t0581-C1`'s invariant now has a REACHABLE path through it instead of only a unit test.
+   *
+   * ⛔ AND THE OPERATOR IS NOT MOVED. Sending a crewmate must not re-dress the sender's own screen:
+   * the server answers `movedYou:false` and the console leaves its frame alone — which is also the
+   * only reason the verdict survives long enough to be read (an accepted SELF move tears the frame
+   * down and wipes it).
+   */
+  await withFleet(TWO_HULLS, async () => {
+    const mod = await loadShipPluginModule('ship-machine.mjs');
+    const fleet = mod.loadFleet();
+    const home = fleet.ships.find((s) => s.shipId === fleet.primaryShipId) || fleet.ships[0];
+    const other = fleet.ships.find((s) => s.shipId !== home.shipId);
+    const server = await createServer({ port: 0 });
+    let browser = null;
+    try {
+      if (!server.stations().stations.length) { expect('skipped — no station plugin', true, 'skipped'); return; }
+      expect('⛔ two hulls are really commissioned', !!other, JSON.stringify(fleet.ships.map((s) => s.shipId)));
+      if (!other) return;
+      assertResources({ needMB: 900, label: '0584 C2 painted' });
+      browser = await launch();
+
+      /* TWO REAL SEATS. The crewmate has to exist as a person before anybody can be offered them,
+         and a person exists here by SITTING DOWN — which is the same path a real player takes. */
+      const cap = await seat(browser, server, 1, 'Captain Probe');
+      const eng = await seat(browser, server, 7, 'Engineer Probe');
+      await until(() => server.presence().length >= 2, { label: 'two seats' });
+      const ids = server.presence().map((p) => p.userId);
+      const capId = ids.find((i) => /captain/i.test(i)) || ids[0];
+      const engId = ids.find((i) => i !== capId);
+      report('the two seats', { capId, engId });
+
+      const settle = await settleCensus(cap, { deadlineMs: 4000 });
+      console.log(`      [settle] ${settle.ms} ms of a ${settle.deadlineMs} ms deadline, settled=${settle.settled}`);
+      expect('⛔ THE DEADLINE IS THE ASSERTION — the art settled inside 4000 ms', settle.settled,
+        `ms=${settle.ms} census=${JSON.stringify(settle.census.chosen)}`);
+      assertControl(expect, settle.census, 't0584-C2');
+
+      await until(async () => { const m = await readMove(cap); return m && (m.whoOptions || []).includes(engId); },
+        { timeout: 9000, label: 'the crewmate appears on the roster select' });
+
+      const before = await readMove(cap);
+      report('the roster select', { movers: before.movers, whoOptions: before.whoOptions, whoLabels: before.whoLabels, whoBox: before.whoBox, wrapBox: before.wrapBox });
+      expect('⭐ the roster select is PAINTED with a non-zero box',
+        before.whoBox && before.whoBox.w > 0 && before.whoBox.h > 0, JSON.stringify(before.whoBox));
+      expect('⭐ it offers ME, ALL, and the crewmate who is actually here',
+        (before.whoOptions || []).includes('me') && (before.whoOptions || []).includes('all')
+          && (before.whoOptions || []).includes(engId), JSON.stringify(before.whoOptions));
+      expect('and it defaults to ME — C1 is the common case and stays one click',
+        before.whoValue === 'me', String(before.whoValue));
+      expect('⛔ still no overlap with the alert control above it, now that the row has two selects',
+        before.wrapBox.y > before.ordersBox.bottom,
+        `move.y=${before.wrapBox.y} orders.bottom=${before.ordersBox.bottom}`);
+      expect('⭐ and the whole control is STILL under 2% of the console',
+        (before.wrapBox.w * before.wrapBox.h) / (before.viewport[0] * before.viewport[1]) < 0.02,
+        `${before.wrapBox.w}x${before.wrapBox.h} of ${before.viewport.join('x')}`);
+      await shoot(cap, '0584-C2-01-roster-select-offers-the-crewmate.png');
+
+      const engBefore = server.store.get(`people/${engId}`);
+      report('the crewmate before', engBefore);
+
+      /* ── ⭐⭐ TWO REAL CLICKS: pick the mover, then pick the destination ───────────────────── */
+      const pickedWho = await chooseMover(cap, engId);
+      expect('⭐ the mover was chosen on a REAL select', pickedWho && pickedWho.ok === true, JSON.stringify(pickedWho));
+      const pickedWhere = await chooseDestination(cap, other.shipId);
+      expect('⭐⭐ and the destination on a REAL select — no tool call moved anybody',
+        pickedWhere && pickedWhere.ok === true, JSON.stringify(pickedWhere));
+
+      await until(() => {
+        const p = server.store.get(`people/${engId}`);
+        return p && String(p.placeId) === String(other.shipId);
+      }, { timeout: 9000, label: 'the crewmate lands on the other hull' });
+
+      const engAfter = server.store.get(`people/${engId}`);
+      const capAfter = server.store.get(`people/${capId}`);
+      report('the crewmate after', engAfter);
+      report('the sender after', capAfter);
+      expect('⭐⭐ THE CREWMATE IS ON THE OTHER HULL', String(engAfter.placeId) === String(other.shipId),
+        `${engBefore.placeId} -> ${engAfter.placeId}`);
+      expect('⭐ AND KEPT THEIR STATION across the move — t0581-C1, now reachable by a click',
+        engAfter.stationUid === engBefore.stationUid && engAfter.stationUid === 7,
+        JSON.stringify({ before: engBefore.stationUid, after: engAfter.stationUid }));
+      expect('⛔ THE SENDER DID NOT MOVE — this is a roster action, not a crew action',
+        String(capAfter.placeId) === String(home.shipId), JSON.stringify(capAfter));
+
+      /* ⛔ AND THE VERDICT SPEAKS, ON THE SENDER'S OWN SCREEN. It survives here precisely because
+         `movedYou` was false and the frame was therefore left alone. */
+      await until(async () => { const m = await readMove(cap); return m && m.ack; },
+        { timeout: 9000, label: 'the sender gets a verdict' });
+      const after = await readMove(cap);
+      report('the sender’s verdict', { ack: after.ack, reason: after.reason, message: after.message, movedYou: after.movedYou, statusText: after.statusText, statusBox: after.statusBox });
+      expect('⭐ ACCEPTED, IN WORDS, on the console that asked', after.ack === 'ok' && /\S/.test(after.statusText),
+        JSON.stringify({ ack: after.ack, statusText: after.statusText }));
+      expect('⛔ and the server said the SENDER was not among the movers, so his frame was left alone',
+        after.movedYou === '0', String(after.movedYou));
+      expect('the sender’s own board still wears his hull’s name', after.shipName === home.name,
+        `${after.shipName} vs ${home.name}`);
+      expect('and the crewmate has left the sender’s roster select',
+        !(after.whoOptions || []).includes(engId), JSON.stringify(after.whoOptions));
+      await shoot(cap, '0584-C2-02-crewmate-sent-verdict-in-words-sender-unmoved.png');
+
+      /* ⛔ THE OTHER HALF OF THE ROSTER GUARD: a person who is NOT here cannot be moved, even
+         though naming them is a one-word edit to a message a hostile client writes. */
+      const forged = await onGlass(cap, (a) =>
+        !!(window.Argus && window.Argus.emit
+           && (window.Argus.emit('ship-move', { toPlaceId: a.to, who: a.who }) || true)),
+        { to: home.shipId, who: engId });
+      expect('the forged move reached the wire', forged === true, String(forged));
+      await wait(2000);
+      const engStill = server.store.get(`people/${engId}`);
+      const ack = server.store.get(`${mod.shipNs(home.shipId)}/ack/${capId}`);
+      report('the refused remote move', { person: engStill.placeId, ack });
+      expect('⛔⛔ A PERSON WHO IS NOT HERE IS NOT MOVED — `who` is not a remote teleport',
+        String(engStill.placeId) === String(other.shipId), JSON.stringify(engStill));
+      expect('⛔ and the refusal SPEAKS, with the action named', ack && ack.ok === false
+        && ack.action === mod.MOVE_EVENT && /\S/.test(ack.message || ''), JSON.stringify(ack));
+      await eng.close();
     } finally { if (browser) await browser.close(); await server.close(); }
   });
 });
