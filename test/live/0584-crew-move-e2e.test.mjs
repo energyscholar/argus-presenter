@@ -483,3 +483,176 @@ test('t0584-C2 — ⭐⭐ THE ROSTER SELECT SENDS A CREWMATE TO THE OTHER HULL, 
     } finally { if (browser) await browser.close(); await server.close(); }
   });
 });
+
+/*
+ * ⭐ C3's fleet. `TWO_HULLS` already carries one `world`; an `eva` point is added HERE rather than
+ * in the shared fixture, because widening a fixture other tests assert against is how one test's
+ * setup becomes another test's surprise. ⛔ Both are invented and obviously fictional (t0531-01).
+ */
+const FLEET_WITH_PLACES = {
+  ships: TWO_HULLS.ships,
+  places: [...TWO_HULLS.places, { placeId: 'eva-point', kind: 'eva', label: 'EVA POINT' }],
+};
+
+test('t0584-C3 — ⭐⭐ THE AWAY PARTY: a world and an EVA point are in the same dropdown, and landing there takes the seat', async () => {
+  /*
+   * ⭐ THE WHOLE OF C3 IS THE KINDS LIST. 0575 §2 promised that "away parties, boarding and
+   * spacewalks need no new machinery, only new place records" — so redeeming it DELETED a list
+   * (`['ship']` became `PLACE_KINDS`) instead of adding a feature. This test is what makes that
+   * claim checkable: the same control, the same click, a destination that is not a ship.
+   *
+   * ⛔ AND THE SECOND HALF IS THE ONE THAT MATTERS. `people.moveTo`: "a remembered seat is how
+   * someone on a beach keeps a Gunner's authority." Landing on a world must take the stationUid
+   * AND the authority that came with it, and both are asserted from a real click.
+   */
+  await withFleet(FLEET_WITH_PLACES, async () => {
+    const mod = await loadShipPluginModule('ship-machine.mjs');
+    const places = await loadShipPluginModule('places.mjs');
+    const fleet = mod.loadFleet();
+    const home = fleet.ships.find((s) => s.shipId === fleet.primaryShipId) || fleet.ships[0];
+    const world = FLEET_WITH_PLACES.places.find((p) => p.kind === 'world');
+    const eva = FLEET_WITH_PLACES.places.find((p) => p.kind === 'eva');
+    const server = await createServer({ port: 0 });
+    let browser = null;
+    try {
+      if (!server.stations().stations.length) { expect('skipped — no station plugin', true, 'skipped'); return; }
+      assertResources({ needMB: 900, label: '0584 C3 painted' });
+      browser = await launch();
+      const cap = await seat(browser, server, 1, 'Captain Probe');
+      await until(() => server.presence().length >= 1, { label: 'seated' });
+      const userId = server.presence()[0].userId;
+
+      const settle = await settleCensus(cap, { deadlineMs: 4000 });
+      console.log(`      [settle] ${settle.ms} ms of a ${settle.deadlineMs} ms deadline, settled=${settle.settled}`);
+      expect('⛔ THE DEADLINE IS THE ASSERTION — the art settled inside 4000 ms', settle.settled,
+        `ms=${settle.ms} census=${JSON.stringify(settle.census.chosen)}`);
+      assertControl(expect, settle.census, 't0584-C3');
+
+      await until(async () => { const m = await readMove(cap); return m && (m.options || []).includes(world.placeId); },
+        { timeout: 9000, label: 'the world reaches the destination list' });
+
+      const before = await readMove(cap);
+      report('the destination list', { kinds: before.kinds, destinations: before.destinations,
+        options: before.options, labels: before.optionLabels, optionKinds: before.optionKinds });
+      expect('⭐⭐ A WORLD AND AN EVA POINT ARE IN THE SAME DROPDOWN AS THE OTHER HULL',
+        (before.options || []).includes(world.placeId) && (before.options || []).includes(eva.placeId),
+        JSON.stringify(before.options));
+      expect('and they carry their KIND, so the list is the registry’s and not a literal here',
+        before.optionKinds[before.options.indexOf(world.placeId)] === 'world'
+          && before.optionKinds[before.options.indexOf(eva.placeId)] === 'eva',
+        JSON.stringify({ options: before.options, kinds: before.optionKinds }));
+      expect('⭐ the entitlement names EVERY declared kind — one closed list, in places.mjs',
+        (before.kinds || '').split(',').sort().join(',') === [...places.PLACE_KINDS].sort().join(','),
+        `${before.kinds} vs ${JSON.stringify(places.PLACE_KINDS)}`);
+      expect('and they are labelled by the deployment, not by a word this plugin knows',
+        before.optionLabels[before.options.indexOf(world.placeId)] === world.label,
+        JSON.stringify(before.optionLabels));
+      await shoot(cap, '0584-C3-01-destination-list-has-a-world-and-an-eva-point.png');
+
+      const wasSeated = server.store.get(`people/${userId}`);
+      report('before going ashore', wasSeated);
+      expect('he starts aboard, at a station', wasSeated && String(wasSeated.placeId) === String(home.shipId)
+        && wasSeated.stationUid === 1, JSON.stringify(wasSeated));
+
+      /* ── ⭐⭐ ONE REAL CLICK, ONTO A PLACE THAT IS NOT A SHIP ─────────────────────────────── */
+      const chose = await chooseDestination(cap, world.placeId);
+      expect('⭐⭐ THE WORLD WAS CHOSEN ON THE SAME REAL SELECT — no new control, no tool call',
+        chose && chose.ok === true, JSON.stringify(chose));
+
+      await until(() => {
+        const p = server.store.get(`people/${userId}`);
+        return p && String(p.placeId) === String(world.placeId);
+      }, { timeout: 9000, label: 'he lands on the world' });
+
+      const ashore = server.store.get(`people/${userId}`);
+      report('ashore', ashore);
+      expect('⭐⭐ HE IS ON THE WORLD', String(ashore.placeId) === String(world.placeId), JSON.stringify(ashore));
+      expect('⛔⛔ AND HE HAS NO STATION — a stationUid is meaningless off the hull it belongs to',
+        ashore.stationUid === null, JSON.stringify({ was: wasSeated.stationUid, now: ashore.stationUid }));
+      expect('the place he is on is really a non-ship kind, from the registry',
+        server.store.get(`places/${world.placeId}`).hasStations === false,
+        JSON.stringify(server.store.get(`places/${world.placeId}`)));
+
+      /* ⛔ AND THE AUTHORITY WENT WITH THE SEAT. This is t0575-04e reached by a click: he was
+         commanding that hull one action ago, and from a beach he commands nothing. */
+      const alertWas = server.store.get(`${mod.shipNs(home.shipId)}/alert`);
+      const forged = await onGlass(cap, (id) =>
+        !!(window.Argus && window.Argus.emit
+           && (window.Argus.emit('ship-order', { event: 'battle-stations', shipId: id }) || true)), home.shipId);
+      expect('the order reached the wire from the beach', forged === true, String(forged));
+      await wait(2000);
+      const alertNow = server.store.get(`${mod.shipNs(home.shipId)}/alert`);
+      report('the hull he left', { before: alertWas, after: alertNow });
+      expect('⛔⛔ THE SHIP DOES NOT OBEY A MAN ON A BEACH — the seat went, so the authority went',
+        alertNow === alertWas, `${alertWas} -> ${alertNow}`);
+      await shoot(cap, '0584-C3-02-ashore-no-station-no-authority.png');
+
+      /*
+       * ⛔⛔ THE LIMIT, FOUND BY THIS TEST AND ASSERTED RATHER THAN PAPERED OVER.
+       *
+       * This block was first written as *"and he can come back on the same control"* — because an
+       * away party is a round trip or it is a one-way door, and a one-way door is a bug nobody
+       * notices until a session. It FAILED, and the failure is real and structural:
+       *
+       *   ⭐ ENTITLEMENT IS A PROPERTY OF A STATION, AND A BEACH HAS NO STATIONS. Off-ship the
+       *     person holds no stationUid (asserted above), so the seat resolver falls back to the
+       *     deployment default, `movesFor(default)` is empty, and NO CONTROL RENDERS. It is not a
+       *     missing widget: the guard refuses at the server too, `not-aboard`, because
+       *     seat-authority's step 3 asks whether the actor is aboard THIS hull and nobody on a
+       *     world is aboard any of them.
+       *
+       * ⇒ AS BUILT, GOING ASHORE IS ONE-WAY FROM THE CONSOLE. The way back is the operator's
+       *   `ship_move_crew`, which is a documented route and not a workaround — but it is a REAL
+       *   BOUNDARY of the away party and it belongs in a test, not in a report nobody re-reads.
+       *   ⚠ Left for a follow-on plan to rule on: whether a person with no seat may walk back to
+       *   their own ship is a question about AUTHORITY, and inventing an answer here would be a
+       *   second authority path, which 0575 §3 forbids.
+       *
+       * ⭐ THE TOOL CALL BELOW IS THE SUBJECT OF THE ASSERTION, NOT A SUBSTITUTE FOR A CLICK. What
+       *   is being proved is precisely that the operator route is the only one left.
+       */
+      const stranded = await readMove(cap);
+      report('the console on the beach', { present: stranded.present, here: stranded.here,
+        options: stranded.options, station: stranded.shipName });
+      expect('⛔⛔ ONE-WAY: off-ship there is no seat, so there is NO MOVE CONTROL at all',
+        stranded.present === false, JSON.stringify(stranded));
+
+      const forgedBack = await onGlass(cap, (id) =>
+        !!(window.Argus && window.Argus.emit
+           && (window.Argus.emit('ship-move', { toPlaceId: id }) || true)), home.shipId);
+      expect('the move reached the wire from the beach', forgedBack === true, String(forgedBack));
+      await wait(2000);
+      const stillAshore = server.store.get(`people/${userId}`);
+      const beachAck = server.store.get(`${mod.shipNs(home.shipId)}/ack/${userId}`);
+      report('the refused walk home', { placeId: stillAshore.placeId, ack: beachAck });
+      expect('⛔ and the SERVER refuses it too — this is a guard, not a missing widget',
+        String(stillAshore.placeId) === String(world.placeId), JSON.stringify(stillAshore));
+      expect('⛔ THE DENY SPEAKS, and names the reason the guard actually used',
+        beachAck && beachAck.ok === false && beachAck.reason === 'not-aboard'
+          && /\S/.test(beachAck.message || '') && beachAck.action === mod.MOVE_EVENT,
+        JSON.stringify(beachAck));
+
+      /* ⭐ THE OPERATOR'S ROUTE IS THE WAY BACK, and it is the SAME `moveCrew` loop the control
+         drives — one code path, reached from the other end. */
+      const rescued = await toolResult(server, 'ship_move_crew',
+        { toPlaceId: home.shipId, fromPlaceId: world.placeId });
+      report('the operator brings him back', rescued);
+      const aboard = server.store.get(`people/${userId}`);
+      report('back aboard', aboard);
+      expect('⭐ the operator route brings him back', String(aboard.placeId) === String(home.shipId),
+        JSON.stringify(aboard));
+      expect('⛔ AND HE DOES NOT GET HIS OLD SEAT BACK — he left without one, so he arrives at the '
+        + 'deployment default (0581 C: `seatOnArrival` carries a seat, it does not remember one)',
+        aboard.stationUid === server.stations().stationDefaultUid,
+        JSON.stringify({ now: aboard.stationUid, default: server.stations().stationDefaultUid }));
+
+      const settleBack = await settleCensus(cap, { deadlineMs: 4000 });
+      console.log(`      [settle] BACK ${settleBack.ms} ms of a ${settleBack.deadlineMs} ms deadline, settled=${settleBack.settled}`);
+      expect(`⭐ the art SETTLED within the ${settleBack.deadlineMs} ms deadline (took ${settleBack.ms} ms)`,
+        settleBack.settled === true, JSON.stringify(settleBack.census.chosen && settleBack.census.chosen.chromeDetail));
+      assertControl(expect, settleBack.census, 't0584-C3 BACK');
+      report('the board he came back to', settleBack.census.chosen && { shipName: settleBack.census.chosen.shipName, alert: settleBack.census.chosen.alert });
+      await shoot(cap, '0584-C3-03-back-aboard-via-operator-route.png');
+    } finally { if (browser) await browser.close(); await server.close(); }
+  });
+});
