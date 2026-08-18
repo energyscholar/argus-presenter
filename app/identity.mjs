@@ -15,7 +15,8 @@
  * NOTHING here is trusted from the client. The loopback verdict is read from the SOCKET, not a claim;
  * the OIDC principal is read from a signature this server verified; the allowlist is server-side data.
  */
-import { createHash, createPublicKey, verify as cryptoVerify, randomBytes } from 'node:crypto';
+import { createHash, createPublicKey, verify as cryptoVerify, randomBytes, timingSafeEqual } from 'node:crypto';
+import { readFileSync, statSync } from 'node:fs';
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────────
  * THE LOOPBACK TRAP (§2.2) — the worst hole if it is wrong.
@@ -355,5 +356,242 @@ export function makeTailscaleAdapter(config, { resolve } = {}) {
       if (!user || typeof user !== 'string') return null;
       return { provider: 'tailscale', sub: user, email: user, name: user };
     },
+  };
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════════════════════
+ * Plan 0650 §2a — THE TAILSCALE RESOLVER THAT ACTUALLY RESOLVES (SECURITY-CRITICAL).
+ *
+ * ⛔⛔ WHAT WAS WRONG. `makeTailscaleAdapter` above has always been correct, and has always been
+ * INERT: `createServer` defaulted `tailscaleResolve` to null, so the adapter's first line returned
+ * null and the tailnet path existed only inside test files. mcp/surface-coverage.mjs said it was
+ * "wired to the tailscale layer in production". It was not. Nothing supplied it.
+ *
+ * ⛔⛔ AND THE TEST'S RESOLVER MUST NEVER SHIP. Every existing test injects
+ * `(req) => req.headers['tailscale-user-login']`. That is fine in a test and FATAL in production:
+ * a header is a CLIENT CLAIM, so any stranger could type Bruce's address and become Bruce. Line 308
+ * of this file already stated the rule — the identity comes from the tailscale layer, "never from a
+ * client claim" — and nothing enforced it.
+ *
+ * ⇒ THE PEER ADDRESS IS THE ONLY INPUT. `req.socket.remoteAddress` is set by the kernel from the
+ * TCP connection; a client cannot choose it. Measured against a live tailscaled: a connection made
+ * to the node's own tailnet address presents that 100.64/10 address, and `tailscale whois` on it
+ * names the person; a loopback connection presents `127.0.0.1`, and whois answers "peer not found".
+ * That separation IS the security boundary, and it also honours Bruce's standing ruling (2026-08-05)
+ * that loopback is not an auth signal and grants nothing.
+ *
+ * ⚠ SYNCHRONOUS SEAM, ASYNCHRONOUS TRUTH. `makeTailscaleAdapter` calls `resolve(req)` synchronously
+ * inside the `hello` handler, but `tailscale whois` is a subprocess. Blocking the event loop on a
+ * shell-out would stall every other participant in the room, so this splits in two:
+ *   prime(req)   — async, started at CONNECTION time, fills a short-TTL cache. Never throws.
+ *   resolve(req) — sync, reads ONLY that cache. A miss is null (fenced), never a wait.
+ * server.mjs holds the connection's first frames until `prime` settles or a hard deadline passes,
+ * so a hung `whois` costs a bounded delay and yields NO identity — it can never hang the socket.
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════ */
+
+/** The tailnet address space: 100.64.0.0/10 (CGNAT) and fd7a:115c:a1e0::/48 (Tailscale ULA). */
+export function isTailnetPeerAddress(addr) {
+  if (typeof addr !== 'string') return false;
+  let a = addr.trim().toLowerCase();
+  if (!a) return false;
+  if (a.startsWith('[') && a.endsWith(']')) a = a.slice(1, -1);
+  if (a.startsWith('::ffff:')) a = a.slice(7);                 // v4-mapped v6 ⇒ compare as v4
+  if (LOOPBACK_PEERS.has(a)) return false;                     // ⛔ loopback is NEVER a tailnet peer
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(a);
+  if (m) {
+    const o = m.slice(1).map(Number);
+    if (o.some((n) => n > 255)) return false;
+    return o[0] === 100 && o[1] >= 64 && o[1] <= 127;          // 100.64.0.0/10
+  }
+  return a.startsWith('fd7a:115c:a1e0:');
+}
+
+/** The SOCKET peer address, or null. ⛔ Reads the socket and nothing else — never a header. */
+export function peerAddressOf(req) {
+  const a = req && req.socket && req.socket.remoteAddress;
+  return (typeof a === 'string' && a.trim()) ? a.trim() : null;
+}
+
+/**
+ * Parse `tailscale whois --json <ip>` output into a login name, or null.
+ * ⚠ A TAGGED NODE IS NOT A PERSON: tagged devices whois as `tagged-devices`, which must never
+ * become a principal — otherwise any tagged CI box on the tailnet would hold Bruce's authority.
+ */
+export function parseWhoisJson(stdout) {
+  if (typeof stdout !== 'string' || !stdout.trim()) return null;
+  let doc;
+  try { doc = JSON.parse(stdout); } catch (e) { return null; }
+  const u = doc && (doc.UserProfile || doc.userProfile);
+  const login = u && (u.LoginName || u.loginName);
+  if (typeof login !== 'string' || !login.trim()) return null;
+  const v = login.trim().toLowerCase();
+  if (v === 'tagged-devices') return null;
+  return v;
+}
+
+export const TAILSCALE_WHOIS_TIMEOUT_MS = 1200;
+
+/** The default shell-out. ⚠ Absent binary / down daemon / hang ⇒ REJECT, and the caller maps that to null. */
+async function defaultWhoisExec(peer, { timeoutMs = TAILSCALE_WHOIS_TIMEOUT_MS } = {}) {
+  const { execFile } = await import('node:child_process');
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (fn, v) => { if (settled) return; settled = true; clearTimeout(hard); fn(v); };
+    const child = execFile('tailscale', ['whois', '--json', peer],
+      { timeout: timeoutMs, killSignal: 'SIGKILL', maxBuffer: 256 * 1024, windowsHide: true },
+      (err, stdout) => (err ? finish(reject, err) : finish(resolve, String(stdout || ''))));
+    child.on('error', () => {});   // ENOENT also arrives at the callback; this stops the duplicate throw
+    // Belt AND braces: execFile's own timeout kills the child, but if the kill itself wedges we still
+    // give up here. ⛔ A hung whois must never hold a connection open.
+    const hard = setTimeout(() => { try { child.kill('SIGKILL'); } catch (e) {} finish(reject, new Error('whois-timeout')); }, timeoutMs + 250);
+    if (hard.unref) hard.unref();
+  });
+}
+
+export function makeTailscaleWhois({
+  exec = defaultWhoisExec,
+  peerAddress = peerAddressOf,
+  timeoutMs = TAILSCALE_WHOIS_TIMEOUT_MS,
+  cacheTtlMs = 60_000,
+  now = () => Date.now(),
+} = {}) {
+  const cache = new Map();      // peer -> { login: string|null, exp }   (null is a NEGATIVE cache entry)
+  const inflight = new Map();   // peer -> Promise
+
+  /** The peer worth asking about, or null. Forwarded ⇒ the peer is the proxy, not the person. */
+  function peerFor(req) {
+    if (!req) return null;
+    if (hasForwardingHeader(req)) return null;
+    const a = peerAddress(req);
+    return isTailnetPeerAddress(a) ? a : null;
+  }
+
+  return {
+    /** SYNCHRONOUS. Cache only. ⛔ Never reads a header, never blocks, never throws. */
+    resolve(req) {
+      const peer = peerFor(req);
+      if (!peer) return null;
+      const hit = cache.get(peer);
+      if (!hit || hit.exp <= now()) { cache.delete(peer); return null; }
+      return hit.login;
+    },
+    /** ASYNC. Fills the cache. Resolves to a login or null; NEVER rejects, so no caller can throw. */
+    prime(req) {
+      const peer = peerFor(req);
+      if (!peer) return Promise.resolve(null);
+      const hit = cache.get(peer);
+      if (hit && hit.exp > now()) return Promise.resolve(hit.login);
+      if (inflight.has(peer)) return inflight.get(peer);
+      const p = (async () => {
+        let login = null;
+        try { login = parseWhoisJson(await exec(peer, { timeoutMs })); }
+        catch (e) { login = null; }   // absent / erroring / timed out ⇒ NO identity. Never a grant.
+        cache.set(peer, { login, exp: now() + cacheTtlMs });
+        inflight.delete(peer);
+        return login;
+      })();
+      inflight.set(peer, p);
+      return p;
+    },
+    _cache: cache,
+  };
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════════════════════
+ * Plan 0650 §2b — BREAK-GLASS, ACTUALLY CONSUMED.
+ *
+ * ⛔ WHAT WAS WRONG. `enforceOAuth:'control'` REFUSES TO START without a break-glass credential,
+ * naming the exact shape it wants — "loopback-only, single-use, TTL, 0600 file". The presence was
+ * checked at server.mjs:306, reported in the startup line at :325, and CONSUMED BY NOTHING. No
+ * route accepted it. The gate demanded a key for a lock that did not exist, so the one deployment
+ * mode meant to reduce exposure could only be entered over the PUBLIC tunnel via Google.
+ *
+ * WHAT IT GRANTS, AND WHAT IT DELIBERATELY DOES NOT. It grants a CONTROL SESSION — the Control
+ * page and the presenter/gm roles — and it does NOT grant `trust:self`. Bruce's standing ruling
+ * (2026-08-05, recorded at server.mjs:348) is that command authority over Argus comes only from a
+ * verified identity (OIDC | Tailscale) that is ALSO on the allowlist. A secret in a file on the box
+ * is neither, so break-glass recovers the presentation, not the agent's ear.
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════ */
+export const BREAK_GLASS_COOKIE = 'ap_bg';
+export const BREAK_GLASS_DEFAULT_TTL_MS = 15 * 60 * 1000;
+
+/** Constant-time string compare over fixed-length digests (so length never leaks through timing). */
+function secretEquals(a, b) {
+  const da = createHash('sha256').update(String(a)).digest();
+  const db = createHash('sha256').update(String(b)).digest();
+  return timingSafeEqual(da, db);
+}
+
+/**
+ * Read the credential. `token` is inline (tests, and a deployment that prefers config); `file` is
+ * Bruce's live shape (~/.config/argus-presenter/break-glass, mode 0600).
+ * ⚠ The FILE'S MTIME is the credential's issue time, so `touch`ing the file re-arms it. That is the
+ * intended operator gesture: to use break-glass you go to the box, which is the whole premise.
+ */
+function defaultBreakGlassRead(config) {
+  if (config.token) return { secret: String(config.token).trim(), mode: null, issuedAt: null };
+  const st = statSync(config.file);
+  return { secret: readFileSync(config.file, 'utf8').trim(), mode: st.mode & 0o777, issuedAt: st.mtimeMs };
+}
+
+export function makeBreakGlassAdapter(config, { readCredential = defaultBreakGlassRead, now = () => Date.now(), startedAt = null } = {}) {
+  const active = !!(config && typeof config === 'object' && (config.token || config.file));
+  // ⛔ loopback-only is the DEFAULT and must be turned off explicitly. Fail-safe, not fail-open.
+  const loopbackOnly = !(config && config.loopbackOnly === false);
+  const ttlMs = (config && Number.isFinite(config.ttlMs) && config.ttlMs > 0) ? config.ttlMs : BREAK_GLASS_DEFAULT_TTL_MS;
+  const born = (startedAt != null) ? startedAt : now();
+  const sessions = new Map();
+  let spent = false;
+
+  const principal = () => ({ provider: 'break-glass', sub: 'break-glass', email: null, name: 'break-glass', breakGlass: true });
+
+  return {
+    active, loopbackOnly, ttlMs,
+    get spent() { return spent; },
+
+    /**
+     * Present the credential. Returns { ok:true, sid, principal } or { ok:false, reason }.
+     * ⛓ ORDER IS LOAD-BEARING: `not-loopback` is decided FIRST, so a remote caller learns nothing
+     * except that it is remote — never whether the credential was right, spent, or expired.
+     */
+    redeem(req, presented) {
+      if (!active) return { ok: false, reason: 'inactive' };
+      if (loopbackOnly && !isTrueLoopback(req)) return { ok: false, reason: 'not-loopback' };
+      if (spent) return { ok: false, reason: 'spent' };
+      let cred;
+      try { cred = readCredential(config); } catch (e) { return { ok: false, reason: 'unreadable' }; }
+      if (!cred || typeof cred.secret !== 'string' || !cred.secret) return { ok: false, reason: 'unreadable' };
+      // ⛔ 0600 OR TIGHTER. A recovery credential every local account can read is not a credential.
+      if (cred.mode != null && (cred.mode & 0o077) !== 0) return { ok: false, reason: 'bad-mode' };
+      const issuedAt = (cred.issuedAt != null) ? cred.issuedAt : born;
+      if (now() - issuedAt >= ttlMs) return { ok: false, reason: 'expired' };
+      if (!secretEquals(presented == null ? '' : presented, cred.secret)) return { ok: false, reason: 'bad-credential' };
+      // ⛔ SINGLE USE — spent the moment it is accepted. A second presentation FAILS.
+      spent = true;
+      const sid = randomToken();
+      sessions.set(sid, { exp: now() + ttlMs });
+      return { ok: true, sid, principal: principal() };
+    },
+
+    /** The break-glass principal for a request's cookie, or null. Still loopback-fenced per request. */
+    principalForRequest(req) {
+      if (!active) return null;
+      if (loopbackOnly && !isTrueLoopback(req)) return null;
+      const sid = parseCookies(req && req.headers && req.headers.cookie)[BREAK_GLASS_COOKIE];
+      if (!sid) return null;
+      const s = sessions.get(sid);
+      if (!s) return null;
+      if (s.exp <= now()) { sessions.delete(sid); return null; }
+      return principal();
+    },
+
+    /* ⚠ NO `Secure` FLAG, DELIBERATELY. This cookie exists only on a plain-http loopback origin —
+       the path taken when the IdP is unreachable — and `Secure` would make the browser drop it
+       there, which is precisely the outage this credential exists to survive. SameSite=Strict +
+       HttpOnly + the per-request loopback check are what fence it. */
+    sessionCookie(sid) {
+      return `${BREAK_GLASS_COOKIE}=${encodeURIComponent(sid)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${Math.floor(ttlMs / 1000)}`;
+    },
+    _sessions: sessions,
   };
 }

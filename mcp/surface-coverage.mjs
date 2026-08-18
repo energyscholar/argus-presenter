@@ -72,8 +72,18 @@ export const CONSTRUCTOR_COVERAGE = {
   oidcDeps:                  { declined: 'TEST/INJECTION SEAM (Plan 0543 P2) — the network deps (token exchange, JWKS fetch) are injected so the OIDC flow logic is testable offline; production uses defaultOidcDeps(). Not a session capability.', deploymentOnly: false },
   oidcSessionTtlMs:          { declined: 'TEST SEAM (Plan 0543 P3) — the OIDC session lifetime, driven to 0 by the expiry test. Not a per-call agent knob. ⚠ deploymentOnly:false is the HONEST answer today: nothing reads it from the config file, so production runs the built-in 12h default. If a deployment ever needs to state it, add it to lib/deployment-config.mjs DEPLOYMENT_ROUTED_OPTIONS and flip this flag — the 0551 C7 guard enforces the pairing.', deploymentOnly: false },
   tailscale:                 { declined: 'DEPLOYMENT CONFIG (Plan 0543 P2) — enables the direct-tailnet-peer identity adapter. Set on the box.', deploymentOnly: true },
-  tailscaleResolve:          { declined: 'TEST/INJECTION SEAM (Plan 0543 P2) — the resolver that reads a tailnet identity for a direct peer; injected for tests, wired to the tailscale layer in production. Not a session capability.', deploymentOnly: false },
-  breakGlass:                { declined: 'DEPLOYMENT CONFIG / SECURITY (Plan 0543 P3) — the break-glass credential whose PRESENCE is the startup gate for enforceOAuth=control (prevents the OIDC-outage lockout). A loopback-only recovery credential on the box, never an agent knob.', deploymentOnly: true },
+  // ⚠ Plan 0650 CORRECTED THIS ENTRY. It used to claim the resolver was "wired to the tailscale layer
+  // in production". IT WAS NOT — createServer defaulted it to null and only test files ever supplied
+  // one, so the tailnet path was inert for months while this line said otherwise. It is now built by
+  // createServer itself whenever `tailscale.enabled` is true, so it cannot be enabled-but-inert again.
+  tailscaleResolve:          { declined: 'TEST/INJECTION SEAM (Plan 0543 P2, corrected by 0650) — a SYNCHRONOUS override for the tailnet resolver, injected by tests. Production does NOT need it: createServer builds the real two-phase peer resolver (tailscale whois on the SOCKET address) whenever tailscale.enabled is set. ⛔ The header-reading resolver the tests inject must never ship — a header is a client claim.', deploymentOnly: false },
+  tailscaleWhois:            { declined: 'TEST/INJECTION SEAM (Plan 0650 §2a) — the two-phase peer resolver { prime, resolve }, injected so a test can stub `tailscale whois` and the peer address and drive the REAL code path offline. Production constructs its own from tailscale.enabled. Not a session capability.', deploymentOnly: false },
+  breakGlassDeps:            { declined: 'TEST/INJECTION SEAM (Plan 0650 §2b) — the credential reader and clock for the break-glass adapter, so single-use / TTL / 0600-mode refusal are testable without writing real credentials to disk. Not a session capability.', deploymentOnly: false },
+  bindHosts:                 { declined: 'DEPLOYMENT CONFIG / SECURITY (Plan 0650) — EXTRA listen addresses beyond loopback, so a tailnet peer can reach the server at all (and therefore be identified by `tailscale whois`). Absent ⇒ loopback only; ⛔ 0.0.0.0/::/* are refused outright at the config boundary. Which interfaces a server exposes is the deployment\'s declaration, never an agent\'s: an agent that could widen the bind could publish the room.', deploymentOnly: true },
+  // ⚠ Plan 0650 CORRECTED THIS ENTRY TOO. Until 0650 the credential's PRESENCE was the entire
+  // mechanism: checked at startup, reported in the log line, and consumed by NO ROUTE. It is now
+  // redeemed at POST /auth/break-glass — loopback-only, single-use, TTL, 0600 file.
+  breakGlass:                { declined: 'DEPLOYMENT CONFIG / SECURITY (Plan 0543 P3, made real by 0650) — the loopback-only recovery credential redeemed at POST /auth/break-glass when the IdP is unreachable. Single-use, TTL-bounded, read from a 0600 file on the box. It grants the CONTROL PAGE and never trust:self. Never an agent knob: an agent that could set it could mint its own way past the OAuth gate.', deploymentOnly: true },
   revokedNonceFile:          { declined: 'DEPLOYMENT CONFIG (Plan 0543 P4) — the durable store path for revoked guest-link nonces (so a revocation survives a restart, 0489\'s flagged bug). Resolved by the CLI / presenter_start from the state dir; not a per-call knob.', deploymentOnly: true },
 };
 
@@ -194,6 +204,9 @@ export const API_COVERAGE = {
   _emitInboxForTest:   { declined: 'test-only ingress seam — injects an inbox item through the real emit path without a socket' },
   _oidcAdapterForTest: { declined: 'test-only seam (Plan 0543 P3) — the OIDC adapter, so an acceptance test can mint a verified session and exercise the trust path offline. Never a session capability.' },
   _authCtxForTest:     { declined: 'test-only seam (Plan 0543 P3) — computes the loopback/verified auth context for a request so a test can assert the discriminator. Read-only, no capability.' },
+  _breakGlassForTest:  { declined: 'test-only seam (Plan 0650 §2b) — the break-glass adapter, so an acceptance test can prove grant-then-spent, the non-loopback refusal and the TTL refusal without a real credential on disk. Read-only, no capability.' },
+  _tailscaleWhoisForTest: { declined: 'test-only seam (Plan 0650 §2a) — the two-phase peer resolver actually in use (null when unwired), so a test can prove production is NOT inert. Read-only, no capability.' },
+  _extraBindsForTest:  { declined: 'test-only seam (Plan 0650) — the extra host addresses that really bound, so the opt-in tailnet bind is provable and a silent failure to bind cannot pass for success. Read-only, no capability.' },
   _displayStateForTest: { declined: 'test-only observability seam — serialises displayByRole/displayByUser so Plan 0522 t07 can prove a stage wrote nothing durable (I3); read-only, no capability' },
 
   // --- sensing

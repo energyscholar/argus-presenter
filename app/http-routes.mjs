@@ -44,6 +44,7 @@ export function createHttpHandler(ctx) {
       listSeries, MODULE_STATUSES, moduleAdminOp, moduleCache, MODULES_DIR, moduleSummary,
       moduleWriteAuthed, pvsConsumerKey, readModuleFile, readSeriesFile, renderPresenterPage, ROLE_HASH,
       ROLE_SEED, sendStatic, sessionLog, sessionLogReadAuthed, VOICE_ENABLED, oidcAuth, authState,
+      breakGlassAuth,
     } = ctx;
     // Plan 0543 P2 — OIDC login flow. Three routes; all a clean 404 when OIDC is not configured
     // (opt-in, never a half-open door). The session cookie is HttpOnly+Secure+SameSite=Lax and holds
@@ -64,6 +65,43 @@ export function createHttpHandler(ctx) {
           res.writeHead(302, { location: '/?auth=failed', 'cache-control': 'no-store' }); res.end();
         }
       }).catch(() => { res.writeHead(302, { location: '/?auth=failed', 'cache-control': 'no-store' }); res.end(); });
+      return;
+    }
+    /*
+     * ── Plan 0650 §2b — POST /auth/break-glass: THE LOCK THE STARTUP GATE HAS BEEN DEMANDING ────
+     *
+     * `enforceOAuth:'control'` has refused to start without a break-glass credential since 0543,
+     * naming its shape in the error message — loopback-only, single-use, TTL, 0600 file — and NO
+     * ROUTE HAS EVER ACCEPTED ONE. This is that route. It grants a control SESSION (the Control
+     * page and the presenter/gm roles) and never `trust:self`; see deriveConnTrust in server.mjs.
+     *
+     * ⛔ A CLEAN 404 WHEN UNCONFIGURED, exactly like /auth/login: no half-open door, and nothing
+     * about the credential's existence leaks from a deployment that has none.
+     *
+     * ⚠ THE REFUSAL REASON IS RETURNED, AND THAT IS SAFE BY ORDERING. `not-loopback` is decided
+     * FIRST in the adapter, so a remote caller can only ever learn that it is remote — never
+     * whether the credential was right, already spent, or expired. The operator standing at the
+     * box at 2am is the only one who sees the useful reasons, and they need them.
+     */
+    if (req.url === '/auth/break-glass' || req.url.startsWith('/auth/break-glass?')) {
+      const json = (code, body) => { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(body)); };
+      if (!breakGlassAuth || !breakGlassAuth.active) { json(404, { error: 'break-glass not configured' }); return; }
+      if (req.method !== 'POST') { json(405, { error: 'POST only' }); return; }
+      let body = '';
+      let overflow = false;
+      req.on('data', (d) => { body += d; if (body.length > 4096) { overflow = true; try { req.destroy(); } catch {} } });
+      req.on('end', () => {
+        if (overflow) return;
+        let presented = null;
+        try { const q = JSON.parse(body || '{}'); if (q && typeof q.token === 'string') presented = q.token; } catch (e) { presented = null; }
+        const r = breakGlassAuth.redeem(req, presented);
+        if (!r || !r.ok) { json(403, { ok: false, reason: (r && r.reason) || 'refused' }); return; }
+        res.writeHead(200, {
+          'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store',
+          'set-cookie': breakGlassAuth.sessionCookie(r.sid),
+        });
+        res.end(JSON.stringify({ ok: true, note: 'break-glass session granted: Control page only, NOT command authority. Single-use — this credential is now spent.' }));
+      });
       return;
     }
     if (req.url === '/auth/logout' || req.url.startsWith('/auth/logout?')) {

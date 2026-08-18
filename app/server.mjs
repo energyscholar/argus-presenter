@@ -29,8 +29,13 @@ import { ALL as ALL_READ_ROLES } from './permissions.mjs';
 import { validate, summarize } from './validate.mjs';
 import { createAsr } from './asr.mjs';
 import { verifyCapability, mintCapability } from '../lib/capability.mjs';
-import { presenterPort, authPolicy, normalizeAuthPolicy, identityConfig, identityServerOptions, identityStartupLine } from '../lib/deployment-config.mjs';
-import { makeAllowlist, makeOidcAdapter, makeTailscaleAdapter, defaultOidcDeps } from './identity.mjs';
+import { presenterPort, authPolicy, normalizeAuthPolicy, identityConfig, identityServerOptions, identityStartupLine, bindHostsConfig } from '../lib/deployment-config.mjs';
+import { makeAllowlist, makeOidcAdapter, makeTailscaleAdapter, defaultOidcDeps, makeTailscaleWhois, makeBreakGlassAdapter, isTailnetPeerAddress } from './identity.mjs';
+/* Plan 0650 §2a — how long a socket's first frames may wait for `tailscale whois`, and how many may
+ * queue while they do. The deadline is the whois timeout plus slack: past it the peer is simply
+ * UNRESOLVED (a fenced participant), never a hang and never a grant. */
+const IDENTITY_GATE_MS = 1600;
+const IDENTITY_GATE_MAX_FRAMES = 64;
 import { createSessionLog, resolveSessionLogDir, defaultSessionLogDir } from '../lib/session-log.mjs';
 import { selectProfile, DEFAULT_PROFILE } from './profiles.mjs';
 import { createHeuristicSummarizer } from './summarizer.mjs';
@@ -171,7 +176,7 @@ function sendStatic(res, req, absPath, contentType) {
   } catch (e) { res.writeHead(404); res.end('not found'); }
 }
 
-export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null, profile = DEFAULT_PROFILE, settlingMs = null, queueMaxPending = null, queueTtlMs = null, perTurnBudgetMs = null, perTurnWrapMs = null, floorThresholds = null, sessionLogDir = null, enforceOAuth = undefined, allowPasswordCommandOnLAN = undefined, allowlist = null, oidc = null, oidcDeps = null, oidcSessionTtlMs = null, tailscale = null, tailscaleResolve = null, breakGlass = null, revokedNonceFile = null } = {}) {
+export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null, profile = DEFAULT_PROFILE, settlingMs = null, queueMaxPending = null, queueTtlMs = null, perTurnBudgetMs = null, perTurnWrapMs = null, floorThresholds = null, sessionLogDir = null, enforceOAuth = undefined, allowPasswordCommandOnLAN = undefined, allowlist = null, oidc = null, oidcDeps = null, oidcSessionTtlMs = null, tailscale = null, tailscaleResolve = null, tailscaleWhois = null, breakGlass = null, breakGlassDeps = null, revokedNonceFile = null, bindHosts = null } = {}) {
   // Plan 0543 P1 — the AUTH POLICY dial. Validated HERE (the single startup path shared by the CLI
   // self-run and presenter_start): an unknown enforceOAuth value THROWS rather than falling through
   // to a policy the deployer never chose. This slice is plumbing only — P3 makes the policy govern.
@@ -295,7 +300,24 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
    */
   const AUTH_ALLOWLIST = makeAllowlist(allowlist);
   const oidcAdapter = makeOidcAdapter(oidc, { ...(oidcDeps || defaultOidcDeps()), ...(oidcSessionTtlMs != null ? { sessionTtlMs: oidcSessionTtlMs } : {}) });
-  const tsAdapter = makeTailscaleAdapter(tailscale, { resolve: tailscaleResolve });
+  /*
+   * ── Plan 0650 §2a — THE TAILNET RESOLVER IS BUILT HERE, NOT ROUTED FROM CONFIG ────────────────
+   *
+   * ⛔ THE 0543 FAILURE MODE WAS "the option existed and nothing supplied a value". Routing a
+   * resolver through the deployment file would reproduce it one level up: a second place that can
+   * be forgotten. So the PRODUCTION resolver is CONSTRUCTED FROM THE ONE FACT THAT ALREADY GOVERNS
+   * IT — `tailscale.enabled`. Enable the adapter and it is wired, on both launch paths, by
+   * construction. There is no configuration in which it can be enabled-but-inert again.
+   *
+   * `tailscaleResolve` (the pre-existing sync seam, injected by four test files) still WINS when
+   * given, and `tailscaleWhois` lets a test drive the real two-phase resolver with `whois` and the
+   * peer address stubbed. Neither is reachable from the MCP surface.
+   */
+  const tsWhois = tailscaleWhois
+    || ((tailscale && tailscale.enabled && !tailscaleResolve) ? makeTailscaleWhois() : null);
+  const tsAdapter = makeTailscaleAdapter(tailscale, {
+    resolve: tailscaleResolve || (tsWhois ? (req) => tsWhois.resolve(req) : null),
+  });
   /*
    * Plan 0543 P3 — BREAK-GLASS STARTUP GATE (the config gate only; the full recovery flow is 0489's).
    * enforceOAuth='control' RETIRES the password for the Control page, so if the OIDC provider is
@@ -307,6 +329,13 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   if (AUTH_POLICY.enforceOAuth === 'control' && !breakGlassConfigured) {
     throw new Error("enforceOAuth='control' retires the password for the Control page; a break-glass credential must be configured (0489 §4.6: loopback-only, single-use, TTL, 0600 file) or an OIDC outage locks everyone out. Configure breakGlass, or run enforceOAuth='off'.");
   }
+  /*
+   * Plan 0650 §2b — ...AND NOW SOMETHING CONSUMES IT. The gate above has demanded this credential
+   * since 0543 and no route has ever accepted one. POST /auth/break-glass redeems it; the adapter
+   * enforces loopback-only, single-use, TTL and the 0600 file mode. It grants the CONTROL ROLE and
+   * deliberately NOT trust:self — see deriveConnTrust below.
+   */
+  const bgAdapter = makeBreakGlassAdapter(breakGlass, breakGlassDeps || {});
   /*
    * Plan 0551 P2 — THE ONE STARTUP LINE: is sign-in ACTIVE, and how many principals are authorized?
    * Emitted HERE, inside the single startup path, so BOTH launch paths report it and so it states
@@ -322,7 +351,9 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     oidcActive: oidcAdapter.active,
     allowlistSize: AUTH_ALLOWLIST.size,
     tailscaleActive: tsAdapter.active,
+    tailscaleResolverWired: !!(tailscaleResolve || tsWhois),   // Plan 0650 — INERT MUST BE VISIBLE: this was silently false for months
     breakGlass: breakGlassConfigured,
+    breakGlassRedeemable: bgAdapter.active,
     enforceOAuth: AUTH_POLICY.enforceOAuth,
   });
   /*
@@ -336,12 +367,17 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     // ⚠ Read sessionExpired BEFORE principalForRequest — the latter DELETES an expired session, which
     // would otherwise hide the expiry from the re-auth prompt (the A-fix). Order is load-bearing.
     const expiredBefore = oidcAdapter.sessionExpired(req);
-    const verified = oidcAdapter.principalForRequest(req) || tsAdapter.principalForRequest(req) || null;
+    const verified = oidcAdapter.principalForRequest(req) || bgAdapter.principalForRequest(req) || tsAdapter.principalForRequest(req) || null;
     return { verified, sessionExpired: !verified && expiredBefore };
   }
   /** Plan 0543 P3 — the Control-page role from IDENTITY: ONLY a verified + ALLOWLISTED principal. Loopback grants nothing. */
   function identityGrantsControl(authCtx) {
     if (!authCtx || !authCtx.verified) return false;
+    // Plan 0650 §2b — BREAK-GLASS BYPASSES THE ALLOWLIST, and must: the allowlist is keyed by the
+    // email an IdP asserts, and the whole premise of break-glass is that the IdP is unreachable.
+    // Presenting the on-box credential from loopback IS the authorization. It is single-use and
+    // time-boxed by the adapter, and it stops here — it never reaches deriveConnTrust's SELF.
+    if (authCtx.verified.provider === 'break-glass') return true;
     return AUTH_ALLOWLIST.lookup(authCtx.verified.email || authCtx.verified.sub).allowed;
   }
   /*
@@ -353,6 +389,11 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   function deriveConnTrust(ident, capGrant, authCtx) {
     if (capGrant || (ident && ident.isGuest)) return { trust: TRUST.GUEST };                         // 1. cap ⇒ guest (fenced)
     if (authCtx.verified) {
+      // Plan 0650 §2b — ⛔ BREAK-GLASS IS NOT COMMAND AUTHORITY. Bruce's ruling above is that `self`
+      // comes only from a VERIFIED IDENTITY (OIDC | Tailscale) that is ALSO on the allowlist. A
+      // secret in a file on the box is neither: it says "someone reached this machine", not "this
+      // is Bruce". So it opens the Control page (identityGrantsControl) and its words stay FENCED.
+      if (authCtx.verified.provider === 'break-glass') return { trust: TRUST.PARTICIPANT, reason: 'break-glass: control page only, never command authority' };
       const al = AUTH_ALLOWLIST.lookup(authCtx.verified.email || authCtx.verified.sub);
       if (al.allowed) return { trust: TRUST.SELF };                                                   // 2. verified (OIDC|Tailscale) AND allowlisted ⇒ SELF
       return { trust: TRUST.PARTICIPANT, reason: 'signed in, not authorized' };                       // 3. verified but NOT allowlisted ⇒ fenced (E / the C dead-end)
@@ -712,6 +753,69 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   } catch (e) { log.warn('module', 'watch-failed', { err: String((e && e.message) || e).slice(0, 80) }); }
   // Plan 0530 P2 (seam S-A) — the HTTP route table now lives in app/http-routes.mjs. It was 262
   // lines of inline if/else here; what remains is the wiring. ⛔ Nothing about the routes changed.
+  /*
+   * ── Plan 0650 — OPT-IN EXTRA BINDS (the tailnet interface) ───────────────────────────────────
+   *
+   * WHY THIS EXISTS. The whole tailnet identity path is unreachable unless the server is actually
+   * LISTENING on the tailnet address: a peer that can only reach 127.0.0.1 always presents
+   * 127.0.0.1, which correctly earns no identity. Bruce's deployment binds loopback only, so
+   * `enforceOAuth:'control'` had exactly one usable door — Google, over the PUBLIC tunnel — which
+   * is the inversion the plan set out to fix: a control meant to REDUCE exposure was mandating it.
+   *
+   * ⛔⛔ THE DEFAULT DOES NOT MOVE. `bindHosts` absent ⇒ loopback only, byte-for-byte the previous
+   * behaviour. And 0.0.0.0 / :: / '*' are REFUSED OUTRIGHT by the config normaliser, not merely
+   * discouraged: a tailnet bind is an authenticated private fabric, a wildcard bind is the open
+   * internet, and the two must never be reachable by the same typo.
+   *
+   * ⚠ Extra binds share ONE handler and ONE WebSocketServer (via handleUpgrade), so there is one
+   * room, one state machine, one identity decision — not a parallel server with its own rules.
+   */
+  const extraServers = [];
+  async function resolveTailnetAddress() {
+    try {
+      const { execFile } = await import('node:child_process');
+      const out = await new Promise((res, rej) => {
+        const ch = execFile('tailscale', ['ip', '-4'], { timeout: 2000, killSignal: 'SIGKILL', windowsHide: true },
+          (err, stdout) => (err ? rej(err) : res(String(stdout || ''))));
+        ch.on('error', () => {});
+      });
+      const first = out.split('\n').map((l) => l.trim()).filter(Boolean)[0] || null;
+      return (first && isTailnetPeerAddress(first)) ? first : null;
+    } catch (e) { return null; }
+  }
+  async function bindExtraHosts(boundPort) {
+    const asked = Array.isArray(bindHosts) ? bindHosts : (bindHosts ? [bindHosts] : []);
+    if (!asked.length) return;
+    const hosts = [];
+    for (const raw of asked) {
+      const h = String(raw || '').trim();
+      if (!h) continue;
+      if (h === '0.0.0.0' || h === '::' || h === '*') {   // second line of defence; the normaliser refuses these too
+        log.warn('bind', 'wildcard-refused', { host: h });
+        continue;
+      }
+      if (h.toLowerCase() === 'tailnet') {
+        const ip = await resolveTailnetAddress();
+        if (!ip) { log.warn('bind', 'tailnet-address-unresolved', {}); continue; }
+        hosts.push(ip);
+      } else hosts.push(h);
+    }
+    for (const h of hosts) {
+      try {
+        const extra = http.createServer(httpServer.listeners('request')[0]);
+        // ONE WebSocketServer for the whole room: hand the upgrade to the same wss so a tailnet
+        // socket lands in the same `conns`, with the same gate and the same identity decision.
+        extra.on('upgrade', (ureq, usock, head) => {
+          try { wss.handleUpgrade(ureq, usock, head, (ws) => wss.emit('connection', ws, ureq)); }
+          catch (e) { try { usock.destroy(); } catch {} }
+        });
+        extra.on('error', (e) => { try { log.warn('bind', 'extra-error', { host: h, err: String((e && e.message) || e).slice(0, 120) }); } catch {} });
+        await new Promise((res) => { extra.listen(boundPort, h, res); extra.once('error', res); });
+        if (extra.listening) { extraServers.push(extra); log.info('bind', 'extra-host', { host: h, port: boundPort }); }
+        else log.warn('bind', 'extra-failed', { host: h, port: boundPort });
+      } catch (e) { try { log.warn('bind', 'extra-failed', { host: h, err: String((e && e.message) || e).slice(0, 120) }); } catch {} }
+    }
+  }
   // Every name below is a binding the handler used to capture from this closure, passed explicitly
   // because a function lifted out of a closure keeps none of it.
   const httpServer = http.createServer(createHttpHandler({
@@ -721,6 +825,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     pvsConsumerKey, readModuleFile, readSeriesFile, renderPresenterPage, ROLE_HASH, ROLE_SEED,
     sendStatic, sessionLog, sessionLogReadAuthed, VOICE_ENABLED,
     oidcAuth: oidcAdapter,   // Plan 0543 P2 — the OIDC login/callback/logout routes read this
+    breakGlassAuth: bgAdapter,   // Plan 0650 §2b — POST /auth/break-glass redeems the recovery credential
     authState,               // Plan 0551 P3 — GET /api/auth-state reads this (state only; no email/sub/sid)
     // ⚠ A GETTER, NOT A VALUE. `const api` is declared ~2,400 lines below this call, so it is in
     // the temporal dead zone right now and reading it here would throw. The handler destructures
@@ -1131,6 +1236,41 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     // to the store while the handshake is still running is therefore broadcast to it AND replayed to
     // it by the resync that follows. It stops being a recipient-in-name-only at :1071.
     conns.set(ws, { id: 'c' + (++connSeq), userId: null, userName: null, role: 'participant', lastSeen: Date.now(), connectedAt: Date.now(), lastActive: 0, ip, converged: false });
+    /*
+     * ── Plan 0650 §2a — THE IDENTITY GATE: hold the first frames while `whois` runs ────────────
+     *
+     * THE PROBLEM THIS SOLVES. `makeTailscaleAdapter.principalForRequest` is SYNCHRONOUS — it is
+     * called inside the `hello` handler — but resolving a tailnet peer means running a subprocess.
+     * Blocking the event loop on it would stall every other participant in the room; not waiting at
+     * all would mean the peer is always unresolved by the time `hello` arrives, and the tailnet path
+     * would be inert in a second, subtler way.
+     *
+     * ⇒ Start the lookup HERE, at connect, and QUEUE this socket's frames until it settles. The
+     * `hello` that decides the role is then answered from a warm cache, synchronously.
+     *
+     * ⛔ IT CANNOT WEDGE THE SOCKET. A hard deadline opens the gate regardless, and an unresolved
+     * peer is simply NO IDENTITY — a fenced participant. `prime()` never rejects. The cost of a
+     * dead `tailscale` is a bounded delay on tailnet peers only, then ordinary anonymous service.
+     *
+     * ⛓ NON-TAILNET PEERS PAY NOTHING: `prime()` returns an already-resolved promise for them, so
+     * the gate opens on the next microtask — before any I/O-delivered frame can arrive.
+     */
+    let tsGate = null;
+    if (tsWhois) {
+      tsGate = { open: false, queue: [], timer: null };
+      const openGate = () => {
+        if (!tsGate || tsGate.open) return;
+        tsGate.open = true;
+        if (tsGate.timer) { clearTimeout(tsGate.timer); tsGate.timer = null; }
+        const q = tsGate.queue; tsGate.queue = [];
+        // Re-emit through the socket's own 'message' event: the gate is now open, so the wrapper
+        // below falls straight through to the real handler, in the order the frames arrived.
+        for (const [b, i] of q) { try { ws.emit('message', b, i); } catch (e) { try { log.warn('ws', 'gate-drain-failed', { err: String((e && e.message) || e).slice(0, 120) }); } catch {} } }
+      };
+      tsGate.timer = setTimeout(openGate, IDENTITY_GATE_MS);
+      if (tsGate.timer.unref) tsGate.timer.unref();
+      try { tsWhois.prime(req).then(openGate, openGate); } catch (e) { openGate(); }
+    }
     // Plan 0471 C1: a socket-level 'error' (frame > MAX_PAYLOAD → ws RangeError 1009, invalid
     // UTF-8, bad RSV bits, ECONNRESET) must NOT hit Node's default handler and kill the process.
     ws.on('error', (e) => {
@@ -1139,6 +1279,13 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       try { ws.close(1011); } catch {}
     });
     ws.on('message', (buf, isBinary) => {
+      // Plan 0650 §2a — hold everything until this peer's identity is settled (see the gate above).
+      // Bounded: past the cap the frame is dropped and COUNTED, never buffered without limit.
+      if (tsGate && !tsGate.open) {
+        if (tsGate.queue.length < IDENTITY_GATE_MAX_FRAMES) tsGate.queue.push([buf, isBinary]);
+        else telem.frameErrors++;
+        return;
+      }
       // Plan 0470 (RT-6): the binary PCM lane branches BEFORE JSON.parse — audio is NEVER
       // parsed as JSON, is exempt from the durable-op cap, and is ignored unless the conn
       // has an active voice session (RT-7). Route it and return.
@@ -1558,6 +1705,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       } catch (e) { try { log.warn('ws', 'dispatch-error', { err: String(e && e.message || e) }); } catch {} }   // Plan 0471 C2: defense-in-depth
     });
     ws.on('close', () => {
+      if (tsGate) { if (tsGate.timer) clearTimeout(tsGate.timer); tsGate.queue.length = 0; tsGate.open = true; }   // Plan 0650 — no timer, no buffer outlives the socket
       if (pvsSubscribers.has(ws)) { pvsSubscribers.delete(ws); log.info('pvs', 'unsubscribe-close', {}); }   // Plan 0493 D: socket close ends the watch (S12)
       const c = conns.get(ws);
       if (c && c.voice && c.voice.active) { if (c.voice.timer) clearTimeout(c.voice.timer); c.voice.active = false; voiceSessions = Math.max(0, voiceSessions - 1); }   // RT-14: drop an orphaned open segment
@@ -3760,6 +3908,9 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     _emitInboxForTest: (spec = {}) => { const e = emitInbox(spec); return annotateTrust(e, e.trust); },
     _oidcAdapterForTest: oidcAdapter,   // Plan 0543 P3 — test seam: mint a verified OIDC session to drive the trust path
     _authCtxForTest: (req) => computeAuthCtx(req),   // Plan 0543 P3 — test seam: inspect the loopback/verified verdict for a req
+    _breakGlassForTest: bgAdapter,   // Plan 0650 §2b — test seam: redeem/inspect the recovery credential offline
+    _tailscaleWhoisForTest: tsWhois,   // Plan 0650 §2a — test seam: the two-phase peer resolver actually in use (null when unwired)
+    _extraBindsForTest: () => extraServers.map((e) => { const a = e.address(); return a ? a.address : null; }),   // Plan 0650 — which extra hosts really bound
     // Plan 0522 P4 (I3) — the DURABLE DISPLAY STATE, serialised. The only seam through which a
     // test can assert that staging wrote nothing: t07 compares this string (plus every seat's
     // stationUid, read from presence()) before and after a stage. Field-by-field spot checks were
@@ -4191,7 +4342,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     // status()/read()/sessions() are the observability the phase exists to provide; append() is
     // the same seam createStore drives. Reading it over HTTP is role-gated (/api/session-log).
     sessionLog,
-    close: () => new Promise((res) => { try { sessionLog.close(); } catch { /* a log must never block a shutdown either */ } clearInterval(heartbeat); /* Plan 0468 (INV-7) */ if (ephTimer) clearTimeout(ephTimer); for (const t of hotTimers.values()) clearTimeout(t); hotTimers.clear(); for (const w of [...inboxWaiters]) w.wake(); /* Plan 0472: drain pending long-poll waiters (resolve, no dangling) */ if (openTurn && openTurn.timer) { clearTimeout(openTurn.timer); openTurn.timer = null; } /* Plan 0473 P2: clear a pending turn-settling timer */ for (const [, c] of conns) { if (c.voice && c.voice.timer) clearTimeout(c.voice.timer); } if (asr) { try { asr.close(); } catch (e) {} asr = null; } watcher && watcher.close(); wss.clients.forEach((c) => c.close()); httpServer.close(() => res()); }),
+    close: () => new Promise((res) => { try { sessionLog.close(); } catch { /* a log must never block a shutdown either */ } clearInterval(heartbeat); /* Plan 0468 (INV-7) */ if (ephTimer) clearTimeout(ephTimer); for (const t of hotTimers.values()) clearTimeout(t); hotTimers.clear(); for (const w of [...inboxWaiters]) w.wake(); /* Plan 0472: drain pending long-poll waiters (resolve, no dangling) */ if (openTurn && openTurn.timer) { clearTimeout(openTurn.timer); openTurn.timer = null; } /* Plan 0473 P2: clear a pending turn-settling timer */ for (const [, c] of conns) { if (c.voice && c.voice.timer) clearTimeout(c.voice.timer); } if (asr) { try { asr.close(); } catch (e) {} asr = null; } watcher && watcher.close(); wss.clients.forEach((c) => c.close()); for (const e of extraServers) { try { e.close(); } catch {} } extraServers.length = 0; /* Plan 0650 — the opt-in extra binds go down with the primary */ httpServer.close(() => res()); }),
     _http: httpServer,
     _acks: acks,                 // Plan 0471 M2: test-only observability (bounded map)
     _lastResults: lastResults,   // Plan 0471 M3: test-only observability (bounded object)
@@ -4200,7 +4351,13 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // Plan 0514 §4.2: plugin server modules are loaded BEFORE the api is handed out, so a caller
   // that gets a server back gets one whose plugins have already registered.
   return new Promise((resolve) => {
-    httpServer.listen(port, '127.0.0.1', async () => { await loadPluginServerModules(); resolve(api); });
+    httpServer.listen(port, '127.0.0.1', async () => {
+      await loadPluginServerModules();
+      // Plan 0650 — extra binds AFTER the primary one, so a bad address can never stop the
+      // deployment coming up on loopback. Failures are logged, not thrown.
+      await bindExtraHosts(httpServer.address().port);
+      resolve(api);
+    });
   });
 }
 
@@ -4243,6 +4400,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     sessionLogDir: logTarget.sessionLogDir,
     enforceOAuth: policy.enforceOAuth,
     allowPasswordCommandOnLAN: policy.allowPasswordCommandOnLAN,
+    // Plan 0650 — extra listen addresses (e.g. the tailnet interface), so a tailnet peer can reach
+    // the server and be identified by `tailscale whois`. Absent ⇒ loopback only, unchanged.
+    bindHosts: bindHostsConfig(),
     // Plan 0543 P4 — a durable store for revoked guest-link nonces (in the state/log dir) so a
     // revocation survives a restart. State, not content: it holds only nonces.
     revokedNonceFile: join(logTarget.sessionLogDir || defaultSessionLogDir(), 'revoked-caps.json'),

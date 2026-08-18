@@ -11,7 +11,7 @@ import { assemble } from '../harness/assemble.mjs';
 import { tunnelConfigured, tunnelStatus, tunnelUp, tunnelDown } from './tunnel.mjs';
 import { readFileSync, existsSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
-import { presenterPort, authPolicy, identityConfig, identityServerOptions, identityStartupLine } from '../lib/deployment-config.mjs';
+import { presenterPort, authPolicy, identityConfig, identityServerOptions, identityStartupLine, bindHostsConfig } from '../lib/deployment-config.mjs';
 import { resolveSessionLogDir, defaultSessionLogDir } from '../lib/session-log.mjs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -110,6 +110,13 @@ export const coreTools = [
       const policy = authPolicy();
       opts.enforceOAuth = policy.enforceOAuth;
       opts.allowPasswordCommandOnLAN = policy.allowPasswordCommandOnLAN;
+      /*
+       * Plan 0650 — WHICH INTERFACES THIS SERVER EXPOSES IS DEPLOYMENT CONFIG, exactly like the
+       * port and the auth policy, and deliberately NOT on this tool's input schema: an agent that
+       * could widen the bind could publish the room. Absent ⇒ loopback only (unchanged default);
+       * ⛔ a wildcard (0.0.0.0 / :: / *) throws at the config boundary, by name.
+       */
+      opts.bindHosts = bindHostsConfig();
       /*
        * ── Plan 0551 P2 — IDENTITY IS READ HERE, AND IS NOT ON THIS TOOL'S INPUT SCHEMA ─────────
        * `oidc` / `allowlist` / `tailscale` / `breakGlass` / `revokedNonceFile` are DEPLOYMENT data,
