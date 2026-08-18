@@ -32,7 +32,13 @@
     border-radius:8px;font:13px/1.3 'Courier New',monospace;letter-spacing:.04em;cursor:pointer;text-decoration:none;}
   #ap-signin.show{display:inline-flex;}
   #ap-signin:hover,#ap-signin:focus{border-color:#22e5a0;color:#fff;outline:none;}
-  #ap-signin.in{cursor:default;opacity:.9;}
+  /* ⭐ THE SIGNED-IN PILL IS SIZED LIKE THE OTHER AMBIENT READOUTS (#ap-seat, #who), not like a
+     tap target: the 44px minimum exists for the SIGN-IN button, which is a control someone must hit
+     on a phone while standing up. Signed in there is nothing to hit. Measured: 260x58 → ~46x32. */
+  #ap-signin.in{cursor:default;opacity:.85;min-height:0;padding:3px 8px;gap:0;
+    font-size:12px;letter-spacing:.08em;}
+  #ap-signin.in a{min-height:0;}
+  #ap-signin.in .who{max-width:none;}
   #ap-signin a{color:inherit;text-decoration:none;display:inline-flex;align-items:center;min-height:32px;}
   #ap-signin .who{max-width:34vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   #ap-signin .out{color:#8ab;border-left:1px solid #2a3a5a;padding-left:8px;min-height:32px;display:inline-flex;align-items:center;text-decoration:none;}
@@ -113,7 +119,19 @@
   #ap-control-bar button{background:#12234a;color:#cfe9ff;border:1px solid #2a3a5a;border-radius:5px;padding:3px 9px;font:12px/1.4 'Courier New',monospace;cursor:pointer;}
   #ap-control-bar button:hover{border-color:#22e5a0;}
   #ap-control-frame{flex:1;width:100%;border:0;background:#040814;}
-  #who{position:fixed;bottom:8px;left:12px;font-size:.65rem;opacity:.4;letter-spacing:.1em;}
+  /* ⛔⛔ IT NEEDS A GROUND, AND FOR THE SAME REASON THE SEAT BADGE HAS ONE — 2026-08-18.
+     `#who` is position:fixed with no background, so panel content scrolls UNDERNEATH it and both
+     texts render on top of each other. MEASURED in a real browser: on the ship record it wrote
+     "participant · Argus (spaceship-engineering-argus)" straight through "fuel processors / 2 t",
+     70% of that label covered, both legible and tangled.
+     ⚠ PADDING CANNOT FIX THIS. The panel is taller than the viewport, so whatever clears the strip
+     at rest passes under it while scrolling — the strip needs to be opaque, not the content shorter.
+     ⭐ Same treatment as #ap-seat, which solved the identical problem at the top corner and says so:
+     "two fixed boxes in one corner is a collision, not a layout." pointer-events:none because it is
+     a readout and must never eat a click meant for the panel. */
+  #who{position:fixed;bottom:8px;left:12px;font-size:.65rem;opacity:.55;letter-spacing:.1em;
+    background:rgba(6,10,24,.86);border:1px solid #1e2c46;border-radius:5px;padding:3px 9px;
+    pointer-events:none;z-index:54;}
   /* ── Plan 0537 P4.1 — THE REPLY CHANNEL MOVES TO THE RIGHT EDGE ─────────────────────────────
      Bruce, S229: "we did have it as just the green dot, no other always-present controls. Clean."
      The bottom bar was 4 of the 8 always-present elements and 44px of permanent full-width
@@ -407,8 +425,21 @@
     var label = (st && st.name) ? st.name : 'signed in';
     if (pill) pill.classList.toggle('in', signedIn);
     if (link) link.style.display = signedIn ? 'none' : '';
-    if (who) { who.style.display = signedIn ? '' : 'none'; who.textContent = (st && st.trust === 'self') ? ('✓ ' + label) : ('◌ ' + label); }
-    if (out) out.style.display = signedIn ? '' : 'none';
+    /* ⭐ SIGNED IN, THE PILL IS A READOUT — NOT A CONTROL. 2026-08-18, ruled by Bruce.
+       Every reason this pill is 44px and top-right applies to the SIGNED-OUT case, and its own
+       comment says so: "the one control a not-yet-signed-in person needs must not be three taps
+       inside an overlay." Once you are in, that need is met and the pill is just status.
+       ⛔ MEASURED before changing anything: signed in it is 260x58 on EVERY viewport — 16% of the
+       top edge at 1600px and 64% at 430px, where it GROWS rather than adapting.
+       ⇒ initials only, and the full name moves to the tooltip. `sign out` goes to the config panel,
+       which this file already calls "the canonical home of the sign-in control" and which already
+       carries both links, wired by this same function. Nothing is lost; a duplicate is dropped. */
+    var mark = (st && st.trust === 'self') ? '✓' : '◌';
+    var initials = String(label).split(/\s+/).filter(Boolean).slice(0, 2)
+      .map(function (w) { return w[0]; }).join('').toUpperCase() || '?';
+    if (who) { who.style.display = signedIn ? '' : 'none'; who.textContent = mark + ' ' + initials; }
+    /* ⛔ The trailing link is the other half of the width, and it is REACHABLE ELSEWHERE. */
+    if (out) out.style.display = 'none';
     if (cin) cin.style.display = signedIn ? 'none' : '';
     if (cout) cout.style.display = signedIn ? '' : 'none';
     if (cst) {
@@ -417,8 +448,12 @@
           : (label + ' · signed in, NOT authorized' + (st.reauth ? ' (session expired — sign in again)' : '')));
       cst.style.color = !signedIn ? '#8ab' : (st.trust === 'self' ? '#8fe6a8' : '#f97');
     }
+    /* ⚠ THE TOOLTIP NOW CARRIES WHAT THE PILL STOPPED SHOWING — the full name, and where sign-out
+       went. A control that shrinks without saying where its verb moved reads as a control that
+       broke. */
     if (pill) pill.title = !signedIn ? 'Sign in with your account to speak as yourself'
-      : (st.trust === 'self' ? (label + ' — signed in and authorized') : (label + ' — signed in, but not on this room\'s allowlist'));
+      : (label + (st.trust === 'self' ? ' — signed in and authorized' : ' — signed in, but not on this room\'s allowlist')
+         + ' · sign out in ⚙ Settings');
   }
   function refreshAuthState(){
     return fetch('/api/auth-state', { cache: 'no-store' })
