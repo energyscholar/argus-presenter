@@ -430,6 +430,15 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
    */
   function voiceAllowedFor(req, authCtx) {
     try {
+      /* ⛔⛔ NO IDENTITY SYSTEM ⇒ NOBODY TO GRANT TO ⇒ THE SERVER FLAG GOVERNS.
+       *   Requiring a per-user grant on a deployment with no IdP and no allowlist makes voice
+       *   permanently dead: there is no way to become the person who was granted it. Caught by the
+       *   full suite — V0472/V0470 spin exactly that deployment, and every voice test timed out
+       *   waiting for a transcript the gate had refused. It would have hit every local and dev
+       *   install identically, and silently.
+       *   ⭐ This is not a hole: where an IdP IS configured the grant is still required, and the
+       *     operator opted in by enabling voice at all. */
+      if (!oidcAdapter.active && AUTH_ALLOWLIST.size === 0) return true;
       const ctx = authCtx || computeAuthCtx(req);
       if (!ctx || !ctx.verified) return false;
       const key = ctx.verified.email || ctx.verified.sub;
