@@ -109,17 +109,19 @@ function envVoiceEnabled() { return /^(1|true|on|yes)$/i.test(String(process.env
  *   ⇒ each server builds its OWN table (see `wireActions` in createServer) and seeds it from here.
  */
 const PURE_ACTIONS = {
-  // Round-trip time from a client's pong. Verbatim from the chain.
-  pong: ({ m, telem }) => {
-    if (typeof m.ts === 'number') { const rtt = Date.now() - m.ts; telem.rtt.last = rtt; telem.rtt.sum += rtt; telem.rtt.count++; }
-  },
-  // Client-reported counters. Verbatim from the chain.
-  telemetry: ({ m, telem }) => {
-    if (m.kind === 'render-error') telem.renderErrors++;
-    else if (m.kind === 'op-apply-failure') telem.opApplyFailures++;
-    else if (m.kind === 'rtt' && typeof m.value === 'number') { telem.rtt.last = m.value; telem.rtt.sum += m.value; telem.rtt.count++; }
-  },
+  /* ⛔ EMPTIED 2026-08-19 — see below. `pong` and `telemetry` were migrated here and X3 regressed:
+   *   RTT stopped being sampled (last:null, samples:0). The handler bodies were byte-identical to
+   *   the branches, the dispatch is reached for other frames, nothing threw, and no `action-threw`
+   *   was logged — so the pong frame simply never took this path, and I could not establish why
+   *   within a reasonable diagnostic budget.
+   *   ⭐ THIS IS BRANCH BY ABSTRACTION WORKING AS DESIGNED: the old implementation never left, so
+   *     backing out cost one commit and the estate is back on verified-green behaviour. The
+   *     abstraction stays; the migration retries once the mechanism is understood.
+   *   ⚠ AND A LESSON ABOUT THE CHECK: I first "cleared" this migration by running X3 on PENGUIN,
+   *     where it fails for an unrelated environmental reason — masking a real jill regression.
+   *     Confirm regressions on the host that established the baseline. */
 };
+
 
 const VOICE_BLOCK_RE = /[^\S\n]*(?:<!--|\/\*)\s*AP-VOICE:BEGIN\s*(?:-->|\*\/)[\s\S]*?(?:<!--|\/\*)\s*AP-VOICE:END\s*(?:-->|\*\/)[^\S\n]*\n?/g;
 function stripVoiceBlocks(html) { return html.replace(VOICE_BLOCK_RE, ''); }
@@ -1546,6 +1548,12 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         handleOp(c, m);
       } else if (m.t === 'control') {
         handleControl(c, m, ws);
+      } else if (m.t === 'pong') {
+        if (typeof m.ts === 'number') { const rtt = Date.now() - m.ts; telem.rtt.last = rtt; telem.rtt.sum += rtt; telem.rtt.count++; }
+      } else if (m.t === 'telemetry') {
+        if (m.kind === 'render-error') telem.renderErrors++;
+        else if (m.kind === 'op-apply-failure') telem.opApplyFailures++;
+        else if (m.kind === 'rtt' && typeof m.value === 'number') { telem.rtt.last = m.value; telem.rtt.sum += m.value; telem.rtt.count++; }
       } else if (m.t === 'request-poll') {
         emit('poll', { type: 'request', from: { userId: c.userId, userName: c.userName }, spec: m.spec });
       } else if (m.t === 'ack') {
