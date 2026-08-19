@@ -7,7 +7,6 @@
  */
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createServer as createHttpServer } from 'node:http';
 import { z } from 'zod';
 import { activeTools } from './tools.mjs';
@@ -77,19 +76,41 @@ if (!HTTP_PORT) {
    *   sharing a single one made calls fail with "Mcp-Session-Id header is required" as soon as a
    *   second client — or the same client after a restart — showed up. Every call here is independent
    *   and bearer-gated, so there is nothing a session would carry that we need. */
-  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-  await server.connect(transport);
+  /* ⭐ PLAIN JSON-RPC OVER HTTP, NOT THE SDK TRANSPORT.
+   *   `StreamableHTTPServerTransport` is built around per-session transport instances; a single
+   *   long-lived one answered 500 with nothing logged, and the stateless mode wants a fresh
+   *   transport per request — i.e. a different server lifecycle than a supervised process that owns
+   *   a presenter. We control both ends of this hop, and what matters is the TOOL CONTRACT, not the
+   *   transport, so this speaks the same `tools/list` / `tools/call` JSON-RPC directly against the
+   *   same `activeTools()` table the stdio server uses. One table, two transports.
+   */
+  const TOOLS = new Map(activeTools().map((t) => [t.name, t]));
+  const send = (res, code, obj) => {
+    res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+    res.end(JSON.stringify(obj));
+  };
   createHttpServer(async (req, res) => {
-    if (req.headers.authorization !== `Bearer ${TOKEN}`) {
-      res.writeHead(401, { 'content-type': 'application/json' }); res.end('{"error":"unauthorized"}'); return;
-    }
-    let body;
-    if (req.method === 'POST') {
-      const chunks = []; for await (const c of req) chunks.push(c);
-      try { body = JSON.parse(Buffer.concat(chunks).toString() || '{}'); } catch { body = undefined; }
-    }
-    await transport.handleRequest(req, res, body);
-  }).listen(HTTP_PORT, BIND, () => console.error(`mcp http on http://${BIND}:${HTTP_PORT} (bearer-gated)`));
+    if (req.headers.authorization !== `Bearer ${TOKEN}`) return send(res, 401, { error: 'unauthorized' });
+    if (req.method === 'GET') return send(res, 200, { ok: true, tools: TOOLS.size });   // health
+    if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
+    const chunks = []; for await (const c of req) chunks.push(c);
+    let m; try { m = JSON.parse(Buffer.concat(chunks).toString() || '{}'); }
+    catch { return send(res, 400, { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'parse error' } }); }
+    const reply = (result) => send(res, 200, { jsonrpc: '2.0', id: m.id ?? null, result });
+    const fail = (code, message) => send(res, 200, { jsonrpc: '2.0', id: m.id ?? null, error: { code, message } });
+    try {
+      if (m.method === 'initialize') return reply({ protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'argus-presenter', version: '0.1.0' } });
+      if (String(m.method || '').startsWith('notifications/')) { res.writeHead(202); return res.end(); }
+      if (m.method === 'tools/list') return reply({ tools: [...TOOLS.values()].map((t) => ({ name: t.name, description: t.description, inputSchema: t.input })) });
+      if (m.method === 'tools/call') {
+        const t = TOOLS.get(m.params?.name);
+        if (!t) return fail(-32602, `unknown tool: ${m.params?.name}`);
+        const out = await t.handler(m.params?.arguments || {});
+        return reply({ content: [{ type: 'text', text: JSON.stringify(out, null, 2) }] });
+      }
+      return fail(-32601, `unknown method: ${m.method}`);
+    } catch (e) { return fail(-32000, String((e && e.message) || e)); }
+  }).listen(HTTP_PORT, BIND, () => console.error(`mcp http on http://${BIND}:${HTTP_PORT} (bearer-gated, ${TOOLS.size} tools)`));
 
   /* ⭐ AUTOSTART: a supervised MCP process should come back serving, not waiting to be asked. */
   if (process.env.PRESENTER_AUTOSTART === '1') {
