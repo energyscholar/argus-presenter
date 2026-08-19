@@ -124,7 +124,12 @@ export function createHttpHandler(ctx) {
     if (req.url === '/' || req.url.startsWith('/?')) {
       // Plan 0473 P0: strip the voice block(s) unless voice is enabled ⇒ zero voice bytes when off.
       res.writeHead(200, htmlHeaders());
-      res.end(renderPresenterPage(VOICE_ENABLED));
+      /* ⭐ THE MICROPHONE UI IS RENDERED PER REQUEST, from the requester's own identity. Voice was a
+       *   single global flag: on for everyone or off for everyone. It is a per-user capability now,
+       *   so the page a signed-in grantee receives and the page anyone else receives differ.
+       *   ⛔ This is ergonomics, NOT the gate — the gate is on the wire (voice_seg_start). Stripping
+       *     a button stops a click and stops nothing else. */
+      res.end(renderPresenterPage(VOICE_ENABLED && !!(authState(req) || {}).voice));
     } else if (req.url === '/diag' || req.url.startsWith('/diag?')) {
       /* SELF-CHECK. Serves a page that runs entirely in the browser and TRANSMITS NOTHING — no
          beacon, no logging, no storage, no endpoint behind it. Added 2026-08-12 after sign-in went

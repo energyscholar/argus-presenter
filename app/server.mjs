@@ -420,6 +420,23 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
    * ⛓ trust is READ FROM deriveConnTrust — the SAME one function the socket uses. A second
    * trust computation here would be a second policy, and the two would eventually disagree.
    */
+  /**
+   * ⭐⭐ MAY THIS REQUEST OPEN A MICROPHONE? Two conditions, both required:
+   *   1. VERIFIED — signed in through OIDC (or a tailnet peer we resolved), not merely present.
+   *   2. GRANTED  — that person's allowlist entry carries `voice: true`, explicitly.
+   * ⛔ FAIL-CLOSED AND OFF BY DEFAULT. Membership of the allowlist grants nothing here; driving the
+   *   room and opening a microphone in it are different permissions. Anyone unlisted, unverified, on
+   *   a cap link, or listed without the flag gets `false`.
+   */
+  function voiceAllowedFor(req) {
+    try {
+      const ctx = computeAuthCtx(req);
+      if (!ctx || !ctx.verified) return false;
+      const al = AUTH_ALLOWLIST.lookup(ctx.verified.email || ctx.verified.sub);
+      return !!(al && al.allowed && al.voice === true);
+    } catch (e) { return false; }        // ⛔ an error is a refusal, never a grant
+  }
+
   function authState(req) {
     const ctx = computeAuthCtx(req);
     const verdict = deriveConnTrust(null, null, ctx);
@@ -429,6 +446,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       signedIn: !!ctx.verified,
       name,
       trust: verdict.trust,
+      voice: voiceAllowedFor(req),          // the client needs to know, and so does the page renderer
       ...(verdict.reason ? { reason: verdict.reason } : {}),
       ...(verdict.reauth ? { reauth: true } : {}),
     };
@@ -1356,6 +1374,8 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         // connection emits (chat/voice) so the fence delimits it correctly. NEVER from the password.
         const trustVerdict = deriveConnTrust(ident, capGrant, authCtx);
         c.trust = trustVerdict.trust;
+        // ⭐ Decided ONCE, at hello, from the verified identity — never re-derived from a client claim.
+        c.voiceAllowed = voiceAllowedFor(req);
         c.trustReason = trustVerdict.reason || null;
         c.reauth = !!trustVerdict.reauth;
         bindUser(c.userId, ws);
@@ -1620,7 +1640,14 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         }
       } else if (m.t === 'voice_seg_start') {
         // Plan 0470: control frame bracketing an utterance (binary PCM follows on the same conn).
-        voiceSegStart(c, ws, m);
+        /* ⛔⛔ THE REAL GATE IS HERE, NOT IN THE PAGE. Stripping the microphone button from the HTML
+         *   stops a person clicking it and stops nobody from sending the frame — a client is not a
+         *   security boundary and never was. A connection without the capability is refused BY NAME,
+         *   so the refusal is visible in the log rather than looking like a microphone that failed. */
+        if (!c || c.voiceAllowed !== true) {
+          log.warn('voice', 'seg-start-denied', { socketId: c && c.id, userId: c && c.userId, trust: c && c.trust });
+          send(ws, { t: 'voice_denied', reason: 'voice is granted per user, to signed-in accounts only' });
+        } else voiceSegStart(c, ws, m);
       } else if (m.t === 'voice_seg_end') {
         voiceSegFinalize(c, ws, {});   // finalize -> WAV -> WARM ASR -> transcript out
       } else if (m.t === 'voicedbg') {

@@ -73,20 +73,25 @@ export function makeAllowlist(entries) {
       if (!key) continue;
       const role = (v && typeof v === 'object' && typeof v.role === 'string') ? v.role
         : (typeof v === 'string' ? v : null);
-      if (role) map.set(key, { role });
+      /* ⭐ PER-USER CAPABILITIES, OFF BY DEFAULT. `voice` is granted to a named person, never implied
+       *   by being on the list — being allowed to drive the room and being allowed to open a
+       *   microphone in it are different permissions. A bare string entry ("presenter") therefore
+       *   grants no capability at all, which is the fail-closed reading. */
+      const voice = !!(v && typeof v === 'object' && v.voice === true);
+      if (role) map.set(key, { role, voice });
     }
   }
   return {
     size: map.size,
     /**
      * Look a principal's key up. Returns { allowed, role }. The DEFAULT — key null, key not present,
-     * empty list — is ALWAYS { allowed:false, role:'participant' }. There is no path that returns
+     * empty list — is ALWAYS { allowed:false, role:'participant', voice:false }. There is no path that returns
      * allowed:true without an explicit list hit. That is the fail-closed invariant (E-guard, T5).
      */
     lookup(key) {
       const k = (key == null) ? '' : String(key).trim().toLowerCase();
-      if (k) { const hit = map.get(k); if (hit) return { allowed: true, role: hit.role }; }
-      return { allowed: false, role: 'participant' };
+      if (k) { const hit = map.get(k); if (hit) return { allowed: true, role: hit.role, voice: hit.voice }; }
+      return { allowed: false, role: 'participant', voice: false };
     },
   };
 }

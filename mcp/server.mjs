@@ -116,7 +116,7 @@ if (!HTTP_PORT) {
   if (process.env.PRESENTER_AUTOSTART === '1') {
     const start = activeTools().find((t) => t.name === 'presenter_start');
     if (start) {
-      try { const r = await start.handler({ profile: process.env.PRESENTER_PROFILE || 'rpg', tunnel: false, voice: false });
+      try { const r = await start.handler({ profile: process.env.PRESENTER_PROFILE || 'rpg', tunnel: false, voice: /^(1|true|on|yes)$/i.test(String(process.env.PRESENTER_VOICE_ENABLED || '')) });
             console.error('autostart:', JSON.stringify(r)); }
       catch (e) { console.error('autostart FAILED:', e && e.message); }
     }
