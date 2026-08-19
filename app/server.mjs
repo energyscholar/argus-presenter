@@ -95,43 +95,31 @@ function envVoiceEnabled() { return /^(1|true|on|yes)$/i.test(String(process.env
 // those regions ENTIRELY before serving, so the page pulls ZERO voice bytes (no voice-stub
 // <script>, no APVoice wiring, no mic row) and runs no always-on voice runtime.
 /**
- * WIRE_ACTIONS — the dispatch table the `m.t` chain is migrating into (Plan 0661 phase 1).
+ * PURE_ACTIONS — wire handlers that need NOTHING from a server instance.
  *
- * Each handler takes ONE context object: { m, c, ws, send, telem, conns } — VERIFIED locals at the
- * dispatch point, nothing speculative.
+ * Each takes one context object and touches only what is in it. These can live at module scope
+ * because they close over nothing.
  *
- * ⛔ `api` AND `state` ARE DELIBERATELY ABSENT. `api` is declared ~2,400 lines BELOW this point (the
- *   file says so itself: "a GETTER, NOT A VALUE… in TDZ"), and `state` is not a plain local here at
- *   all. Putting them in the context because the chain mentions them would have built an interface
- *   on two names that do not resolve — and the empty table would have hidden it until the first
- *   migration. ⭐ Add a field when a migrating action needs it, and prove it resolves then.
- *
- * ⛔ ADD A KEY ONLY WHILE DELETING ITS BRANCH. The table is consulted FIRST, so a branch left behind
- *   becomes silently dead code rather than an error — which is worse than a crash, because it looks
- *   like it still works.
+ * ⛔⛔ MOST ACTIONS CANNOT LIVE HERE, AND THE TABLE MUST BE PER-SERVER. The chain's branches delegate
+ *   to `handleOp`, `handleControl`, `emit`, `voiceSegFinalize`, `unpeekTo`, `log` — all closures
+ *   declared INSIDE createServer. A module-level handler cannot reach them; and a module-level Map
+ *   holding handlers that captured ONE server's closures would be shared by every other server in
+ *   the process. The suite stands up many servers, so that is not a theoretical leak — it is a
+ *   cross-test contamination bug waiting for the first impure migration.
+ *   ⇒ each server builds its OWN table (see `wireActions` in createServer) and seeds it from here.
  */
-const WIRE_ACTIONS = new Map();
-
-/* ── migrated actions ─────────────────────────────────────────────────────────────────────────
- * ⭐ Module-level pure functions of the context. `telem` is per-server and lives inside
- *   createServer, so a module-level handler CANNOT close over it — it arrives through ctx. That is
- *   the whole reason the context object exists, and it is what makes a handler testable without
- *   standing up a server.
- * ⛔ Each of these was DELETED from the chain in the same commit that added it here. The table is
- *   consulted first, so leaving both would turn the branch into silent dead code.
- */
-
-// Round-trip time from a client's pong. Verbatim from the chain.
-WIRE_ACTIONS.set('pong', ({ m, telem }) => {
-  if (typeof m.ts === 'number') { const rtt = Date.now() - m.ts; telem.rtt.last = rtt; telem.rtt.sum += rtt; telem.rtt.count++; }
-});
-
-// Client-reported counters. Verbatim from the chain.
-WIRE_ACTIONS.set('telemetry', ({ m, telem }) => {
-  if (m.kind === 'render-error') telem.renderErrors++;
-  else if (m.kind === 'op-apply-failure') telem.opApplyFailures++;
-  else if (m.kind === 'rtt' && typeof m.value === 'number') { telem.rtt.last = m.value; telem.rtt.sum += m.value; telem.rtt.count++; }
-});
+const PURE_ACTIONS = {
+  // Round-trip time from a client's pong. Verbatim from the chain.
+  pong: ({ m, telem }) => {
+    if (typeof m.ts === 'number') { const rtt = Date.now() - m.ts; telem.rtt.last = rtt; telem.rtt.sum += rtt; telem.rtt.count++; }
+  },
+  // Client-reported counters. Verbatim from the chain.
+  telemetry: ({ m, telem }) => {
+    if (m.kind === 'render-error') telem.renderErrors++;
+    else if (m.kind === 'op-apply-failure') telem.opApplyFailures++;
+    else if (m.kind === 'rtt' && typeof m.value === 'number') { telem.rtt.last = m.value; telem.rtt.sum += m.value; telem.rtt.count++; }
+  },
+};
 
 const VOICE_BLOCK_RE = /[^\S\n]*(?:<!--|\/\*)\s*AP-VOICE:BEGIN\s*(?:-->|\*\/)[\s\S]*?(?:<!--|\/\*)\s*AP-VOICE:END\s*(?:-->|\*\/)[^\S\n]*\n?/g;
 function stripVoiceBlocks(html) { return html.replace(VOICE_BLOCK_RE, ''); }
@@ -505,6 +493,11 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       ...(verdict.reauth ? { reauth: true } : {}),
     };
   }
+  /* ⭐ THIS SERVER'S ACTION TABLE. Seeded with the pure handlers, then extended below with ones that
+   *   close over this server's own scope. Per-server by construction, so two servers in one process
+   *   can never share a handler that captured the other's state. */
+  const wireActions = new Map(Object.entries(PURE_ACTIONS));
+
   const conns = new Map();     // ws -> {id,userId,userName,role}
   // Plan 0482 A4 — userId -> Set<ws>. One PERSON may hold several sockets (phone + laptop, or a
   // reconnect race where the old socket has not yet been reaped). The old Map<userId,ws> OVERWROTE
@@ -1388,7 +1381,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
        *   branch a plain equality on `m.t`.
        */
       {
-        const action = WIRE_ACTIONS.get(m.t);
+        const action = wireActions.get(m.t);
         if (action) {
           try { action({ m, c, ws, send, telem, conns }); }
           catch (e) { log.warn('wire', 'action-threw', { t: m.t, err: String((e && e.message) || e).slice(0, 160) }); }
