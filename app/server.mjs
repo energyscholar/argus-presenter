@@ -112,6 +112,27 @@ function envVoiceEnabled() { return /^(1|true|on|yes)$/i.test(String(process.env
  */
 const WIRE_ACTIONS = new Map();
 
+/* ── migrated actions ─────────────────────────────────────────────────────────────────────────
+ * ⭐ Module-level pure functions of the context. `telem` is per-server and lives inside
+ *   createServer, so a module-level handler CANNOT close over it — it arrives through ctx. That is
+ *   the whole reason the context object exists, and it is what makes a handler testable without
+ *   standing up a server.
+ * ⛔ Each of these was DELETED from the chain in the same commit that added it here. The table is
+ *   consulted first, so leaving both would turn the branch into silent dead code.
+ */
+
+// Round-trip time from a client's pong. Verbatim from the chain.
+WIRE_ACTIONS.set('pong', ({ m, telem }) => {
+  if (typeof m.ts === 'number') { const rtt = Date.now() - m.ts; telem.rtt.last = rtt; telem.rtt.sum += rtt; telem.rtt.count++; }
+});
+
+// Client-reported counters. Verbatim from the chain.
+WIRE_ACTIONS.set('telemetry', ({ m, telem }) => {
+  if (m.kind === 'render-error') telem.renderErrors++;
+  else if (m.kind === 'op-apply-failure') telem.opApplyFailures++;
+  else if (m.kind === 'rtt' && typeof m.value === 'number') { telem.rtt.last = m.value; telem.rtt.sum += m.value; telem.rtt.count++; }
+});
+
 const VOICE_BLOCK_RE = /[^\S\n]*(?:<!--|\/\*)\s*AP-VOICE:BEGIN\s*(?:-->|\*\/)[\s\S]*?(?:<!--|\/\*)\s*AP-VOICE:END\s*(?:-->|\*\/)[^\S\n]*\n?/g;
 function stripVoiceBlocks(html) { return html.replace(VOICE_BLOCK_RE, ''); }
 // Serve presenter.html, stripping the voice block(s) unless voice is enabled for this server.
@@ -1532,12 +1553,6 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         handleOp(c, m);
       } else if (m.t === 'control') {
         handleControl(c, m, ws);
-      } else if (m.t === 'pong') {
-        if (typeof m.ts === 'number') { const rtt = Date.now() - m.ts; telem.rtt.last = rtt; telem.rtt.sum += rtt; telem.rtt.count++; }
-      } else if (m.t === 'telemetry') {
-        if (m.kind === 'render-error') telem.renderErrors++;
-        else if (m.kind === 'op-apply-failure') telem.opApplyFailures++;
-        else if (m.kind === 'rtt' && typeof m.value === 'number') { telem.rtt.last = m.value; telem.rtt.sum += m.value; telem.rtt.count++; }
       } else if (m.t === 'request-poll') {
         emit('poll', { type: 'request', from: { userId: c.userId, userName: c.userName }, spec: m.spec });
       } else if (m.t === 'ack') {
