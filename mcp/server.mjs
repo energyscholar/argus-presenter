@@ -7,6 +7,9 @@
  */
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { createServer as createHttpServer } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { activeTools } from './tools.mjs';
 
@@ -41,5 +44,57 @@ for (const t of activeTools()) {
   });
 }
 
-const transport = new StdioServerTransport();
-await server.connect(transport);
+/* ── REACHABLE MCP (Plan 0658 §10c) ────────────────────────────────────────────────────────────
+ *
+ * ⭐⭐ WHY. `mcp/tools.mjs` keeps the presenter IN PROCESS (`let server = null; createServer(...)`),
+ *   so an MCP client owns its own instance and CANNOT drive one on another machine. Measured
+ *   2026-08-19: a second client answered "presenter not started" while a presenter was demonstrably
+ *   serving. That made remote participation impossible — the agent had to be on the box.
+ *
+ * ⭐ v0 ALREADY SOLVED THIS and we regressed. `starship-operations/mcp-vtt-control` holds
+ *   `activeBase = process.env.VTT_URL` and an `attach` tool taking a URL — the MCP there is a thin
+ *   HTTP CLIENT of a running server, never its owner. This restores that property from the other
+ *   side: the server that OWNS the presenter becomes reachable, so any client can drive it.
+ *
+ * ⛔ IT IS A CONTROL SURFACE, SO IT IS FENCED. Bind defaults to the tailnet address (never 0.0.0.0),
+ *   and a bearer token is REQUIRED — an unauthenticated control port on a box with a public tunnel
+ *   is the S241 incident with extra steps.
+ *
+ * stdio remains the default: absent PRESENTER_MCP_HTTP nothing changes for existing clients.
+ */
+const HTTP_PORT = Number(process.env.PRESENTER_MCP_HTTP || 0);
+if (!HTTP_PORT) {
+  await server.connect(new StdioServerTransport());
+} else {
+  const TOKEN = process.env.PRESENTER_MCP_TOKEN || '';
+  if (!TOKEN) { console.error('⛔ PRESENTER_MCP_HTTP set without PRESENTER_MCP_TOKEN — refusing to open an unauthenticated control port'); process.exit(2); }
+  let BIND = process.env.PRESENTER_MCP_BIND || '';
+  if (!BIND) {
+    try { const { execFileSync } = await import('node:child_process');
+          BIND = execFileSync('tailscale', ['ip', '-4'], { encoding: 'utf8' }).trim().split('\n')[0]; }
+    catch { BIND = '127.0.0.1'; }
+  }
+  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID() });
+  await server.connect(transport);
+  createHttpServer(async (req, res) => {
+    if (req.headers.authorization !== `Bearer ${TOKEN}`) {
+      res.writeHead(401, { 'content-type': 'application/json' }); res.end('{"error":"unauthorized"}'); return;
+    }
+    let body;
+    if (req.method === 'POST') {
+      const chunks = []; for await (const c of req) chunks.push(c);
+      try { body = JSON.parse(Buffer.concat(chunks).toString() || '{}'); } catch { body = undefined; }
+    }
+    await transport.handleRequest(req, res, body);
+  }).listen(HTTP_PORT, BIND, () => console.error(`mcp http on http://${BIND}:${HTTP_PORT} (bearer-gated)`));
+
+  /* ⭐ AUTOSTART: a supervised MCP process should come back serving, not waiting to be asked. */
+  if (process.env.PRESENTER_AUTOSTART === '1') {
+    const start = activeTools().find((t) => t.name === 'presenter_start');
+    if (start) {
+      try { const r = await start.handler({ profile: process.env.PRESENTER_PROFILE || 'rpg', tunnel: false, voice: false });
+            console.error('autostart:', JSON.stringify(r)); }
+      catch (e) { console.error('autostart FAILED:', e && e.message); }
+    }
+  }
+}
