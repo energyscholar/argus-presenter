@@ -458,17 +458,22 @@
   function refreshAuthState(){
     return fetch('/api/auth-state', { cache: 'no-store' })
       .then(function(r){ return r.ok ? r.json() : null; })
-      .then(function(st){ renderSignIn(st); renderVoice(st); return st; })
+      .then(function(st){ renderSignIn(st); if (typeof renderVoice === 'function') renderVoice(st); return st; })
       .catch(function(){ renderSignIn(null); return null; });   // unreachable ⇒ hidden, i.e. the pre-0551 page
   }
+  /* AP-VOICE:BEGIN */
   /* ⭐ VOICE IS A PER-USER GRANT, so the row appears only when THIS account has it. auth-state
      carries `voice`; anonymous, unlisted, and listed-without-the-flag all report false. Re-read on
-     every refresh, so signing in reveals the mic without a reload — the failure this replaces. */
+     every refresh, so signing in reveals the mic without a reload.
+     ⛔ THIS MUST LIVE INSIDE A VOICE BLOCK. Written outside one, it left voice code on a page served
+     by a voice-OFF server — which T-ZERO-WHEN-OFF exists to catch, and did. "Zero voice code when
+     off" means zero, including the function that would have revealed it. */
   function renderVoice(st){
     var row = document.getElementById('cfg-voice-row');
-    if (!row) return;                                  // stripped: this server has no voice at all
+    if (!row) return;
     row.style.display = (st && st.voice === true) ? '' : 'none';
   }
+  /* AP-VOICE:END */
   refreshAuthState();
 
   // ---- P2.8: quick-switch button to /control (reciprocal of control.html's #btn-present).
