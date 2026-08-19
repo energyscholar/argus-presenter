@@ -286,7 +286,7 @@
        standalone chrome. Default OFF (Tier-0 stub only, nothing loaded). ON => APVoice.enable()
        => browser mic prompt; Tier-1 + capture begin only on grant. Deny => reverts to OFF + msg.
        Plan 0473 P0: this whole block is STRIPPED server-side when PRESENTER_VOICE_ENABLED is off. -->
-  <div class="row" id="cfg-voice-row" style="margin-top:8px"><span class="k">Voice</span> <button id="cfg-voice-toggle" aria-pressed="false">🎙 Mic: off</button><span id="cfg-voice-msg" style="color:#f97;font-size:11px;flex-basis:100%;margin:0"></span></div>
+  <div class="row" id="cfg-voice-row" style="margin-top:8px;display:none"><span class="k">Voice</span> <button id="cfg-voice-toggle" aria-pressed="false">🎙 Mic: off</button><span id="cfg-voice-msg" style="color:#f97;font-size:11px;flex-basis:100%;margin:0"></span></div>
   <!-- AP-VOICE:END -->
   <div class="row" style="margin-top:8px"><button id="cfg-attendance">👁 Show attendance</button></div>
   <div class="rd" id="cfg-readout"></div>
@@ -458,8 +458,16 @@
   function refreshAuthState(){
     return fetch('/api/auth-state', { cache: 'no-store' })
       .then(function(r){ return r.ok ? r.json() : null; })
-      .then(function(st){ renderSignIn(st); return st; })
+      .then(function(st){ renderSignIn(st); renderVoice(st); return st; })
       .catch(function(){ renderSignIn(null); return null; });   // unreachable ⇒ hidden, i.e. the pre-0551 page
+  }
+  /* ⭐ VOICE IS A PER-USER GRANT, so the row appears only when THIS account has it. auth-state
+     carries `voice`; anonymous, unlisted, and listed-without-the-flag all report false. Re-read on
+     every refresh, so signing in reveals the mic without a reload — the failure this replaces. */
+  function renderVoice(st){
+    var row = document.getElementById('cfg-voice-row');
+    if (!row) return;                                  // stripped: this server has no voice at all
+    row.style.display = (st && st.voice === true) ? '' : 'none';
   }
   refreshAuthState();
 
