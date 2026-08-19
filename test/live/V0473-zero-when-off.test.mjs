@@ -23,7 +23,14 @@ function getPage(url) {
   });
 }
 // Voice references we must NOT see anywhere in the OFF page bytes.
-const VOICE_MARKERS = [/voice-stub/, /APVoice/i, /cfg-voice/, /voice_enable/, /AP-VOICE:/];
+/* ⛔ THE MARKER MUST MEAN AUDIO-IN, NOT THE WORD "VOICE".
+ *   `/APVoice/i` matched `apVoiceMatches` — a text-to-speech VOICE-SELECTION helper (picking a
+ *   synthesis voice by name: "fiona", "samantha"). That is audio OUT; this test is about audio IN.
+ *   The suite was failing on a substring, so the check said "voice code leaked" while the page was
+ *   correct — and a test that cries wolf about the wrong thing is worse than no test, because the
+ *   real leak now hides in a failure everyone has learned to expect.
+ *   ⇒ anchor on the runtime globals (`window.APVoice`, `APVoiceHost`), not on any casing of the word. */
+const VOICE_MARKERS = [/voice-stub/, /\bAPVoice\b/, /\bAPVoiceHost\b/, /cfg-voice/, /voice_enable/, /AP-VOICE:/];
 
 test('T-ZERO-WHEN-OFF (off): audience page carries ZERO voice code + zero /lib/voice-* requests', async () => {
   const s = await createServer({ port: 0, voiceEnabled: false });
