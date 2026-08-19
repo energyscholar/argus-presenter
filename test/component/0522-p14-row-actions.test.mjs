@@ -222,7 +222,10 @@ test('0522 t36 — the roster row carries mirror + spotlight + set-station, and 
      *   server.mjs — it did not move, because it is the only site that lets one person seat
      *   another. Scanning one file after the seam was cut would have counted one site and passed
      *   for the wrong reason. [[feedback-the-coupling-may-be-by-name-not-by-path]] */
-    const CORE = ['app/server.mjs', 'app/wire-actions.mjs'];
+    /* ⭐ "CORE" IS A SET OF FILES, AND THE SET GROWS AS SEAMS ARE CUT. It was one file; phase 1c
+     *   moved the two SELF-scoped sites to wire-actions.mjs; phase 3 moved stationSet — and with it
+     *   the single FOREIGN-userId site — to api-surface.mjs. The invariant never changed. */
+    const CORE = ['app/server.mjs', 'app/wire-actions.mjs', 'app/api-surface.mjs'];
     const src = CORE.map((f) => readFileSync(join(ROOT, f), 'utf8')).join('\n');
     // Comment lines are excluded — this phase ADDED prose naming the three sites, and a scan that
     // counted its own documentation would report four and be wrong in the safe direction, which
