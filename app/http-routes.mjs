@@ -58,13 +58,25 @@ export function createHttpHandler(ctx) {
     if (req.url.startsWith('/auth/callback')) {
       if (!oidcAuth || !oidcAuth.active) { res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'oidc not configured' })); return; }
       const query = Object.fromEntries(new URLSearchParams(req.url.split('?')[1] || ''));
+      /* ⛔ AN AUTH FAILURE THAT LOGS NOTHING IS UNDIAGNOSABLE. Both branches below used to redirect
+       *   to /?auth=failed in silence, so a sign-in that stopped working left the operator with a
+       *   query string and no cause — no reason, no error, nothing in the journal. The reason is
+       *   NEVER shown to the browser (it can carry provider detail); it goes to the log, where the
+       *   person fixing it is looking. */
       oidcAuth.completeLogin(query).then((r) => {
         if (r && r.ok) {
           res.writeHead(302, { location: '/control', 'set-cookie': oidcAuth.sessionCookie(r.sid), 'cache-control': 'no-store' }); res.end();
         } else {
+          try { api.log && api.log.warn('auth', 'oidc-login-failed', { reason: (r && (r.reason || r.error)) || 'no reason given', hasCode: !!query.code, hasState: !!query.state }); }
+          catch (e) { console.error('oidc login failed:', (r && (r.reason || r.error)) || 'no reason given', 'code:', !!query.code, 'state:', !!query.state); }
           res.writeHead(302, { location: '/?auth=failed', 'cache-control': 'no-store' }); res.end();
         }
-      }).catch(() => { res.writeHead(302, { location: '/?auth=failed', 'cache-control': 'no-store' }); res.end(); });
+      }).catch((e) => {
+        try { api.log && api.log.warn('auth', 'oidc-login-threw', { err: String((e && e.message) || e).slice(0, 200) }); }
+        catch (_) { console.error('oidc login threw:', String((e && e.message) || e)); }
+        console.error('oidc login threw:', String((e && e.message) || e));
+        res.writeHead(302, { location: '/?auth=failed', 'cache-control': 'no-store' }); res.end();
+      });
       return;
     }
     /*
