@@ -9,7 +9,6 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createServer as createHttpServer } from 'node:http';
-import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { activeTools } from './tools.mjs';
 
@@ -74,7 +73,11 @@ if (!HTTP_PORT) {
           BIND = execFileSync('tailscale', ['ip', '-4'], { encoding: 'utf8' }).trim().split('\n')[0]; }
     catch { BIND = '127.0.0.1'; }
   }
-  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID() });
+  /* ⭐ STATELESS. A session-ful transport wants one transport instance PER session, kept in a map;
+   *   sharing a single one made calls fail with "Mcp-Session-Id header is required" as soon as a
+   *   second client — or the same client after a restart — showed up. Every call here is independent
+   *   and bearer-gated, so there is nothing a session would carry that we need. */
+  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
   await server.connect(transport);
   createHttpServer(async (req, res) => {
     if (req.headers.authorization !== `Bearer ${TOKEN}`) {
