@@ -3,17 +3,17 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Argus Presenter — a web-based, AI-drivable interactive presentation engine with a zero-dependency component library. Push live, interactive content to a shared or per-user display and collect results in real time. Self-contained.",
+  "description": "Argus Presenter \u2014 a web-based, AI-drivable interactive presentation engine with a zero-dependency component library. Push live, interactive content to a shared or per-user display and collect results in real time. Self-contained.",
   "scripts": {
     "start": "node app/server.mjs",
     "test": "node harness/test.mjs"
   },
   "dependencies": {
-    "ws": "^8.18.0"
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "ws": "^8.18.0",
+    "zod": "^3.23.0"
   },
   "devDependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "puppeteer": "^24.43.1",
-    "zod": "^3.23.0"
+    "puppeteer": "^24.43.1"
   }
 }
