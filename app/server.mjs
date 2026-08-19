@@ -428,13 +428,19 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
    *   room and opening a microphone in it are different permissions. Anyone unlisted, unverified, on
    *   a cap link, or listed without the flag gets `false`.
    */
-  function voiceAllowedFor(req) {
+  function voiceAllowedFor(req, authCtx) {
     try {
-      const ctx = computeAuthCtx(req);
+      const ctx = authCtx || computeAuthCtx(req);
       if (!ctx || !ctx.verified) return false;
-      const al = AUTH_ALLOWLIST.lookup(ctx.verified.email || ctx.verified.sub);
-      return !!(al && al.allowed && al.voice === true);
-    } catch (e) { return false; }        // ⛔ an error is a refusal, never a grant
+      const key = ctx.verified.email || ctx.verified.sub;
+      const al = AUTH_ALLOWLIST.lookup(key);
+      const ok = !!(al && al.allowed && al.voice === true);
+      /* ⛔ A DENIAL FOR SOMEONE WHO IS SIGNED IN IS WORTH SAYING OUT LOUD. Silence here cost two
+       *   round trips: the microphone simply did not appear and nothing anywhere said why. The key
+       *   is logged because the failure mode is almost always that it is not the one on the list. */
+      if (!ok) log.info('voice', 'not-granted', { key: key || null, provider: ctx.verified.provider, allowed: !!(al && al.allowed), voiceFlag: al ? al.voice : null });
+      return ok;
+    } catch (e) { log.warn('voice', 'grant-check-threw', { err: String((e && e.message) || e).slice(0, 120) }); return false; }
   }
 
   function authState(req) {
@@ -446,7 +452,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       signedIn: !!ctx.verified,
       name,
       trust: verdict.trust,
-      voice: voiceAllowedFor(req),          // the client needs to know, and so does the page renderer
+      voice: voiceAllowedFor(req, ctx),     // ⚠ pass the ctx: computeAuthCtx() deletes expired sessions
       ...(verdict.reason ? { reason: verdict.reason } : {}),
       ...(verdict.reauth ? { reauth: true } : {}),
     };
