@@ -65,7 +65,12 @@ export function createHttpHandler(ctx) {
        *   person fixing it is looking. */
       oidcAuth.completeLogin(query).then((r) => {
         if (r && r.ok) {
-          res.writeHead(302, { location: '/control', 'set-cookie': oidcAuth.sessionCookie(r.sid), 'cache-control': 'no-store' }); res.end();
+          /* ⭐ LAND ON THE DEFAULT PAGE, NOT THE CONTROL SURFACE. Signing in proves who you are; it
+           *   is not a request to be moved somewhere else. Landing on /control also relocated anyone
+           *   who signed in from the display page, and it is what made the voice row's old
+           *   render-time gate misfire — you came back to / with a page rendered before the session
+           *   existed. Reaching Control is a link (`ap-goto-control`), already gated on granted role. */
+          res.writeHead(302, { location: '/', 'set-cookie': oidcAuth.sessionCookie(r.sid), 'cache-control': 'no-store' }); res.end();
         } else {
           try { api.log && api.log.warn('auth', 'oidc-login-failed', { reason: (r && (r.reason || r.error)) || 'no reason given', hasCode: !!query.code, hasState: !!query.state }); }
           catch (e) { console.error('oidc login failed:', (r && (r.reason || r.error)) || 'no reason given', 'code:', !!query.code, 'state:', !!query.state); }
