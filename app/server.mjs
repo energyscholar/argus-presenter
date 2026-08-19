@@ -94,6 +94,24 @@ function envVoiceEnabled() { return /^(1|true|on|yes)$/i.test(String(process.env
 // (HTML comments in body, /* */ block comments inside <script>). When voice is OFF we remove
 // those regions ENTIRELY before serving, so the page pulls ZERO voice bytes (no voice-stub
 // <script>, no APVoice wiring, no mic row) and runs no always-on voice runtime.
+/**
+ * WIRE_ACTIONS — the dispatch table the `m.t` chain is migrating into (Plan 0661 phase 1).
+ *
+ * Each handler takes ONE context object: { m, c, ws, send, telem, conns } — VERIFIED locals at the
+ * dispatch point, nothing speculative.
+ *
+ * ⛔ `api` AND `state` ARE DELIBERATELY ABSENT. `api` is declared ~2,400 lines BELOW this point (the
+ *   file says so itself: "a GETTER, NOT A VALUE… in TDZ"), and `state` is not a plain local here at
+ *   all. Putting them in the context because the chain mentions them would have built an interface
+ *   on two names that do not resolve — and the empty table would have hidden it until the first
+ *   migration. ⭐ Add a field when a migrating action needs it, and prove it resolves then.
+ *
+ * ⛔ ADD A KEY ONLY WHILE DELETING ITS BRANCH. The table is consulted FIRST, so a branch left behind
+ *   becomes silently dead code rather than an error — which is worse than a crash, because it looks
+ *   like it still works.
+ */
+const WIRE_ACTIONS = new Map();
+
 const VOICE_BLOCK_RE = /[^\S\n]*(?:<!--|\/\*)\s*AP-VOICE:BEGIN\s*(?:-->|\*\/)[\s\S]*?(?:<!--|\/\*)\s*AP-VOICE:END\s*(?:-->|\*\/)[^\S\n]*\n?/g;
 function stripVoiceBlocks(html) { return html.replace(VOICE_BLOCK_RE, ''); }
 // Serve presenter.html, stripping the voice block(s) unless voice is enabled for this server.
@@ -1333,6 +1351,28 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       if (pvsSubscribers.has(ws)) {
         if (m.t === 'pvs_unsubscribe') { pvsSubscribers.delete(ws); try { send(ws, { t: 'pvs_unsubscribed' }); } catch {} }
         return;
+      }
+      /* ── WIRE ACTIONS (Plan 0661 phase 1) — BRANCH BY ABSTRACTION, steps 1+2 ────────────────
+       *
+       * ⭐ The 22 `m.t` values below ARE fuseactions; they have simply been dispatched by hand, as a
+       *   356-line if/else chain. This is the abstraction they will move behind, one at a time.
+       *
+       * ⭐⭐ IT STARTS EMPTY, SO THIS COMMIT CHANGES NOTHING. An action absent from the table falls
+       *   straight through to the chain below, byte-for-byte as before. Each later commit moves ONE
+       *   action in and deletes its branch — behaviour-preserving, shippable, and reversible by
+       *   deleting one entry. When the chain is empty it goes.
+       *
+       * ⛔ SAFE ONLY BECAUSE THE KEYS ARE UNIQUE. An if/else is ordered; a table is not, so
+       *   overlapping conditions would change meaning. Audited: 22 actions, zero duplicates, every
+       *   branch a plain equality on `m.t`.
+       */
+      {
+        const action = WIRE_ACTIONS.get(m.t);
+        if (action) {
+          try { action({ m, c, ws, send, telem, conns }); }
+          catch (e) { log.warn('wire', 'action-threw', { t: m.t, err: String((e && e.message) || e).slice(0, 160) }); }
+          return;
+        }
       }
       if (m.t === 'pvs_subscribe') {
         // Become a SUBSCRIBER: leave the participant set (no roster/floor/backpressure weight, cannot
