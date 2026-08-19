@@ -213,7 +213,17 @@ test('0522 t36 — the roster row carries mirror + spotlight + set-station, and 
     // §ANNEAL A: the plan named one call site and there were three. This assertion is what stops
     // a fourth appearing unnoticed, which is the only way the gate proved in the unit tier could
     // be bypassed without anybody editing it.
-    const src = readFileSync(join(ROOT, 'app/server.mjs'), 'utf8');
+    /* ⭐ TWO FILES, ONE INVARIANT (Plan 0661 phase 1c). "Core" used to be one file; the wire
+     * fuseactions have since moved to app/wire-actions.mjs behind an explicit context. The two
+     * SELF-scoped select() sites went with them and are now spelled `ctx.seatResolver.select(` —
+     * which still contains `seatResolver.select(`, so every filter below is unchanged.
+     * ⛔ THE ASSERTION IS NOT RELAXED. Still exactly three sites, still exactly two self-scoped,
+     *   still exactly one taking a foreign userId, and that one is still inside stationSet in
+     *   server.mjs — it did not move, because it is the only site that lets one person seat
+     *   another. Scanning one file after the seam was cut would have counted one site and passed
+     *   for the wrong reason. [[feedback-the-coupling-may-be-by-name-not-by-path]] */
+    const CORE = ['app/server.mjs', 'app/wire-actions.mjs'];
+    const src = CORE.map((f) => readFileSync(join(ROOT, f), 'utf8')).join('\n');
     // Comment lines are excluded — this phase ADDED prose naming the three sites, and a scan that
     // counted its own documentation would report four and be wrong in the safe direction, which
     // is still wrong. Only executable lines count.
