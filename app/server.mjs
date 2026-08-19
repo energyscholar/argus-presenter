@@ -316,6 +316,11 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       if (Array.isArray(arr)) for (const n of arr) if (typeof n === 'string' && n) revokedNonces.add(n);
     } catch (e) { /* absent/unreadable ⇒ start empty; a fresh deployment has no file yet */ }
   }
+  function persistRevokedNonces() {
+    if (!REVOKED_FILE) return;
+    try { mkdirSync(dirname(REVOKED_FILE), { recursive: true }); writeFileSync(REVOKED_FILE, JSON.stringify([...revokedNonces])); }
+    catch (e) { try { log.warn('cap', 'revoked-persist-failed', { err: String((e && e.message) || e).slice(0, 120) }); } catch {} }
+  }
   /*
    * Plan 0543 P2 — IDENTITY ADAPTERS (the registry). Each yields a VERIFIED PRINCIPAL or null; NONE
    * of them decides trust (that is resolveIdentity, P3). Data-configured: oidc/tailscale/allowlist are
@@ -506,6 +511,15 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // Targeted delivery now reaches every live socket for that userId; the collision is logged loudly.
   const byUser = new Map();    // userId -> Set<ws>
   /** Bind `ws` to `userId`. Logs loudly when this userId already has a live socket. */
+  function bindUser(userId, ws) {
+    let set = byUser.get(userId);
+    if (!set) { set = new Set(); byUser.set(userId, set); }
+    if (set.size && !set.has(ws)) {
+      log.warn('conn', 'duplicate-userId', { userId, existingSockets: set.size, action: 'fan-out',
+        note: 'targeted content now delivered to ALL sockets for this userId' });
+    }
+    set.add(ws);
+  }
   /** Unbind exactly this socket (never the whole userId — a peer socket may still be live). */
   function unbindUser(userId, ws) {
     const set = byUser.get(userId);
@@ -581,10 +595,11 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // Presenter/ai always see the full roster; a participant attendance-request is answered
   // self-only until the presenter turns this ON. In-memory session state (v0.1).
   let rosterVisibleToAttendees = false;
-// userIds seen (to count reconnects)
-// Plan 0471 L2: FIFO to bound everSeen (client controls userId)
-// Group I: the current content module { title?, beats:[{component,opts,requires?}] }
-// index of the displayed beat
+  const everSeen = new Set();  // userIds seen (to count reconnects)
+  const everSeenOrder = [];    // Plan 0471 L2: FIFO to bound everSeen (client controls userId)
+  const EVER_SEEN_MAX = 5000;
+  let contentModule = null;    // Group I: the current content module { title?, beats:[{component,opts,requires?}] }
+  let currentBeat = -1;        // index of the displayed beat
   // Plan 0522 P4 (R4) — TWO-STAGE DELIVERY. A staging slot is PER CALLER and PER SESSION-MEMORY
   // only: `stage_beat` renders a candidate to the caller's OWN surface and remembers which beat
   // that was, so a later `send_beat` knows what to publish. It is deliberately NOT a display map —
@@ -600,12 +615,21 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     reconnects: 0, renderErrors: 0, opApplyFailures: 0, frameErrors: 0,
     rtt: { last: null, sum: 0, count: 0 },
   };
+  const telemetryView = () => ({
+    ops: { ...telem.ops },
+    avgFanout: telem.fanout.count ? +(telem.fanout.sum / telem.fanout.count).toFixed(2) : 0,
+    fanoutSamples: telem.fanout.count,
+    avgApplyMs: telem.applyMs.count ? +(telem.applyMs.sum / telem.applyMs.count).toFixed(3) : 0,
+    maxApplyMs: +telem.applyMs.max.toFixed(3),
+    reconnects: telem.reconnects, renderErrors: telem.renderErrors, opApplyFailures: telem.opApplyFailures, frameErrors: telem.frameErrors,
+    rtt: { last: telem.rtt.last, avg: telem.rtt.count ? +(telem.rtt.sum / telem.rtt.count).toFixed(1) : null, samples: telem.rtt.count },
+  });
   const polls = new Map();     // promptId -> {spec, votes:Map(userId->{value,userName,ts}), open}
   const acks = new Map();      // ackId -> { message, requestedAt, target, by:Map(userId->{userName,at}) } — eyes-on handshake
-// Plan 0471 M2: bound the number of distinct outstanding ackIds
+  const ACKS_MAX = 256;        // Plan 0471 M2: bound the number of distinct outstanding ackIds
   const lastResults = {};      // PRIM-results: promptId -> { userId -> {type,value} } (last beat result per user)
-// Plan 0471 M3: FIFO of promptIds for LRU eviction of lastResults
-// Plan 0471 M3: bound distinct promptIds retained
+  const lastResultsOrder = []; // Plan 0471 M3: FIFO of promptIds for LRU eviction of lastResults
+  const LAST_RESULTS_MAX = 500;// Plan 0471 M3: bound distinct promptIds retained
   const listeners = { presence: [], result: [], poll: [], transcript: [], inbox: [], turnComplete: [], barge_in: [] };
   const emit = (ev, data) => listeners[ev].forEach((cb) => { try { cb(data); } catch (e) {} });
 
@@ -1026,6 +1050,82 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
    * Returns {userId, userName, role, isGuest, capScope?, capNonce?}.
    * NEVER throws and NEVER returns a role outside KNOWN_ROLES.
    */
+  function resolveIdentity(m, capGrant, socketId, authCtx = {}) {
+    // GUEST (capability link): identity comes from the authentic token, role HARD-FORCED to
+    // participant. The client cannot widen either.
+    if (capGrant) {
+      return {
+        userId: 'guest:' + capGrant.nonce,
+        userName: capGrant.name || ('guest:' + capGrant.nonce),
+        role: 'participant',
+        isGuest: true,
+        capScope: capGrant.scope,
+        capNonce: capGrant.nonce,
+      };
+    }
+    // Plan 0514 §5 / §5.1 — SEAT PROVISIONING, BY UID. When the link carries a station selector,
+    // identity is DERIVED from the link and nothing else: userId = <stationCode>-<slug(userName)>,
+    // always, one rule, no branch. That is what makes a reload return the SAME seat (0508 D3: an
+    // anon seat minted a fresh userId on every reload and orphaned both its station and its
+    // spotlight grant).
+    //
+    // §5.1 (Bruce, S220) — the selector is an INTEGER uid looked up in the registry. Absent,
+    // non-numeric or unknown ⇒ the deployment default. There is NO string matching here: a uid
+    // cannot be misspelled into a different station, whereas `?station=damage-control` silently
+    // seated the DEFAULT station because that station's code was `dc`. The userId is derived from the RESOLVED
+    // station, so `?stationUID=999&n=Les` yields <defaultCode>-les and never a bogus seat.
+    if (m.stationUID !== undefined && !stationRegistry.isEmpty()) {
+      const askedUid = Number.isInteger(m.stationUID) ? m.stationUID : null;
+      const st = stationRegistry.get(askedUid) || stationRegistry.get(stationRegistry.defaultUid);
+      const rawName = typeof m.userName === 'string' ? m.userName : '';
+      const seatUserId = st.stationCode + '-' + slugForSeat(rawName);
+      const seatUserName = rawName.trim() ? rawName : 'NAME UNKNOWN';
+      const askedRole = m.role || 'participant';
+      if (!KNOWN_ROLES.has(askedRole)) {
+        log.warn('auth', 'role-denied', { socketId, userId: seatUserId, requested: String(askedRole), granted: 'participant', reason: 'unknown-role' });
+        return { userId: seatUserId, userName: seatUserName, role: 'participant', isGuest: false, stationUid: st.stationUid };
+      }
+      if (askedRole !== 'participant') {
+        const gated = !!(CONTROL_TOKEN || ROLE_HASH);
+        // Plan 0543 P3 — under enforceOAuth='control' the password is RETIRED for control roles; the
+        // Control-page role comes from IDENTITY only. Under 'off' the existing password gate is unchanged.
+        const controlOk = (AUTH_POLICY.enforceOAuth === 'control') ? identityGrantsControl(authCtx) : (!gated || credentialOk(m.token));
+        const gmOk = (AUTH_POLICY.enforceOAuth === 'control') ? identityGrantsControl(authCtx) : (gated && credentialOk(m.token));
+        if (CONTROL_ROLES.has(askedRole) && controlOk) return { userId: seatUserId, userName: seatUserName, role: askedRole, isGuest: false, stationUid: st.stationUid };
+        if (askedRole === 'gm' && gmOk) return { userId: seatUserId, userName: seatUserName, role: 'gm', isGuest: false, stationUid: st.stationUid };
+        log.warn('auth', 'role-denied', { socketId, userId: seatUserId, requested: String(askedRole), granted: 'participant', reason: 'bad-credential' });
+      }
+      return { userId: seatUserId, userName: seatUserName, role: 'participant', isGuest: false, stationUid: st.stationUid };
+    }
+    const userId = m.userId || ('anon-' + Math.random().toString(36).slice(2, 8));
+    const userName = m.userName || userId;
+    const asked = m.role || 'participant';
+    const deny = (reason) => {
+      log.warn('auth', 'role-denied', { socketId, userId, requested: String(asked), granted: 'participant', reason });
+      return { userId, userName, role: 'participant', isGuest: false };
+    };
+
+    if (!KNOWN_ROLES.has(asked)) return deny('unknown-role');       // closed set — no verbatim roles
+    if (asked === 'participant') return { userId, userName, role: 'participant', isGuest: false };
+
+    if (CONTROL_ROLES.has(asked)) {
+      // Plan 0543 P3 — under enforceOAuth='control' the password is RETIRED for the Control page: the
+      // role comes from IDENTITY only (loopback / verified+allowlisted). Under 'off' this is UNCHANGED.
+      if (AUTH_POLICY.enforceOAuth === 'control') {
+        return identityGrantsControl(authCtx) ? { userId, userName, role: asked, isGuest: false } : deny('control-requires-verified-identity');
+      }
+      const gated = !!(CONTROL_TOKEN || ROLE_HASH);
+      if (gated && !credentialOk(m.token)) return deny('bad-credential');
+      return { userId, userName, role: asked, isGuest: false };     // ungated ⇒ tokenless grant
+    }
+    // gm — credential required unconditionally; no credential configured ⇒ nothing to verify ⇒ deny.
+    if (AUTH_POLICY.enforceOAuth === 'control') {                    // Plan 0543 P3 — identity, not password
+      return identityGrantsControl(authCtx) ? { userId, userName, role: 'gm', isGuest: false } : deny('control-requires-verified-identity');
+    }
+    if (!(CONTROL_TOKEN || ROLE_HASH)) return deny('gm-requires-credential-none-configured');
+    if (!credentialOk(m.token)) return deny('bad-credential');
+    return { userId, userName, role: 'gm', isGuest: false };
+  }
 
   const wss = new WebSocketServer({ server: httpServer, maxPayload: MAX_PAYLOAD });
   // Plan 0471 C1: a server-level socket error (bad handshake, etc.) must never reach
@@ -1134,6 +1234,11 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   }
   // PRIM-results: forward a beat result (answer/continue) to CONTROL roles ONLY (presenter/ai),
   // mirroring pushPresence's OPSEC filter — participants must never receive a `t:'result'` frame.
+  function pushResult(r) {
+    for (const [ws, c] of conns.entries())
+      if (c.role === 'presenter' || c.role === 'ai')
+        send(ws, { t: 'result', promptId: r.promptId, userId: r.userId, userName: r.userName, type: r.type, value: r.value });
+  }
   // A short label for what a given connection is currently showing (for the user list / tiny preview).
   function displayIdFor(c) {
     const d = displayByUser.get(c.userId) || displayByRole[c.role];
@@ -1365,6 +1470,23 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
 
   // X1: converge a (re)connecting client. Replay missed ops if the requested
   // lastVersion is still covered by the retained op-log; else a full snapshot.
+  function resyncOrSnapshot(ws, c, lastVersion) {
+    const lv = (typeof lastVersion === 'number' && lastVersion >= 0) ? lastVersion : 0;
+    const log = store.oplogSince(0);
+    const earliest = log.length ? log[0].version : store.version() + 1;
+    const canReplay = lv > 0 && lv <= store.version() && lv >= earliest - 1;
+    if (canReplay) {
+      const missed = store.oplogSince(lv);
+      send(ws, { t: 'resync', from: lv, to: store.version(), count: missed.length });
+      for (const e of missed) {
+        const visible = {};
+        for (const p of Object.keys(e.diff)) if (store.perms.canRead({ role: c.role, userId: c.userId }, p)) visible[p] = e.diff[p];   // Plan 0471 C3: actor-aware read
+        if (Object.keys(visible).length) send(ws, { t: 'host', msg: { source: 'argus-host', type: 'diff', diff: visible, by: e.by, version: e.version } });
+      }
+    } else {
+      send(ws, { t: 'snapshot', state: store.snapshot({ role: c.role, userId: c.userId }).state, version: store.version() });   // Plan 0471 C3: actor-aware snapshot
+    }
+  }
 
   // Apply an op on the server's behalf (system controller by default) and broadcast
   // the resulting durable diff. Used to seed/close polls and to shim answers to ops.
@@ -1445,6 +1567,43 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
    * so the distinction is a FIELD, not a convention — and `success` is still computed by the server
    * from the total it was given, so the target comparison is never the client's opinion either.
    */
+  function doRoll(c, { spec, target = null, label = null, manualTotal = null, modifiers = null }) {
+    const parsed = parseDice(spec);
+    if (!parsed) return { ok: false, reason: 'bad-spec' };
+    const tgt = (target === null || target === undefined) ? null : Number(target);
+    if (tgt !== null && !Number.isFinite(tgt)) return { ok: false, reason: 'bad-target' };
+    let rolls = [], total, mods = [];
+    if (manualTotal !== null && manualTotal !== undefined) {
+      if (!Number.isFinite(Number(manualTotal))) return { ok: false, reason: 'bad-total' };
+      total = Number(manualTotal);
+      // ⛔ A HAND-ENTERED TOTAL GETS AN EMPTY BREAKDOWN, deliberately. The human typed the finished
+      // number; every adjustment they applied is already inside it. Listing the spec's `+2` beside it
+      // would double-count on screen and claim an arithmetic the server never performed.
+      mods = [];
+    } else {
+      for (let i = 0; i < parsed.count; i++) rolls.push(rollDie(parsed.sides));
+      // Spec modifier first (it is part of what was asked for), then any labelled ones.
+      mods = (parsed.mod ? [{ label: null, value: parsed.mod }] : []).concat(normalizeModifiers(modifiers));
+      total = rolls.reduce((a, b) => a + b, 0) + mods.reduce((a, m) => a + m.value, 0);
+    }
+    const rec = {
+      id: c.userId + '-' + Date.now() + '-' + randomInt(1e6),
+      who: c.userId, whoName: c.userName || c.userId,
+      label: (typeof label === 'string' && label.trim()) ? label.trim().slice(0, 120) : null,
+      spec: `${parsed.count}d${parsed.sides}${parsed.mod ? (parsed.mod > 0 ? '+' + parsed.mod : String(parsed.mod)) : ''}`,
+      rolls, modifiers: mods, total, target: tgt,
+      success: tgt === null ? null : total >= tgt,
+      entry: (manualTotal !== null && manualTotal !== undefined) ? 'manual' : 'rolled',
+      ts: Date.now(),
+    };
+    // Written through handleOp with a lifted role so the roll log inherits the X6 rate limit and the
+    // op-log attribution, exactly like the `/gm` aside. The sender's userId is preserved.
+    handleOp(c, { path: 'rolls/' + rec.id, verb: 'set', value: rec }, { userId: c.userId, role: 'system' });
+    // Representation 2, for humans, DERIVED from the record above.
+    for (const sock of conns.keys()) send(sock, { t: 'roll', roll: rec, line: rollLine(rec) });
+    log.info('roll', rec.entry, { who: rec.who, spec: rec.spec, total: rec.total, target: rec.target, success: rec.success });
+    return { ok: true, roll: rec };
+  }
   /** The human-readable rendering of a roll record. Derived, never authoritative. */
   function rollLine(r) {
     const dice = r.entry === 'manual' ? '(entered by hand)' : '[' + r.rolls.join(' ') + ']';
@@ -1460,6 +1619,16 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
    * `/roll <spec> [target] [= total] [label…]` — the human affordance, routed into the SAME doRoll.
    * It rides the chat input that is already on screen, so dice cost zero new chrome.
    */
+  function parseRollCommand(rest) {
+    const toks = String(rest || '').trim().split(/\s+/).filter(Boolean);
+    if (!toks.length) return null;
+    const out = { spec: toks.shift(), target: null, manualTotal: null, label: null };
+    if (toks.length && /^-?\d+$/.test(toks[0])) out.target = Number(toks.shift());
+    if (toks.length && toks[0] === '=') { toks.shift(); if (toks.length && /^-?\d+$/.test(toks[0])) out.manualTotal = Number(toks.shift()); else return null; }
+    else if (toks.length && /^=-?\d+$/.test(toks[0])) out.manualTotal = Number(toks.shift().slice(1));
+    if (toks.length) out.label = toks.join(' ');
+    return out;
+  }
 
   function serverApply(op, actor) {
     const res = store.apply(op, actor || { userId: 'server', role: 'system' });
@@ -1469,6 +1638,117 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
 
   // P1: presenter control-message handler — the SAME server API the AI/MCP drives.
   // Presenter/ai only (server-authoritative role, S1/S2); others are ignored.
+  function handleControl(c, m, ws) {
+    // ── Plan 0522 P14 — `set_station` IS DISPATCHED BEFORE THE BLANKET ROLE CHECK, DELIBERATELY ──
+    // It is this batch's one privilege escalation, and its gate lives in exactly ONE place:
+    // `api.stationSet`, which this frame and the MCP tool both funnel through. Checking the role
+    // here as well would put the decision in two places — and the surface that was checked here
+    // would then be gated by a rule the MCP surface never runs, which is the I1 (surface parity)
+    // failure this phase exists to prevent. It also lets the refusal carry a REASON back to the
+    // caller (I5): the blanket drop below answers nothing at all, and a refusal that says nothing
+    // is indistinguishable from a refusal that never happened.
+    if (m.action === 'set_station') {
+      const sa = m.args || {};
+      const r = api.stationSet(sa.userId, sa.stationUid, c);
+      send(ws, Object.assign({ t: 'station-set' }, r));
+      log.info('control', 'set_station', { socketId: c.id, role: c.role, ok: r.ok, reason: r.reason || null });
+      return;
+    }
+    if (c.role !== 'presenter' && c.role !== 'ai') { log.warn('control', 'denied', { socketId: c.id, role: c.role }); return; }
+    const a = m.args || {};
+    switch (m.action) {
+      // PRIM-mirror (MON-2): render the TARGET user's current display in the target's
+      // OWN context, then PUSH it back to THIS requesting control client (fire-and-forget,
+      // not a reply). Lets the GM thumbnail "what that user sees". OPSEC: role-gated above.
+      // Plan 0522 P5 — mirror answers for ANY target the unified selector can hold, not only a
+      // userId: `{target:'station:3'}` renders what somebody sitting at that station is really
+      // being shown. `{userId:…}` still works and is still echoed back verbatim — MON-2's client
+      // and PRIM-mirror both address it that way, and an unknown/absent target still answers
+      // html:null rather than inventing a plausible screen.
+      case 'mirror': {
+        const tgt = a.target != null ? String(a.target) : (a.userId != null ? String(a.userId) : null);
+        const tc = liveConnForTarget(tgt);   // A4: one representative socket — mirror returns ONE html
+        const desc = (tc && (displayByUser.get(tc.userId) || displayByRole[tc.role])) || null;
+        const html = (desc && tc) ? descToHtml(tc, desc) : null;
+        // Plan 0522 P14 — SAY WHICH SOCKET ANSWERED. P3 collapsed the roster to one row per
+        // PERSON, so a contested seat (two live sockets, one derived identity) is one row with
+        // two clients behind it, and `liveConnForTarget` silently picks the latest. Mirror is the
+        // one row action that is inherently SOCKET-scoped (A4: it returns ONE html), so it now
+        // reports the socketId it actually rendered rather than leaving the operator to assume.
+        send(ws, { t: 'mirror', target: tgt, userId: a.userId != null ? a.userId : (tc ? tc.userId : null), socketId: tc ? tc.id : null, html });
+        break;
+      }
+      // Plan 0522 P14 — SPOTLIGHT from the roster row. api.spotlight has existed since 0508 with
+      // no button on any human surface: the grant was reachable only from MCP, so a GM without an
+      // AI in the loop could not let a player share their station at all. IDENTITY-scoped by
+      // construction — the grant set is keyed by userId — so it reaches every socket that identity
+      // holds, which is the correct behaviour for a capability that belongs to a person.
+      case 'spotlight': send(ws, Object.assign({ t: 'spotlight' }, api.spotlight(a.userId, a.granted !== false))); break;
+      // Plan 0522 P15 — ▣ project a station's screen to the room. CONTROLLER-ONLY by
+      // construction: every case in this switch is already past the role gate above, and unlike
+      // `set_station` (which is reachable from MCP with an arbitrary userId and therefore needs
+      // its own gate inside api.stationSet) this capability exists on exactly one surface.
+      // TRANSIENT: it writes no seat — see projectStation's header for why that is load-bearing.
+      case 'project_station':
+        send(ws, Object.assign({ t: 'station-project' }, projectStation(a.stationUid, a.targets)));
+        break;
+      // Bell as a control: playable from the control page (🔔) and the verify-watching
+      // path (👁 = bell + requireAck) via the SAME api.chime method the MCP tools drive.
+      case 'bell': api.chime(a); break;
+      case 'push_component': api.pushComponent(a.target || 'all', a.component, a.opts || {}, a.theme || 'argus', a.requires || []); break;
+      case 'open_poll': api.openPoll(a); break;
+      case 'close_poll': api.closePoll(a.promptId); break;
+      case 'reload_clients': api.reloadClients(a.target || 'all', a.delay || 0); break;
+      case 'clear': dropStaging(c); api.clear(a.target || 'all'); break;   // route through api.clear so display descriptor is also reset (reconnect → branding)
+      // MON-1: drop a user's per-user override so they follow their ROLE/default display
+      // again (or branding if the role has none). DISTINCT from clear(): clear BLANKS to
+      // branding; reset_user RETARGETS to the role display. Role-gated above.
+      case 'reset_user': {
+        const uid = a.userId;
+        displayByUser.delete(uid);
+        // A4: retarget EVERY socket this person holds — resetting only one leaves the other stale.
+        for (const tws of socketsFor(uid)) {
+          const tc = conns.get(tws);
+          if (!tc) continue;
+          const desc = displayByRole[tc.role];
+          if (desc) renderDisplay(tws, tc, desc); else send(tws, { t: 'clear' });
+        }
+        pushPresence();
+        break;
+      }
+      case 'op': handleOp(c, { path: a.path, verb: a.verb, value: a.value, opId: a.opId }); break;   // drive an op as the presenter
+      // ATT (Plan 0466, decision 1): presenter toggles whether attendees may see the roster.
+      case 'set_roster_visible': rosterVisibleToAttendees = !!a.value; log.info('att', 'roster-visible', { value: rosterVisibleToAttendees }); break;
+      case 'voice_enable': api.voiceEnable(a.target || 'all'); break;   // Plan 0470: request inbound voice on a target
+      case 'set_module': api.setModule(a.module || { beats: a.beats || [] }); break;   // Group I
+      case 'show_beat': dropStaging(c); api.showBeat(a.id != null ? a.id : (a.index | 0)); break;   // by id (branch nav) or index — R4: PUBLISHES, unchanged
+      // Plan 0522 P4 (R4) — two-stage delivery. STAGE renders a candidate to THIS controller's
+      // own surface (per-caller: keyed by socket, so a second controller is untouched — t09) and
+      // writes nothing durable (t07). SEND publishes it and ACKS with the recipient count, so
+      // "sent to 0 recipients" cannot be silent (I5). Both ack; the UI lands in P5/P6.
+      case 'stage_beat': {
+        const ref = a.id != null ? a.id : (a.index != null ? (a.index | 0) : null);
+        // P5: the SAME `targets` array the send will carry. One control, one target — a candidate
+        // is previewed as the audience it is about to reach, never as the presenter (t11).
+        send(ws, Object.assign({ t: 'staged' }, api.stageBeat(ref, { key: callerKey(c), ws, conn: c, targets: a.targets })));
+        break;
+      }
+      case 'send_beat':
+        send(ws, Object.assign({ t: 'sent' }, api.sendBeat({ targets: a.targets, id: a.id, index: a.index }, { key: callerKey(c) })));
+        break;
+      // Plan 0522 P6 — a controller that PUBLISHES something else disarms its own staged
+      // candidate. Without this the server slot stays armed while the page has moved on, and
+      // `stagedBeat()` reports a candidate the operator no longer believes in — the same
+      // instrument-lying-about-state failure the indicator exists to remove.
+      case 'show_default': dropStaging(c); api.showDefault(); break;   // DEF-1: Home → module title page (or branding fallback)
+      case 'next_beat': dropStaging(c); api.nextBeat(); break;
+      case 'prev_beat': dropStaging(c); api.prevBeat(); break;
+      case 'append_beat': api.appendBeat(a.beat || { component: a.component, opts: a.opts, requires: a.requires }); break;   // compose (I2) + AI co-author (I3)
+      case 'load_module': api.loadModule(a.module); break;   // I4
+      default: log.warn('control', 'unknown-action', { action: m.action });
+    }
+    log.info('control', m.action, { socketId: c.id });
+  }
 
   function broadcastDiff(diff, meta) {
     let recipients = 0;
@@ -1529,6 +1809,21 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   }
 
   // ---- Current-display tracking + per-connection render (C6) ----
+  const ROLES = ['participant', 'presenter', 'ai'];
+  function setDisplay(target, desc) {
+    // Plan 0522 P5 — a STATION target resolves to THE PEOPLE SEATED THERE, not to a key named
+    // after the station. Writing `displayByUser.set('station:3', …)` would have created a durable
+    // row that no connection ever reads, would have shown up in the roster's "sees" column and in
+    // the I3 snapshot, and would have survived everyone leaving. Resolving to occupants makes a
+    // station push exactly a per-user push to each of them (so a reconnect still works), leaves no
+    // residue when the station is empty, and never touches SEAT state — 0514 §13.1 / I3.
+    const stUid = stationTargetUid(target);
+    if (target === 'all' || target == null) { for (const r of ROLES) displayByRole[r] = desc; displayByUser.clear(); }
+    else if (ROLES.includes(target)) displayByRole[target] = desc;
+    else if (stUid != null) { for (const uid of usersAtStation(stUid)) displayByUser.set(uid, desc); }
+    else displayByUser.set(target, desc);   // by userId
+    pushPresence();   // keep the GM user-list "currently sees" column live as displays change
+  }
   // Stamp identity + apply the OPSEC scene strip via the PERMISSION MODEL (G2):
   // an item is included only if this role may READ its visibility. The scene
   // component keeps a thin client-side filter as defense-in-depth.
@@ -1625,6 +1920,13 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // unchanged — same routing, same layers, same module/current write, same return shape.
 
   /** A beat ref is an INDEX (number) or a beat ID (anything else). → {i, beat} | null. */
+  function resolveBeatRef(ref) {
+    if (!contentModule) return null;
+    const beats = contentModule.beats || [];
+    const i = typeof ref === 'number' ? ref : beats.findIndex((b) => b.id === ref);
+    if (!(i >= 0) || i >= beats.length) return null;
+    return { i, beat: beats[i] };
+  }
 
   /**
    * The descriptor a beat WOULD publish — PURE. Reads the beat, writes nothing, touches no
@@ -1633,6 +1935,10 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
    * Layers are deliberately NOT folded in: a layer is a per-target override, and a preview is
    * rendered for one viewer at a time (the target-aware preview is P5's job).
    */
+  function beatDescriptor(b) {
+    const opts = (b.promptId != null) ? Object.assign({}, b.opts || {}, { promptId: b.promptId }) : (b.opts || {});
+    return { kind: 'component', component: b.component, opts, theme: b.theme || 'argus', requires: b.requires || [] };
+  }
 
   /**
    * PUBLISH beat `i`. `targetList` null/empty ⇒ the beat's OWN declared routing (`b.target`,
@@ -1643,6 +1949,43 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
    * reached. Counted as a SET of the sockets addressed, so a base push plus a layer push to the
    * same person is one recipient, and a target with no occupant is honestly 0.
    */
+  function publishBeat(i, targetList) {
+    const b = contentModule.beats[i];
+    const explicit = Array.isArray(targetList) && targetList.length ? targetList : null;
+    const bases = explicit || [b.target || 'all'];
+    // `reached` is filled by pushComponent with the sockets it genuinely wrote to. It was
+    // previously filled by re-running targets() alongside the push, which counted the ADDRESS
+    // BOOK rather than the deliveries — see send()/pushComponent.
+    const reached = new Set();
+    // Route by the beat's target (per-user hooks broadcast to 'all' by default) and ensure promptId
+    // reaches opts so interactive beats can actually collect/gate answers.
+    const opts = (b.promptId != null) ? Object.assign({}, b.opts || {}, { promptId: b.promptId }) : (b.opts || {});
+    for (const t of bases) { api.pushComponent(t, b.component, opts, b.theme || 'argus', b.requires || [], reached); }
+    const addressed = new Set(reached);   // the BASE audience, frozen before layers widen `reached`
+    // DEL-1: per-user layers. A layer with a `target` OVERRIDES the base opts for that
+    // user/role (layer opts win). `when`-only layers are runner-evaluated — out of scope here.
+    // Base goes to all; layered targets additionally receive the merged override (last-wins).
+    // With an EXPLICIT target list, a layer for someone who is not being addressed is skipped —
+    // sending to one station must not push to a third party.
+    //
+    // ⚠ Plan 0522 P5 — INTERSECT AUDIENCES, DO NOT COMPARE TARGET STRINGS. P4 skipped a layer
+    // unless `explicit` literally contained `L.target`, which was right for the one case it had.
+    // P5 makes explicit targets the ordinary path, and string equality then DROPS a layer whose
+    // target names the same people by another name — a userId layer on a send to that person's
+    // STATION, or on a send addressed to a role. A dropped layer is a beat that silently arrives
+    // without its personalisation (I4). Sets of sockets say who is really being addressed.
+    if (Array.isArray(b.layers)) for (const L of b.layers) {
+      if (!L || !L.target) continue;
+      if (explicit && !targets(L.target).some((lws) => addressed.has(lws))) continue;
+      const lopts = Object.assign({}, b.opts || {}, L.opts || {}, (b.promptId != null) ? { promptId: b.promptId } : {});
+      api.pushComponent(L.target, b.component, lopts, b.theme || 'argus', b.requires || [], reached);
+    }
+    currentBeat = i;
+    serverApply({ path: 'module/current', verb: 'set', value: i });
+    const people = new Set();
+    for (const ws of reached) { const c = conns.get(ws); if (c && c.userId) people.add(c.userId); }
+    return { sockets: reached.size, recipients: people.size, targets: bases.slice() };
+  }
 
   /**
    * The staging key for a control connection. Per SOCKET, not per userId: two control pages open
@@ -1666,6 +2009,13 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
    * to what clicking a beat has always done, including its per-user layers and its `target:` field.
    * Anything else is an explicit override that NARROWS the audience.
    */
+  function normalizeTargets(t) {
+    if (t == null) return null;
+    const list = (Array.isArray(t) ? t : [t]).filter((x) => x != null && x !== '').map(String);
+    if (!list.length) return null;
+    if (list.every((x) => x === 'all')) return null;
+    return list;
+  }
 
   /**
    * Plan 0522 P5 — the LIVE connection a target names, or null. Used for previewing: the preview
@@ -1687,6 +2037,15 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
    * SYNTHETIC viewer when nobody holds the target, carrying role `participant`: the conservative
    * role, so the OPSEC visibility strip can only ever remove more from a preview, never less.
    */
+  function viewerForTarget(target) {
+    if (target == null || target === 'all') return null;   // ⇒ render as the caller: the unchanged default
+    const live = liveConnForTarget(target);
+    if (live) return live;
+    const stUid = stationTargetUid(target);
+    if (stUid != null) { const st = stationRegistry.get(stUid); return { userId: null, userName: (st && st.stationLabel) || target, role: 'participant' }; }
+    if (ROLES.includes(target)) return { userId: null, userName: target, role: target };
+    return { userId: target, userName: target, role: 'participant' };
+  }
 
   // ── Plan 0514 — STATIONS ─────────────────────────────────────────────────────────────────
   // DIVISION OF LABOUR (§13.2), and it is the whole point of the plan: core relays the registry
@@ -1702,7 +2061,9 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // to nobody else; a participant reaches core only over the wire, where the actor is their own
   // connection. So a direct `api.stationSet(a, b)` is a CONTROL call by construction, and saying
   // so explicitly is what lets the same gate serve both surfaces without a second rule.
+  const API_ACTOR = Object.freeze({ userId: 'api', role: 'ai', principal: 'in-process' });
   /** True only for a control role (presenter/ai). Anything else — including absent — is refused. */
+  function isControllerActor(actor) { return !!actor && CONTROL_ROLES.has(actor.role); }
 
   /** Ask the plugin what this seat holds. Cheap + synchronous by contract; never cached here. */
   function seatStation(userId) {
@@ -1905,6 +2266,14 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
    * peek is simply overwritten. That is 0526 P4's declared precedence, and it costs no code
    * because there is no peek STATE to give precedence to.
    */
+  function peekTo(ws, c, surfaceUid) {
+    const r = resolveSurface(surfaceUid, c);
+    if (!r.ok) return r;
+    renderDisplay(ws, c, r.descriptor);
+    c.lastActive = Date.now();
+    log.info('surface', 'peeked', { userId: c.userId, surfaceUid: r.surfaceUid });
+    return r;
+  }
 
   /**
    * ── Plan 0526 P4 — UNPEEK: go back to the room ─────────────────────────────────────────────
@@ -1921,6 +2290,12 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
    * `restored:false` means the room has nothing on this viewer's screen (no beat, no branding) —
    * an honest answer, not a silent no-op.
    */
+  function unpeekTo(ws, c) {
+    const desc = redisplayFor(ws, c);
+    c.lastActive = Date.now();
+    log.info('surface', 'unpeeked', { userId: c.userId, restored: !!desc });
+    return { ok: true, unpeeked: true, restored: !!desc };
+  }
 
   /**
    * Plan 0514 §4.2 — load each plugin's optional server module and hand it the NEUTRAL
@@ -1998,6 +2373,25 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // D2: shim a component 'answer' into a store op. Poll answers -> a per-user vote
   // slice (perm: self); other answers -> answers/{pid}/{self}. Close guard (D4):
   // votes into a closed poll are dropped.
+  function shimAnswer(c, r) {
+    if (r.type !== 'answer' || r.promptId == null) return;
+    const pid = r.promptId;
+    const poll = polls.get(pid);
+    if (poll) {
+      if (!poll.open) return;   // closed -> denied
+      const res = serverApply({ path: 'polls/' + pid + '/votes/' + c.userId, verb: 'set', value: r.value }, { userId: c.userId, role: c.role });
+      if (res && res.diff) {
+        emit('poll', { type: 'update', promptId: pid, ...tally(pid) });   // controllers (presenter/ai) get raw vote diffs (override) → live poll-results
+        // Plan 0471 D1: raw per-user votes are ALWAYS controller-only (C3 default-deny). The
+        // AGGREGATE tally is what resultsMode governs. 'all' (public) → publish counts-only to a
+        // readable slice so EVERYONE gets the aggregate (never per-user rows). 'control' (default,
+        // private) → skip it; only controllers see the tally.
+        if (poll.resultsMode === 'all') { const t = tally(pid); serverApply({ path: 'polls/' + pid + '/results', verb: 'set', value: { tally: t.tally, count: t.count } }); }
+      }
+    } else {
+      serverApply({ path: 'answers/' + pid + '/' + c.userId, verb: 'set', value: r.value }, { userId: c.userId, role: c.role });
+    }
+  }
 
   function tally(promptId) {
     const poll = polls.get(promptId); if (!poll) return { tally: {}, count: 0 };
@@ -2040,10 +2434,10 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // explicit presenter_pvs_stop. State lives here (in-process) because a server restart ENDS the PVS
   // (the in-memory delivery cursor need not outlive the process), and because the comms MODE must be
   // stamped onto every delivered envelope (§6) — so the server, not the agent, is its authority.
-// §6 — closed set, keyed on Bruce's attention
+  const PVS_MODES = new Set(['pocket', 'presenter', 'terminal']);   // §6 — closed set, keyed on Bruce's attention
   const PVS_DEFAULT_MODE = 'presenter';                             // §6/§8 — "assume I am looking at Presenter"
   let commsMode = PVS_DEFAULT_MODE;                                 // Phase B — the outbound channel-mix knob
-// null = no PVS open; else { open, consumer, openedAt, session }
+  let pvs = null;   // null = no PVS open; else { open, consumer, openedAt, session }
   // Namespace the PVS delivery cursor (R2) so a watcher and a manual presenter_transcript read can NEVER
   // consume each other's turns. The consumer id is sanitized to a bounded, injection-free key.
   function pvsConsumerKey(consumer) { return 'pvs:' + String(consumer || 'default').replace(/[^\w.-]/g, '').slice(0, 64); }
@@ -2076,6 +2470,11 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   const ECHO_WINDOW_MS = 12000;                 // a loopback is re-heard within a few seconds of speaking
   const recentSpeak = [];                       // { norm, ts } — bounded ring of recently-spoken payloads
   const normText = (t) => String(t == null ? '' : t).toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  function recordSpeak(text) {
+    const norm = normText(text); if (!norm) return;
+    recentSpeak.push({ norm, ts: Date.now() });
+    while (recentSpeak.length > 20) recentSpeak.shift();
+  }
   function wordJaccard(a, b) {
     const A = new Set(a.split(' ')), B = new Set(b.split(' '));
     if (!A.size || !B.size) return 0;
@@ -2312,6 +2711,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // emitOwnTurn (the agent began speaking) and can be set/cleared explicitly via api.setSpeaking — the
   // seam Plan 0469 drives from real TTS start/stop.
   let speaking = false;
+  function setSpeaking(on) { speaking = on === true; log.info('barge', 'speaking', { speaking }); return speaking; }
   // BARGE-IN. A user speaking WHILE the agent is speaking is an interruption: signal the speaker(s) to
   // DUCK/STOP the TTS (the actual audio duck is the Plan-0469 client seam — here we just emit the cue),
   // CLEAR speaking-state, and let the interrupting speech be recorded as an inbound turn independently
@@ -2395,6 +2795,35 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     v.timer = setTimeout(() => { log.warn('voice', 'seg-timeout', { socketId: c.id, seq: v.seq }); voiceSegFinalize(c, ws, {}); }, segTimeoutMs);
     v.timer.unref?.();
   }
+  function voiceSegStart(c, ws, m) {
+    if (!c) return;
+    // Plan 0472 P4: a GUEST may open a voice segment ONLY if its capability scope includes 'speak'
+    // (token-signed; not client-widenable). Surface the refusal (never silent). Non-guests unaffected.
+    if (c.isGuest && !(c.capScope || []).includes('speak')) { log.warn('cap', 'speak-out-of-scope', { socketId: c.id }); send(ws, { t: 'voice_rejected', reason: 'not permitted' }); return; }
+    // Plan 0473 P6 — PROACTIVE floor gate: under HOLD (overload) refuse a NEW segment AT THE SOURCE and
+    // tell the speaker to hold, instead of accepting audio only to shed it downstream. No-op when the
+    // floor is disabled (solo wearable) — so existing single-speaker voice behaviour is unchanged.
+    if (floorGated()) { log.info('floor', 'gated-seg-start', { socketId: c.id, userId: c.userId }); send(ws, { t: 'floor', state: 'hold', gated: true }); return; }
+    if (!c.voice) c.voice = { active: false, seq: 0, chunks: [], bytes: 0, startedAt: 0, timer: null, tokens: VOICE_TB_CAPACITY, lastRefill: Date.now() };
+    const v = c.voice;
+    if (v.active) { if (v.timer) clearTimeout(v.timer); v.active = false; voiceSessions = Math.max(0, voiceSessions - 1); v.chunks = []; v.bytes = 0; }   // drop a stray-open prior segment
+    if (voiceSessions >= VOICE_MAX_SESSIONS) {   // RT-22: reject over cap, with a surfaced reason
+      log.warn('voice', 'sessions-cap', { socketId: c.id, cap: VOICE_MAX_SESSIONS });
+      send(ws, { t: 'voice_rejected', reason: 'server voice capacity reached' });
+      return;
+    }
+    ensureAsr();   // RT-25: warm the recognizer now, so the first utterance doesn't eat the model load
+    v.active = true; v.seq = (typeof m.seq === 'number' ? m.seq : v.seq + 1); v.chunks = []; v.bytes = 0; v.startedAt = Date.now();
+    v.tokens = VOICE_TB_CAPACITY; v.lastRefill = Date.now();   // F1: full-capacity bucket per segment
+    voiceSessions++;
+    voiceArmTimeout(c, ws);
+    evaluateFloor();   // Plan 0473 P6: a new active speaker changes the load — reassess the floor
+    // Plan 0473 P13: BARGE-IN at the SOURCE — a user OPENING a voice segment while the agent's TTS reply
+    // is playing is an interruption. Fire the duck/stop cue + clear speaking now (before the utterance is
+    // even transcribed); the segment proceeds to capture, so the interrupting speech is still recorded.
+    maybeBargeIn({ userId: c.userId, userName: c.userName, role: c.role, seq: null }, false);
+    log.info('voice', 'seg-start', { socketId: c.id, userId: c.userId, seq: v.seq, sessions: voiceSessions });
+  }
   // Binary PCM frame from a conn. IGNORED unless that conn has an active voice session (RT-7);
   // byte-rate capped; force-cut past the segment length cap (RT-8). NEVER JSON-parsed.
   function handleVoiceBinary(c, ws, buf) {
@@ -2447,22 +2876,130 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // length — a 10k-turn session must NOT return full history (the inbox ring is already capped at
   // TRANSCRIPT_RING, and we additionally cap recent-turns to N, roster to a max, and per-turn text).
   const RECENT_TURNS_N = 20;          // bounded recent-turns window surfaced in the situation digest
-// roster is bounded too (present + recently-active)
-// per-turn verbatim text is capped so one mega-turn can't blow the cap
+  const SITUATION_ROSTER_MAX = 40;    // roster is bounded too (present + recently-active)
+  const MAX_TURN_TEXT = 2000;         // per-turn verbatim text is capped so one mega-turn can't blow the cap
   // Server-held per-consumer cursor: consumerId -> last inboxSeq that consumer has been shown. The
   // CONSUMER never passes a cursor — the server tracks each consumer's last-read position, keyed by
   // its connection/session identity (the MCP tool keys by the stdio connection; tests key explicitly).
   const situationCursors = new Map();
   // Group the (bounded) inbox ring into coalesced TURNS (consecutive items sharing a turnId), newest
   // last, verbatim; return the last `n`. Per-turn text is length-capped (bounded-in-the-large).
+  function coalesceTurns(items, n = RECENT_TURNS_N) {
+    const turns = [];
+    let cur = null;
+    for (const it of items) {
+      if (cur && cur.turnId === it.turnId && it.turnId != null) {
+        cur.text = (cur.text + (it.text ? (cur.text ? ' ' : '') + it.text : '')).slice(0, MAX_TURN_TEXT);
+        cur.count++; cur.lastSeq = it.seq; cur.ts = it.ts;
+        cur.turnComplete = it.turnComplete === true; cur.kind = it.kind;
+      } else {
+        cur = {
+          turnId: it.turnId || null, userId: it.userId, userName: it.userName, role: it.role || null,
+          // Plan 0473 P9: a turn's trust is its speaker's — and a turn NEVER merges identities (a
+          // speaker-change closes the turn), so every item in a turn shares one trust level.
+          trust: it.trust, kind: it.kind, text: (it.text || '').slice(0, MAX_TURN_TEXT), count: 1,
+          firstSeq: it.seq, lastSeq: it.seq, ts: it.ts, turnComplete: it.turnComplete === true,
+        };
+        turns.push(cur);
+      }
+    }
+    return turns.slice(-n);
+  }
   // A compact, bounded view of the current per-role display (what each broadcast role is showing now).
+  function displaySummary() {
+    const out = {};
+    for (const r of ROLES) {
+      const d = displayByRole[r];
+      out[r] = d ? (d.kind === 'component' ? ((d.opts && d.opts.promptId) || d.component)
+        : (d.contentId || d.kind)) : 'idle';
+    }
+    return out;
+  }
   // The current beat, if a content module has one shown (currentBeat >= 0); else the module summary; null.
+  function beatSummary() {
+    if (!contentModule) return null;
+    const total = (contentModule.beats || []).length;
+    const b = (currentBeat >= 0) ? contentModule.beats[currentBeat] : null;
+    return b ? { index: currentBeat, total, component: b.component, id: b.id != null ? b.id : null, title: contentModule.title }
+      : { index: currentBeat, total, title: contentModule.title };
+  }
   // Plan 0529 P1 — the rolling summary, served as DELIMITED DATA. `speakers[].userName` is the one
   // participant-authored string the summarizer keeps structurally (the rest is folded into `text`), so
   // it is neutralized here before the whole snapshot is annotated at PARTICIPANT trust. The annotation
   // is additive: turnsSummarized / sheddedFolded / speakers / text keep their shapes, and `text` gains
   // the guarantee it never had — it cannot carry a live closing marker.
+  function fencedSummary() {
+    const v = summarizer.view();
+    const speakers = (v.speakers || []).map((sp) => sanitizeFields(sp, ['userName']));
+    return annotateTrust({ ...v, speakers }, TRUST.PARTICIPANT);
+  }
   // Assemble the BOUNDED working set for `consumerId`, advancing that consumer's server-held cursor.
+  function buildSituation(consumerId, recentN = RECENT_TURNS_N) {
+    const last = situationCursors.get(consumerId) || 0;
+    const since = inbox.filter((i) => i.seq > last);   // bounded: the ring is capped at TRANSCRIPT_RING
+    // Plan 0493 R3 — a lost turn must be LOUD. If the oldest undelivered item's seq skips past last+1,
+    // the items last+1..firstSeq-1 aged out of the ring before THIS consumer ever saw them (or the
+    // consumer was armed past them). Surface a visible "⚠ N turns missed" marker — never a silent gap.
+    let missed = 0;
+    if (since.length && since[0].seq > last + 1) missed = since[0].seq - last - 1;
+    situationCursors.set(consumerId, inboxSeq);         // advance the cursor to everything now shown
+    evaluateFloor();   // Plan 0473 P6: this read caught the consumer up (backlog reduced) — reassess the floor
+    const att = api.attendance({ viewerRole: 'ai' });
+    const openPolls = [...polls.entries()].filter(([, p]) => p.open)
+      .map(([id, p]) => ({ promptId: id, prompt: p.spec && p.spec.prompt, open: true, ...tally(id) }));
+    // Plan 0473 P9: DELIMIT-AS-DATA at serve time — participant/guest turns are fenced (untrusted
+    // content the agent must treat as data, never as commands); self/controller turns pass through.
+    // Plan 0493 E1 — echo loopbacks are never surfaced as turns (poll path); the ws path skips them too.
+    const recentTurns = coalesceTurns(inbox.filter((i) => i.echo !== true), recentN).map((t) => annotateTrust(t, t.trust));
+    // Plan 0473 P4: the WORK QUEUE — judgment items, prioritized + bounded (aged/expired pruned).
+    const queue = queueView();
+    return {
+      sessionId: SESSION_ID,
+      profile: ACTIVE_PROFILE.name,
+      bounded: true,
+      situation: {
+        display: displaySummary(),
+        beat: beatSummary(),
+        polls: openPolls,
+        roster: att.roster.slice(0, SITUATION_ROSTER_MAX),
+        rosterSummary: att.summary,
+        // Plan 0473 P5/P10: the profile-specific DIGEST section (F-5), assembled by the DIGEST-CONTENT
+        // SEAM keyed on the ACTIVE PROFILE's `digestContent` knob VALUE (DATA lookup, never a name
+        // fork). wearable ('conversation') ⇒ null (the digest IS the conversation); rpg ('gm') ⇒ a GM
+        // view (questions-to-GM + recent actions) + the mcp-gm scene/initiative/dice seam. The seam
+        // reads ONLY the already-assembled, already-fenced pieces below — it never blocks/recomputes.
+        digest: buildDigest(ACTIVE_PROFILE.digestContent, { queue, recentTurns }),
+      },
+      recentTurns,
+      // Plan 0493 §6 — the comms MODE is carried on every delivered envelope so each poll tells the
+      // agent how to answer (advisory to the agent; the server never enforces it).
+      mode: commsMode,
+      newSinceLastRead: {
+        count: since.length,
+        // Plan 0493 E1 — an echo loopback advances the cursor (so it never re-delivers) but is NOT
+        // surfaced as a Bruce turn: filter it out of the delivered set.
+        turns: coalesceTurns(since.filter((i) => i.echo !== true), recentN).map((t) => annotateTrust(t, t.trust)),
+        // Plan 0493 R3 — the gap marker travels WITH the delivery. missed>0 ⇒ N turns were lost.
+        missed,
+        ...(missed > 0 ? { missedMarker: '⚠ ' + missed + ' turns missed' } : {}),
+      },
+      // Plan 0473 P7: the ROLLING SUMMARY — continuity for context OLDER than the recent-N turns.
+      // A PRECOMPUTED, BOUNDED snapshot (this is a pure read of the incrementally-maintained state via
+      // the F-10 seam — it NEVER blocks/computes on read), so a long session is not amnesiac past N.
+      // Plan 0529 P1: served FENCED, like recentTurns above. A summary is a FLATTENED MIXTURE of many
+      // speakers' words with the per-speaker trust boundary already dissolved — untrusted BY
+      // CONSTRUCTION — so it carries the label even though stageSettledTurn already neutralized it.
+      summary: fencedSummary(),
+      // Plan 0473 P4: the WORK QUEUE — the judgment items, prioritized + bounded (aged/expired pruned).
+      queue,
+      // Plan 0473 P6: one-glance overload awareness. `floor` = the current proactive floor state
+      // (go/wrap/hold); `backpressure.sheddedCount` = the reactive fold-to-summary total, SURFACED so a
+      // shed is never silent (the LAST resort, secondary to the floor).
+      floor: effectiveFloor(),
+      backpressure: { sheddedCount, floor: effectiveFloor() },
+      cursor: inboxSeq,   // informational only — the consumer does NOT need to pass this back
+    };
+  }
 
   // ---- Plan 0473 P4: WORK QUEUE (the judgment items in the working set) ----
   // Work items are DERIVED from completed TURNS (P2) by a CHEAP rule (NO ML): a settled turn becomes a
@@ -2472,7 +3009,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // working set. The SERVER tracks each item's status/owner — the consuming agent holds NOTHING.
   const PRIORITY_DIRECTED = 2;      // a question/request — needs the agent's judgment now
   const PRIORITY_AMBIENT = 1;       // a statement / ambient chatter
-// pushed to the back by presenter_defer
+  const PRIORITY_DEFERRED = 0;      // pushed to the back by presenter_defer
   const QUEUE_TEXT_MAX = 500;       // per-item verbatim text cap (bounded-in-the-large)
   const DEFAULT_QUEUE_MAX = 50;     // fallback bound when a profile sets no maxPending
   const DEFAULT_QUEUE_TTL_MS = 10 * 60 * 1000;   // pending items expire after this by default (bounded)
@@ -2599,6 +3136,13 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   }
   // Age out stale PENDING items (claimed items are being handled ⇒ exempt) — lazy, called on every read
   // + mutation, so the queue never grows unbounded even with no reader running.
+  function expireStale() {
+    const { ttlMs } = queueKnobs();
+    const now = Date.now();
+    for (const it of workItemsMap.values()) {
+      if (it.status === 'pending' && (now - it.createdTs) > ttlMs) { it.status = 'expired'; it.expiredTs = now; }
+    }
+  }
   // Keep the number of PENDING items <= maxPending: shed the LOWEST-priority, then OLDEST, first — so a
   // high-priority question is NEVER crowded out by heavy ambient. Claimed items don't count against the bound.
   function enforceQueueBounds() {
@@ -2625,8 +3169,35 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     for (let i = 0; i < terminal.length - RESOLVED_KEEP; i++) workItemsMap.delete(terminal[i].id);
   }
   // Stamp the dynamic `age` (ms since created) at serve time; return a bounded, plain item view.
+  function itemView(it) {
+    const v = { id: it.id, turnId: it.turnId, userId: it.userId, userName: it.userName, text: it.text,
+      priority: it.priority, status: it.status, createdTs: it.createdTs, age: Date.now() - it.createdTs };
+    if (it.owner) v.owner = it.owner;
+    if (it.note != null) v.note = it.note;
+    // Plan 0473 P11 (F-6): a CLUSTERED item carries how many students asked the same thing + the askers,
+    // so the queue stays glanceable ("N students asked about X") instead of N rows. Additive; a singleton
+    // item omits these (a plain 1-asker question).
+    if (it.cluster) {
+      v.cluster = true;
+      v.count = it.count || 1;
+      // Plan 0529 P1: `askers` are participant identities and `variants` are VERBATIM participant
+      // utterances — a second copy of exactly the content the fence exists for, on a nested field
+      // that annotateTrust below only reaches at the top level. Neutralized here.
+      v.askers = (it.askers || []).slice(0, 50).map((a) => sanitizeFields(a, ['userId', 'userName']));
+      if (it.variants) v.variants = it.variants.slice(0, 50).map((x) => (typeof x === 'string' ? sanitizeUntrusted(x) : x));
+    }
+    // Plan 0473 P9: delimit-as-data — fence the item's text when its speaker is untrusted (participant/
+    // guest), flag guests. Additive to the item shape; a self/controller item passes through unfenced.
+    return annotateTrust(v, it.trust);
+  }
   // The ACTIONABLE queue: pending + claimed only (resolved/expired/shed are dropped from the view),
   // prioritized (priority desc, then oldest-first within a priority = FIFO) and already bounded.
+  function queueView() {
+    expireStale();
+    const live = [...workItemsMap.values()].filter((it) => it.status === 'pending' || it.status === 'claimed');
+    live.sort((a, b) => (b.priority - a.priority) || (a.createdTs - b.createdTs));
+    return live.map(itemView);
+  }
 
   // ---- Plan 0473 P6: FLOOR CONTROL (proactive, at the SOURCE) + reactive backstop (last resort) ----
   // PROACTIVE-FIRST overload prevention. The server measures live LOAD from EXISTING state — concurrent
@@ -2650,6 +3221,14 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // `floorThresholds.moderationOverrides` knob (teaching) so it is not a profile-NAME fork: a profile that
   // does not grant moderation refuses the override (no-op). The override wins immediately via effectiveFloor;
   // broadcast the resulting cue so it is never silent. Returns {ok, floor(effective), auto}.
+  function setModerationFloor(state) {
+    if (!floorKnobs().moderationOverrides) return { ok: false, reason: 'moderation-not-permitted', floor: effectiveFloor(), auto: floorState };
+    if (state !== null && !FLOOR_STATES.includes(state)) return { ok: false, reason: 'bad-state', floor: effectiveFloor(), auto: floorState };
+    moderationFloor = state;
+    log.info('floor', 'moderation', { moderationFloor, auto: floorState });
+    broadcastFloor(effectiveFloor());   // the explicit decision wins over auto; never silent
+    return { ok: true, floor: effectiveFloor(), auto: floorState };
+  }
   // Read the floor knobs from the ACTIVE PROFILE (consume knobs, never the profile NAME — drift guard).
   function floorKnobs() {
     const ft = (ACTIVE_PROFILE.floorThresholds) || {};
@@ -2700,26 +3279,28 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
    *   surface a snapshot would make it read stale state silently. Uniform getters make that
    *   impossible rather than merely unlikely. */
   const __apiBindings = {
+      get ACKS_MAX() { return ACKS_MAX; },
       get ACTIVE_PROFILE() { return ACTIVE_PROFILE; },
+      get API_ACTOR() { return API_ACTOR; },
       get AUTH_POLICY() { return AUTH_POLICY; },
       get CAP_SECRET() { return CAP_SECRET; },
-      get CONTROL_ROLES() { return CONTROL_ROLES; },
-      get FLOOR_STATES() { return FLOOR_STATES; },
+      get PRIORITY_DEFERRED() { return PRIORITY_DEFERRED; },
+      get PVS_MODES() { return PVS_MODES; },
       get QUEUE_TEXT_MAX() { return QUEUE_TEXT_MAX; },
       get RECENT_TURNS_N() { return RECENT_TURNS_N; },
-      get REVOKED_FILE() { return REVOKED_FILE; },
+      get ROLES() { return ROLES; },
       get SESSION_ID() { return SESSION_ID; },
       get STALE_MS() { return STALE_MS; },
-      get TRUST() { return TRUST; },
       get acks() { return acks; },
       get asr() { return asr; }, set asr(v) { asr = v; },
+      get beatDescriptor() { return beatDescriptor; },
       get bgAdapter() { return bgAdapter; },
-      get broadcastFloor() { return broadcastFloor; },
-      get buildDigest() { return buildDigest; },
+      get buildSituation() { return buildSituation; },
       get commsMode() { return commsMode; }, set commsMode(v) { commsMode = v; },
       get computeAuthCtx() { return computeAuthCtx; },
       get conns() { return conns; },
-      get dirname() { return dirname; },
+      get contentModule() { return contentModule; }, set contentModule(v) { contentModule = v; },
+      get currentBeat() { return currentBeat; }, set currentBeat(v) { currentBeat = v; },
       get displayByRole() { return displayByRole; },
       get displayByUser() { return displayByUser; },
       get displayIdFor() { return displayIdFor; },
@@ -2729,6 +3310,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       get ensureAsr() { return ensureAsr; },
       get ephTimer() { return ephTimer; },
       get evaluateFloor() { return evaluateFloor; },
+      get expireStale() { return expireStale; },
       get extraServers() { return extraServers; },
       get floorGated() { return floorGated; },
       get floorKnobs() { return floorKnobs; },
@@ -2739,60 +3321,62 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       get inbox() { return inbox; },
       get inboxSeq() { return inboxSeq; },
       get inboxWaiters() { return inboxWaiters; },
+      get isControllerActor() { return isControllerActor; },
+      get itemView() { return itemView; },
       get lastResults() { return lastResults; },
       get listeners() { return listeners; },
-      get liveConnForTarget() { return liveConnForTarget; },
-      get mkdirSync() { return mkdirSync; },
-      get moderationFloor() { return moderationFloor; }, set moderationFloor(v) { moderationFloor = v; },
       get mutedParticipants() { return mutedParticipants; },
-      get normText() { return normText; },
+      get normalizeTargets() { return normalizeTargets; },
       get oidcAdapter() { return oidcAdapter; },
       get openTurn() { return openTurn; },
       get perTurnBudgetFor() { return perTurnBudgetFor; },
+      get persistRevokedNonces() { return persistRevokedNonces; },
       get pluginTools() { return pluginTools; },
       get polls() { return polls; },
       get presence() { return presence; },
       get projectStation() { return projectStation; },
       get pruneTerminal() { return pruneTerminal; },
+      get publishBeat() { return publishBeat; },
       get pushPresence() { return pushPresence; },
+      get pvs() { return pvs; }, set pvs(v) { pvs = v; },
       get pvsConsumerKey() { return pvsConsumerKey; },
       get pvsSubscribers() { return pvsSubscribers; },
-      get queueKnobs() { return queueKnobs; },
-      get recentSpeak() { return recentSpeak; },
+      get queueView() { return queueView; },
+      get recordSpeak() { return recordSpeak; },
       get renderDisplay() { return renderDisplay; },
       get renderStationTo() { return renderStationTo; },
+      get resolveBeatRef() { return resolveBeatRef; },
       get resolveSurface() { return resolveSurface; },
       get revokedNonces() { return revokedNonces; },
       get safeId() { return safeId; },
-      get sanitizeFields() { return sanitizeFields; },
-      get sanitizeUntrusted() { return sanitizeUntrusted; },
       get seatResolver() { return seatResolver; },
       get send() { return send; },
       get sendComponentTo() { return sendComponentTo; },
       get serverApply() { return serverApply; },
       get sessionLog() { return sessionLog; },
+      get setDisplay() { return setDisplay; },
+      get setModerationFloor() { return setModerationFloor; },
+      get setSpeaking() { return setSpeaking; },
       get sheddedCount() { return sheddedCount; },
       get situationCursors() { return situationCursors; },
       get socketsFor() { return socketsFor; },
-      get speaking() { return speaking; }, set speaking(v) { speaking = v; },
+      get speaking() { return speaking; },
       get spotlight() { return spotlight; },
       get spotlightLast() { return spotlightLast; },
       get stagedByCaller() { return stagedByCaller; },
       get stationRegistry() { return stationRegistry; },
-      get stationTargetUid() { return stationTargetUid; },
       get stationsActive() { return stationsActive; },
       get store() { return store; },
-      get summarizer() { return summarizer; },
       get surfaceRegistry() { return surfaceRegistry; },
       get tally() { return tally; },
       get targets() { return targets; },
       get telem() { return telem; },
+      get telemetryView() { return telemetryView; },
       get tsWhois() { return tsWhois; },
-      get usersAtStation() { return usersAtStation; },
+      get viewerForTarget() { return viewerForTarget; },
       get voiceSessions() { return voiceSessions; },
       get watcher() { return watcher; },
       get workItemsMap() { return workItemsMap; },
-      get writeFileSync() { return writeFileSync; },
       get wss() { return wss; },
   };
   const api = createApiSurface(__apiBindings);
@@ -2807,86 +3391,70 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
    * that closes over it needs no indirection.
    * ⛔ The three getters are not decoration — see the live-read note in wire-actions.mjs. */
   for (const [t, fn] of createWireActions({
-    get AUTH_POLICY() { return AUTH_POLICY; },
-    get CAP_SECRET() { return CAP_SECRET; },
-    get CONTROL_ROLES() { return CONTROL_ROLES; },
-    get CONTROL_TOKEN() { return CONTROL_TOKEN; },
-    get KNOWN_ROLES() { return KNOWN_ROLES; },
-    get MAX_VALUE_BYTES() { return MAX_VALUE_BYTES; },
-    get ROLE_HASH() { return ROLE_HASH; },
-    get TRANSCRIPT_PERSIST() { return TRANSCRIPT_PERSIST; },
-    get VOICE_MAX_SESSIONS() { return VOICE_MAX_SESSIONS; },
-    get VOICE_TB_CAPACITY() { return VOICE_TB_CAPACITY; },
-    get acks() { return acks; },
-    get api() { return api; },
-    get byUser() { return byUser; },
-    get callerKey() { return callerKey; },
-    get commsMode() { return commsMode; },
-    get computeAuthCtx() { return computeAuthCtx; },
-    get conns() { return conns; },
-    get credentialOk() { return credentialOk; },
-    get deliverTurnToSub() { return deliverTurnToSub; },
-    get deriveConnTrust() { return deriveConnTrust; },
-    get descToHtml() { return descToHtml; },
-    get displayByRole() { return displayByRole; },
-    get displayByUser() { return displayByUser; },
-    get dropStaging() { return dropStaging; },
-    get emit() { return emit; },
-    get emitInbox() { return emitInbox; },
-    get ensureAsr() { return ensureAsr; },
-    get evaluateFloor() { return evaluateFloor; },
-    get floorGated() { return floorGated; },
-    get handleOp() { return handleOp; },
-    get identityGrantsControl() { return identityGrantsControl; },
-    get inbox() { return inbox; },
-    get inboxSeq() { return inboxSeq; },
-    get lastResults() { return lastResults; },
-    get liveConnForTarget() { return liveConnForTarget; },
-    get log() { return log; },
-    get maybeBargeIn() { return maybeBargeIn; },
-    get normalizeModifiers() { return normalizeModifiers; },
-    get parseDice() { return parseDice; },
-    get polls() { return polls; },
-    get presence() { return presence; },
-    get projectStation() { return projectStation; },
-    get pushPresence() { return pushPresence; },
-    get pvsConsumerKey() { return pvsConsumerKey; },
-    get pvsSubscribers() { return pvsSubscribers; },
-    get randomInt() { return randomInt; },
-    get redisplayFor() { return redisplayFor; },
-    get renderDisplay() { return renderDisplay; },
-    get renderStationTo() { return renderStationTo; },
-    get resolveSurface() { return resolveSurface; },
-    get revokedNonces() { return revokedNonces; },
-    get rollDie() { return rollDie; },
-    get rollLine() { return rollLine; },
-    get rosterVisibleToAttendees() { return rosterVisibleToAttendees; }, set rosterVisibleToAttendees(v) { rosterVisibleToAttendees = v; },
+    CAP_SECRET,
+    CONTROL_ROLES,
+    EVER_SEEN_MAX,
+    LAST_RESULTS_MAX,
+    MAX_VALUE_BYTES,
+    TRANSCRIPT_PERSIST,
+    acks,
+    api,
+    bindUser,
+    computeAuthCtx,
+    conns,
+    deliverTurnToSub,
+    deriveConnTrust,
+    displayByUser,
+    doRoll,
+    emit,
+    emitInbox,
+    evaluateFloor,
+    everSeen,
+    everSeenOrder,
+    handleControl,
+    handleOp,
+    inbox,
+    lastResults,
+    lastResultsOrder,
+    log,
+    parseRollCommand,
+    peekTo,
+    presence,
+    pushPresence,
+    pushResult,
+    pvsConsumerKey,
+    pvsSubscribers,
+    redisplayFor,
+    renderDisplay,
+    renderStationTo,
+    resolveIdentity,
+    resyncOrSnapshot,
+    revokedNonces,
+    rosterVisibleToAttendees,
+    seatStation,
+    send,
+    sendComponentTo,
+    shimAnswer,
+    situationCursors,
+    spotlight,
+    spotlightLast,
+    stationPlaceholder,
+    stationRegistry,
+    stationsActive,
+    surfaceRegistry,
+    surfacesActive,
+    targets,
+    telem,
+    unbindUser,
+    unpeekTo,
+    updateChatListeners,
+    verifyCapability,
+    voiceAllowedFor,
+    voiceSegFinalize,
+    voiceSegStart,
     get seatResolver() { return seatResolver; },
-    get seatStation() { return seatStation; },
-    get send() { return send; },
-    get sendComponentTo() { return sendComponentTo; },
-    get serverApply() { return serverApply; },
-    get situationCursors() { return situationCursors; },
-    get slugForSeat() { return slugForSeat; },
-    get socketsFor() { return socketsFor; },
-    get spotlight() { return spotlight; },
-    get spotlightLast() { return spotlightLast; },
-    get stationPlaceholder() { return stationPlaceholder; },
-    get stationRegistry() { return stationRegistry; },
-    get stationsActive() { return stationsActive; },
-    get store() { return store; },
-    get surfaceRegistry() { return surfaceRegistry; },
-    get surfacesActive() { return surfacesActive; },
-    get tally() { return tally; },
-    get targets() { return targets; },
-    get telem() { return telem; },
-    get unbindUser() { return unbindUser; },
-    get updateChatListeners() { return updateChatListeners; },
-    get verifyCapability() { return verifyCapability; },
-    get voiceAllowedFor() { return voiceAllowedFor; },
-    get voiceArmTimeout() { return voiceArmTimeout; },
-    get voiceSegFinalize() { return voiceSegFinalize; },
-    get voiceSessions() { return voiceSessions; }, set voiceSessions(v) { voiceSessions = v; },
+    get commsMode() { return commsMode; },
+    get inboxSeq() { return inboxSeq; },
   })) wireActions.set(t, fn);
 
   return new Promise((resolve) => {
