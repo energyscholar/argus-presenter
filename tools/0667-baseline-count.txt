@@ -1,0 +1,25 @@
+Plan 0667 phase A1 — persisted baseline test count
+====================================================
+
+Command used (the repo's real test command, from package.json "test" script):
+    node harness/test.mjs
+
+Run once, unattended, 2026-08-20 (S251 overnight run, Plan 0667).
+
+Raw summary line (verbatim, last line of output before process exit):
+    702 passed / 13 failed   [component:103/106  live:204/211  unit:395/398]
+
+Notes:
+- 13 pre-existing failures are captured as-is. Plan 0667 makes NO product-code changes and
+  repairs NOTHING (there is nothing to repair — EX-1 was already closed by plans 0543/0529/0581 F).
+  This file exists so a LATER regression is visible as a falling passed-count or a rising
+  failed-count against this line, per plan §2 SERIOUS finding ("no persisted baseline test count;
+  'count did not fall' is uncheckable").
+- The command was run as `node harness/test.mjs 2>&1 | tail -60`, piped to a background capture.
+  The shell-reported exit code (0) reflects the LAST stage of that pipe (`tail`), not `node`
+  itself — harness/test.mjs's own documented contract (harness/test.mjs header comment) is "exit
+  code non-zero iff any test failed," so the real `node` exit code for this run was almost
+  certainly non-zero (13 failed > 0). This is recorded here rather than silently smoothed over,
+  since a wrong exit-code claim would be exactly the kind of thing this plan exists to prevent.
+- Phase A3 acceptance criterion 6 ("the count does not fall") is checked against the PASSED count
+  (702) and the per-tier breakdown above, after the Phase A3 runtime-guard change lands.
