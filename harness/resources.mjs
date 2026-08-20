@@ -58,13 +58,6 @@ import { execFileSync } from 'node:child_process';
  */
 export const DEFAULT_NEED_MB = 800;
 
-/** Rough per-scenario needs, same derivation. Callers may pass their own needMB. */
-export const NEED_MB = {
-  browser: 300, // a single puppeteer browser with a page or two
-  multi: 600, // multi.mjs, a handful of browsers
-  suite: 800, // test.mjs full run
-  sessionRig: 900, // session-rig.mjs, 1 GM + 4 players on real screens
-};
 
 /**
  * Extra room the kernel should still have AFTER the run's need is met.
@@ -367,10 +360,3 @@ export function assertResources(opts = {}) {
   return verdict;
 }
 
-/** One-line summary for logs. Never throws. */
-export function resourceSummary(opts = {}) {
-  const v = checkResources(opts);
-  const swap = v.zeroSwap ? 'NO SWAP' : `${v.swapMB} MB swap`;
-  const state = v.ok ? (v.tight ? 'TIGHT' : 'ok') : 'INSUFFICIENT';
-  return `[resources] ${state}: ${v.availableMB}/${v.totalMB} MB available, need ~${v.needMB} MB, ${swap}, ${v.processes.chromeProcs} chrome procs (~${v.processes.chromeRssMB} MB RSS upper bound)`;
-}

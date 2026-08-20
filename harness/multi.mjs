@@ -54,12 +54,6 @@ export async function frameClick(page, sel, { timeout = 5000 } = {}) {
   await f.$eval(sel, (el) => el.click());
 }
 
-/** Read text/value inside the content frame. */
-export async function frameEval(page, sel, fn) {
-  const f = contentFrame(page);
-  if (!f) throw new Error('no content frame on page');
-  return f.$eval(sel, fn);
-}
 
 /** Wait until a predicate over the server is true, or throw (stability guard). */
 export async function until(pred, { timeout = 5000, every = 100, label = 'condition' } = {}) {

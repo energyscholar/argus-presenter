@@ -61,10 +61,6 @@ export function sanitizeUntrusted(text) {
     .split(CLOSE).join(CLOSE_SAFE);
 }
 
-// Wrap sanitized untrusted text as an unspoofably-delimited DATA block.
-export function fenceText(text, trust) {
-  return beginMarker(trust) + sanitizeUntrusted(text) + END_MARKER;
-}
 
 /*
  * Plan 0529 P1 — THE COVERAGE HOLE. The fence above is structurally sound: content that has had its
