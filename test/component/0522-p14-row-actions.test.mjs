@@ -240,7 +240,11 @@ test('0522 t36 — the roster row carries mirror + spotlight + set-station, and 
     const foreign = sites.filter(([, l]) => !l.includes('seatResolver.select(c.userId'));
     expect('exactly ONE takes a foreign userId', foreign.length === 1, JSON.stringify(foreign.map(([n, l]) => n + ': ' + l.trim())));
     const body = src.slice(src.indexOf('stationSet(userId, stationUid, actor'));
-    const end = body.indexOf('\n    },');
+      /* ⛔ END-OF-MEMBER IS FOUND BY SHAPE, NOT BY A HARD-CODED INDENT. This used indexOf on a
+       *   literal newline-plus-four-spaces, which silently stopped matching when stationSet moved
+       *   into api-surface.mjs and its closing brace landed at a different column. A guard that
+       *   depends on whitespace fails for a reason that has nothing to do with what it guards. */
+      const end = body.search(/\n\s*\},/);
     expect('precondition: stationSet\'s body was located', end > 0, String(end));
     expect('and that ONE site lives inside stationSet, where the gate is',
       body.slice(0, end).includes('seatResolver.select(userId'), body.slice(0, 400));
