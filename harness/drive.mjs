@@ -74,8 +74,33 @@ export async function drive({ component, opts = {}, theme = 'argus', actions = [
   }
 }
 
-/* Tiny assertion helper for practice scripts. */
+/* Plan 0667 phase A3 — safe one-line rendering of a wrong-typed value for a guard message.
+ * try/catch because JSON.stringify throws on a circular object and returns undefined on some
+ * primitives (Symbol, function) that String() renders fine instead. */
+function describeForError(v) {
+  try {
+    const s = JSON.stringify(v);
+    if (s !== undefined) return s;
+  } catch { /* fall through to String() */ }
+  return String(v);
+}
+
+/*
+ * Tiny assertion helper for practice scripts. Name-first: expect(name, cond, detail).
+ *
+ * Plan 0667 phase A3 — the NAME slot is unambiguous: a real call always passes a string here, so
+ * a non-string is always an argument-order mistake (EX-1's whole defect shape). Thrown rather
+ * than silently coerced. The CONDITION slot is deliberately left unguarded — see the matching
+ * comment on harness/test.mjs's check(); the reasoning is identical and was confirmed by redteam.
+ */
 export function expect(name, cond, detail) {
+  if (typeof name !== 'string') {
+    throw new TypeError(
+      `expect(name, cond, detail): "name" must be a string, got ${typeof name} ` +
+      `(${describeForError(name)}). This is usually the arguments swapped — ` +
+      `expect(cond, name) instead of expect(name, cond).`
+    );
+  }
   const ok = !!cond;
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail && !ok ? '  — ' + detail : ''}`);
   if (!ok) process.exitCode = 1;

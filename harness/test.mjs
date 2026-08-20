@@ -79,6 +79,17 @@ let _active = null;          // { failed } for the currently-running test (for c
 /** Register a test. `fn` may be sync or async. */
 export function test(name, fn) { REG.push({ name, fn, file: _currentFile || '(direct)' }); }
 
+/* Plan 0667 phase A3 — safe one-line rendering of a wrong-typed value for a guard message.
+ * try/catch because JSON.stringify throws on a circular object and returns undefined on some
+ * primitives (Symbol, function) that String() renders fine instead. */
+function describeForError(v) {
+  try {
+    const s = JSON.stringify(v);
+    if (s !== undefined) return s;
+  } catch { /* fall through to String() */ }
+  return String(v);
+}
+
 /** Throwing assertion. cond-first. Marks the enclosing test failed on !cond. */
 export function expect(cond, msg, detail) {
   if (!cond) {
@@ -93,8 +104,23 @@ export function expect(cond, msg, detail) {
  * Non-throwing assertion, name-first — the signature the migrated practice reps use
  * (`expect(name, cond, detail)`). Prints a per-assertion PASS/FAIL line and marks
  * the enclosing test failed on !cond WITHOUT aborting the rest of the rep.
+ *
+ * Plan 0667 phase A3 — the NAME slot is unambiguous: a real call always passes a string here,
+ * so a non-string is always the two argument-order mistakes EX-1 was full of (a condition passed
+ * where a name was expected, `check as expect` used cond-first by habit, or the arguments
+ * transposed some other way). Thrown, not silently coerced, so the mistake surfaces at the call
+ * site instead of shipping a vacuous test. The CONDITION slot is deliberately left unguarded —
+ * `check('label', someObject)` is legitimate name-first usage and a runtime type-check there
+ * would false-positive on working code (the redteam confirmed this reasoning; see plan §A3).
  */
 export function check(name, cond, detail) {
+  if (typeof name !== 'string') {
+    throw new TypeError(
+      `check(name, cond, detail): "name" must be a string, got ${typeof name} ` +
+      `(${describeForError(name)}). This is usually the arguments swapped — ` +
+      `check(cond, name) instead of check(name, cond).`
+    );
+  }
   const ok = !!cond;
   if (!ok && _active) _active.failed = true;
   console.log(`  ${ok ? 'ok  ' : 'FAIL'} ${name}${detail && !ok ? '  — ' + detail : ''}`);
