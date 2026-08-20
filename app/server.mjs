@@ -96,35 +96,6 @@ function envVoiceEnabled() { return /^(1|true|on|yes)$/i.test(String(process.env
 // (HTML comments in body, /* */ block comments inside <script>). When voice is OFF we remove
 // those regions ENTIRELY before serving, so the page pulls ZERO voice bytes (no voice-stub
 // <script>, no APVoice wiring, no mic row) and runs no always-on voice runtime.
-/**
- * PURE_ACTIONS — wire handlers that need NOTHING from a server instance.
- *
- * Each takes one context object and touches only what is in it. These can live at module scope
- * because they close over nothing.
- *
- * ⛔⛔ MOST ACTIONS CANNOT LIVE HERE, AND THE TABLE MUST BE PER-SERVER. The chain's branches delegate
- *   to `handleOp`, `handleControl`, `emit`, `voiceSegFinalize`, `unpeekTo`, `log` — all closures
- *   declared INSIDE createServer. A module-level handler cannot reach them; and a module-level Map
- *   holding handlers that captured ONE server's closures would be shared by every other server in
- *   the process. The suite stands up many servers, so that is not a theoretical leak — it is a
- *   cross-test contamination bug waiting for the first impure migration.
- *   ⇒ each server builds its OWN table (see `wireActions` in createServer) and seeds it from here.
- */
-const PURE_ACTIONS = {
-  /* ⛔ EMPTIED 2026-08-19 — see below. `pong` and `telemetry` were migrated here and X3 regressed:
-   *   RTT stopped being sampled (last:null, samples:0). The handler bodies were byte-identical to
-   *   the branches, the dispatch is reached for other frames, nothing threw, and no `action-threw`
-   *   was logged — so the pong frame simply never took this path, and I could not establish why
-   *   within a reasonable diagnostic budget.
-   *   ⭐ THIS IS BRANCH BY ABSTRACTION WORKING AS DESIGNED: the old implementation never left, so
-   *     backing out cost one commit and the estate is back on verified-green behaviour. The
-   *     abstraction stays; the migration retries once the mechanism is understood.
-   *   ⚠ AND A LESSON ABOUT THE CHECK: I first "cleared" this migration by running X3 on PENGUIN,
-   *     where it fails for an unrelated environmental reason — masking a real jill regression.
-   *     Confirm regressions on the host that established the baseline. */
-};
-
-
 const VOICE_BLOCK_RE = /[^\S\n]*(?:<!--|\/\*)\s*AP-VOICE:BEGIN\s*(?:-->|\*\/)[\s\S]*?(?:<!--|\/\*)\s*AP-VOICE:END\s*(?:-->|\*\/)[^\S\n]*\n?/g;
 function stripVoiceBlocks(html) { return html.replace(VOICE_BLOCK_RE, ''); }
 // Serve presenter.html, stripping the voice block(s) unless voice is enabled for this server.
@@ -500,7 +471,10 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   /* ⭐ THIS SERVER'S ACTION TABLE. Seeded with the pure handlers, then extended below with ones that
    *   close over this server's own scope. Per-server by construction, so two servers in one process
    *   can never share a handler that captured the other's state. */
-  const wireActions = new Map(Object.entries(PURE_ACTIONS));
+  /* The wire fuse table. Filled at the end of createServer by createWireActions(); see there.
+   * ⛔ PER-SERVER, never module-level: handlers close over THIS server's state, and the suite
+   *   stands up many servers in one process. */
+  const wireActions = new Map();
 
   const conns = new Map();     // ws -> {id,userId,userName,role}
   // Plan 0482 A4 — userId -> Set<ws>. One PERSON may hold several sockets (phone + laptop, or a
