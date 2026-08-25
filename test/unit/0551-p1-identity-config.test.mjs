@@ -50,7 +50,7 @@ test('0551 P1 — the loader reads identity from the deployment config file', as
     writeConfig(fullDir, {
       presenterPort: 0,
       oidc: FULL_OIDC,
-      allowlist: { 'Someone@Example.invalid ': { role: 'presenter' }, 'other@example.invalid': 'presenter' },
+      allowlist: { 'Someone@Example.invalid ': { role: 'presenter', voice: true }, 'other@example.invalid': 'presenter' },
       tailscale: { enabled: true },
       breakGlass: { file: '/tmp/nonexistent-break-glass' },
       revokedNonceFile: '/tmp/ap-0551-revoked.json',
@@ -63,6 +63,16 @@ test('0551 P1 — the loader reads identity from the deployment config file', as
     check('...and the shorthand "role" string is accepted', id.allowlist['other@example.invalid'].role === 'presenter');
     check('...and makeAllowlist AGREES with what the loader counted (same key rule)',
       makeAllowlist(id.allowlist).lookup('SOMEONE@example.invalid ').allowed === true);
+    /* ⛔⛔ THE REGRESSION. This loader returned `{role}` only, so a config granting voice:true was
+     *   validated, counted and logged as healthy while the capability was DELETED in transit.
+     *   The check above still passed — `allowed` was fine — and the presenter got no microphone,
+     *   with no error anywhere. Assert the CAPABILITY end-to-end, not just the authorization. */
+    check('...and the VOICE capability SURVIVES the loader (config → makeAllowlist → lookup)',
+      makeAllowlist(id.allowlist).lookup('SOMEONE@example.invalid ').voice === true,
+      JSON.stringify(id.allowlist['someone@example.invalid']));
+    check('...while an entry that never asked for voice is fail-closed false, not undefined',
+      makeAllowlist(id.allowlist).lookup('other@example.invalid').voice === false,
+      JSON.stringify(id.allowlist['other@example.invalid']));
     check('tailscale is read', !!id.tailscale && id.tailscale.enabled === true, JSON.stringify(id.tailscale));
     check('breakGlass is read', !!id.breakGlass && id.breakGlass.file === '/tmp/nonexistent-break-glass');
     check('revokedNonceFile is read', id.revokedNonceFile === '/tmp/ap-0551-revoked.json');
@@ -88,6 +98,10 @@ test('0551 P1 (C6) — a PRESENT-BUT-INCOMPLETE identity block throws a NAMED st
     /absolute URL/.test(String(threw(() => normalizeIdentity({ oidc: { ...FULL_OIDC, tokenEndpoint: 'oauth2.googleapis.com/token' } }, '/x')))));
   check('an allowlist entry with no role throws — it would otherwise be silently dropped',
     threw(() => normalizeIdentity({ allowlist: { 'a@b.invalid': {} } }, '/x')) instanceof IdentityConfigError);
+  check('an allowlist voice that is the STRING "true" throws — it would read as false, silently',
+    threw(() => normalizeIdentity({ allowlist: { 'a@b.invalid': { role: 'presenter', voice: 'true' } } }, '/x')) instanceof IdentityConfigError);
+  check('...and voice:false is accepted as an explicit, legal denial',
+    threw(() => normalizeIdentity({ allowlist: { 'a@b.invalid': { role: 'presenter', voice: false } } }, '/x')) === null);
   check('a non-object allowlist throws', threw(() => normalizeIdentity({ allowlist: ['a@b.invalid'] }, '/x')) instanceof IdentityConfigError);
   check('a non-boolean tailscale.enabled throws', threw(() => normalizeIdentity({ tailscale: { enabled: 'yes' } }, '/x')) instanceof IdentityConfigError);
   check('an EMPTY breakGlass block throws (it is not a recovery credential)',
