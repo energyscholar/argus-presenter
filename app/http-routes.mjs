@@ -83,12 +83,12 @@ export function createHttpHandler(ctx) {
              *   existed. Reaching Control is a link (`ap-goto-control`), already gated on granted role. */
             res.writeHead(302, { location: '/', 'set-cookie': oidcAuth.sessionCookie(r.sid), 'cache-control': 'no-store' }); res.end();
           } else {
-            try { api.log && api.log.warn('auth', 'oidc-login-failed', { reason: (r && (r.reason || r.error)) || 'no reason given', hasCode: !!query.code, hasState: !!query.state }); }
+            try { log.warn('auth', 'oidc-login-failed', { reason: (r && (r.reason || r.error)) || 'no reason given', hasCode: !!query.code, hasState: !!query.state }); }
             catch (e) { console.error('oidc login failed:', (r && (r.reason || r.error)) || 'no reason given', 'code:', !!query.code, 'state:', !!query.state); }
             res.writeHead(302, { location: '/?auth=failed', 'cache-control': 'no-store' }); res.end();
           }
         }).catch((e) => {
-          try { api.log && api.log.warn('auth', 'oidc-login-threw', { err: String((e && e.message) || e).slice(0, 200) }); }
+          try { log.warn('auth', 'oidc-login-threw', { err: String((e && e.message) || e).slice(0, 200) }); }
           catch (_) { console.error('oidc login threw:', String((e && e.message) || e)); }
           console.error('oidc login threw:', String((e && e.message) || e));
           res.writeHead(302, { location: '/?auth=failed', 'cache-control': 'no-store' }); res.end();

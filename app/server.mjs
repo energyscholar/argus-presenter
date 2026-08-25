@@ -442,7 +442,11 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
        *     operator opted in by enabling voice at all. */
       if (!oidcAdapter.active && AUTH_ALLOWLIST.size === 0) return true;
       const ctx = authCtx || computeAuthCtx(req);
-      if (!ctx || !ctx.verified) return false;
+      /* ⛔ THE SILENT BRANCH. A lapsed or absent session removed the microphone with NO log line
+       *   anywhere, so 'the voice option disappeared' was undiagnosable from the server side —
+       *   the denial below only fires for someone already signed in. Cost a full debugging
+       *   session on 2026-08-25. Say it out loud. */
+      if (!ctx || !ctx.verified) { log.info('voice', 'not-signed-in', { oidcActive: oidcAdapter.active, allowlist: AUTH_ALLOWLIST.size }); return false; }
       const key = ctx.verified.email || ctx.verified.sub;
       const al = AUTH_ALLOWLIST.lookup(key);
       const ok = !!(al && al.allowed && al.voice === true);
