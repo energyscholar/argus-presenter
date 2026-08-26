@@ -10,7 +10,15 @@
 import { test, check as expect } from '../../harness/test.mjs';
 import { toolMap, activeTools, coreTools, voiceTools } from '../../mcp/tools.mjs';
 
-const VOICE_TOOL_NAMES = ['presenter_voice_enable', 'presenter_transcript'];
+/*
+ * ⚠ Plan 0689 R4b added a THIRD. This list is a CENSUS of the voice-conditional tools, not a
+ * cap on how many there may be — its job is that every one of them is absent when audio-in is
+ * off and that none leaks into core. `presenter_voice_release` is voice-conditional for the same
+ * reason its counterpart is: with no mic there is no request to release.
+ * ⛔ ADD A VOICE TOOL ⇒ ADD IT HERE. A tool missing from this list is not covered by any of the
+ * three assertions below, which is the silent gap the file exists to close.
+ */
+const VOICE_TOOL_NAMES = ['presenter_voice_enable', 'presenter_voice_release', 'presenter_transcript'];
 // Plan 0473 P4: the work-queue keys (claim/resolve/defer) + the sense key (situation) are CORE — the
 // instrument itself — so they are ALWAYS registered, present even with audio-in OFF.
 const CORE_ALWAYS = ['presenter_inbox', 'presenter_start', 'presenter_status',
@@ -33,9 +41,9 @@ test('T-MCP-ZERO-WHEN-OFF: all voice + core tools present when ON', async () => 
     activeTools({ voiceEnabled: true }).length + ' vs ' + (coreTools.length + voiceTools.length));
 });
 
-test('T-MCP-ZERO-WHEN-OFF: voiceTools contains exactly the two voice-capture tools; none leak into core', async () => {
+test('T-MCP-ZERO-WHEN-OFF: voiceTools is exactly the declared voice-capture census; none leak into core', async () => {
   const vNames = voiceTools.map((t) => t.name).sort();
-  expect('voiceTools == the two capture tools', JSON.stringify(vNames) === JSON.stringify(VOICE_TOOL_NAMES.slice().sort()), vNames.join(','));
+  expect('voiceTools == the declared census', JSON.stringify(vNames) === JSON.stringify(VOICE_TOOL_NAMES.slice().sort()), vNames.join(','));
   const coreNames = new Set(coreTools.map((t) => t.name));
   for (const n of VOICE_TOOL_NAMES) expect(n + ' NOT in coreTools', !coreNames.has(n), n);
 });

@@ -22,7 +22,7 @@
 import { test, expect } from '../../harness/test.mjs';
 import { createServer } from '../../app/server.mjs';
 import { coreTools, voiceTools } from '../../mcp/tools.mjs';
-import { CONSTRUCTOR_COVERAGE, API_COVERAGE } from '../../mcp/surface-coverage.mjs';
+import { CONSTRUCTOR_COVERAGE, API_COVERAGE, TOOL_COVERAGE } from '../../mcp/surface-coverage.mjs';
 
 const ALL_TOOLS = [...coreTools, ...voiceTools];
 const TOOL = Object.fromEntries(ALL_TOOLS.map((t) => [t.name, t]));
@@ -78,6 +78,37 @@ test('0488 — every api method is covered or reasonedly declined', async () => 
       expect(keys.includes(name), `manifest lists api method "${name}", which no longer exists — remove or rename it`);
     }
   } finally { await server.close(); }
+});
+
+/*
+ * ⭐⭐ Plan 0689 — THE THIRD DIRECTION. The two tests above are keyed by what the SERVER can do, so
+ * they can only ever ask "is this capability reachable?". A tool that wraps no api method and no
+ * constructor option is INVISIBLE to both — and seven of them were, including the ops surface added
+ * by 0689 itself. That is the same hole in a different orientation: a capability nothing explains.
+ *
+ * ⛔ AND IT MUST BE EXCLUSIVE. A tool listed in TOOL_COVERAGE *and* mapped from an entry above is
+ * two places to change, which is how one of them goes stale — so that is an error too.
+ */
+test('0689 — every TOOL is explained: mapped from a capability, or declared in TOOL_COVERAGE', async () => {
+  const mapped = new Map();   // tool name -> the manifest key that claims it
+  for (const [kind, m] of [['createServer option', CONSTRUCTOR_COVERAGE], ['api method', API_COVERAGE]]) {
+    for (const [key, entry] of Object.entries(m)) if (entry && entry.tool) mapped.set(entry.tool, `${kind} "${key}"`);
+  }
+  for (const t of ALL_TOOLS) {
+    const claimed = mapped.get(t.name);
+    const declared = TOOL_COVERAGE[t.name];
+    expect(claimed || declared,
+      `tool "${t.name}" is explained NOWHERE. Either map it from the capability it exposes in CONSTRUCTOR_COVERAGE/API_COVERAGE, or declare it in TOOL_COVERAGE with a reason. A tool nobody can account for is the S210 shape pointing the other way.`);
+    if (declared) {
+      expect(typeof declared === 'string' && declared.trim().length > 20,
+        `TOOL_COVERAGE["${t.name}"] must carry a real reason, not a placeholder`, declared);
+    }
+  }
+  // Reverse: a TOOL_COVERAGE entry for a tool that no longer exists is stale.
+  const names = new Set(ALL_TOOLS.map((t) => t.name));
+  for (const name of Object.keys(TOOL_COVERAGE)) {
+    expect(names.has(name), `TOOL_COVERAGE names "${name}", which is not a declared tool — remove or rename it`);
+  }
 });
 
 test('0488 — the guard itself fails on drift (meta-test)', async () => {

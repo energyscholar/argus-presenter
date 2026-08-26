@@ -1709,6 +1709,9 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       // ATT (Plan 0466, decision 1): presenter toggles whether attendees may see the roster.
       case 'set_roster_visible': rosterVisibleToAttendees = !!a.value; log.info('att', 'roster-visible', { value: rosterVisibleToAttendees }); break;
       case 'voice_enable': api.voiceEnable(a.target || 'all'); break;   // Plan 0470: request inbound voice on a target
+      // Plan 0689 R4b — the counterpart. I1 parity: the release is reachable from the control page
+      // for the same reason the request is, and it can only ever STOP capture.
+      case 'voice_release': api.voiceRelease(a.target || 'all'); break;
       case 'set_module': api.setModule(a.module || { beats: a.beats || [] }); break;   // Group I
       case 'show_beat': dropStaging(c); api.showBeat(a.id != null ? a.id : (a.index | 0)); break;   // by id (branch nav) or index — R4: PUBLISHES, unchanged
       // Plan 0522 P4 (R4) — two-stage delivery. STAGE renders a candidate to THIS controller's
@@ -1846,6 +1849,36 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     const o = stampFor(c, desc.component, desc.opts || {});
     return send(ws, { t: 'content', contentId: o.promptId || null, html: assemble({ component: desc.component, opts: o, theme: desc.theme || 'argus', requires: desc.requires || [] }) });
   }
+  /* ── Plan 0689 R5 — AN AUTHORED PAGE THAT HOSTS COMPONENTS ────────────────────────────────
+   * ⭐⭐ There was never an architectural gap between "component" and "arbitrary HTML":
+   * sendComponentTo already sends `{t:'content', html: assemble(...)}`, which is the EXACT message
+   * pushContent sends. One render path, one sandboxed iframe, one postMessage bridge. So a page is
+   * a third `desc.kind` beside `component`, not a second mechanism.
+   *
+   * ⛔ AND IT IS STAMPED AND STRIPPED PER VIEWER, exactly as a component is. `kind:'content'` sends
+   * ONE html string to everybody — no identity, no OPSEC strip — which is right for opaque bytes
+   * and wrong for a page carrying a dice check: every player would roll as nobody. So a mount's
+   * `visibility:'gm'` is dropped SERVER-SIDE for a participant (the bytes never leave), and each
+   * viewer's own userId/channel/role ride into every mount.
+   */
+  function stampPageFor(c, desc) {
+    const o = Object.assign({}, desc.opts || {}, { userId: c.userId, userName: c.userName, channel: c.userId, viewerRole: c.role });
+    const mounts = [];
+    for (const m of (Array.isArray(desc.mounts) ? desc.mounts : [])) {
+      if (!m || typeof m !== 'object') continue;
+      if (!store.perms.canSeeVisibility(c.role, m.visibility)) continue;   // never emitted, not merely hidden
+      const childOpts = stripVisibility(c.role, m.opts);
+      mounts.push(childOpts === m.opts ? m : Object.assign({}, m, { opts: childOpts }));
+    }
+    return { opts: o, mounts };
+  }
+  function pageHtmlFor(c, desc) {
+    const { opts, mounts } = stampPageFor(c, desc);
+    return assemble({ html: desc.html || '', mounts, opts, theme: desc.theme || 'argus', requires: desc.requires || [] });
+  }
+  function sendPageTo(ws, c, desc) {
+    return send(ws, { t: 'content', contentId: desc.contentId || null, html: pageHtmlFor(c, desc) });
+  }
   // Produce the HTML STRING for `desc` rendered in viewer `c`'s context — the html-
   // producing half of renderDisplay, factored out for PRIM-mirror (server push of a
   // target's current display back to a control client). Mirrors renderDisplay's branches.
@@ -1853,6 +1886,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     if (!desc) return '';
     if (desc.kind === 'content') return desc.html || '';
     if (desc.kind === 'component') return assemble({ component: desc.component, opts: stampFor(c, desc.component, desc.opts || {}), theme: desc.theme || 'argus', requires: desc.requires || [] });
+    if (desc.kind === 'page') return pageHtmlFor(c, desc);   // Plan 0689 R5
     if (desc.kind === 'poll-choice') {
       const poll = polls.get(desc.promptId); if (!poll) return '';
       return assemble({ component: 'choice', opts: { ...poll.spec, promptId: desc.promptId, userId: c.userId, userName: c.userName, channel: c.userId } });
@@ -1878,6 +1912,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     if (!desc) return;
     const v = viewer || c;
     if (desc.kind === 'content') send(ws, { t: 'content', contentId: desc.contentId || null, html: desc.html });
+    else if (desc.kind === 'page') sendPageTo(ws, v, desc);   // Plan 0689 R5 — stamped for the VIEWER, like a component
     else if (desc.kind === 'component') sendComponentTo(ws, v, desc);
     else if (desc.kind === 'poll-choice') {
       const poll = polls.get(desc.promptId); if (!poll) return;
@@ -3450,6 +3485,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       get seatResolver() { return seatResolver; },
       get send() { return send; },
       get sendComponentTo() { return sendComponentTo; },
+      get sendPageTo() { return sendPageTo; },   // Plan 0689 R5
       get serverApply() { return serverApply; },
       get sessionLog() { return sessionLog; },
       get setDisplay() { return setDisplay; },

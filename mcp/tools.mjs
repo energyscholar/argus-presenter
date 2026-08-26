@@ -13,6 +13,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { presenterPort, authPolicy, identityConfig, identityServerOptions, identityStartupLine, bindHostsConfig } from '../lib/deployment-config.mjs';
 import { resolveSessionLogDir, defaultSessionLogDir } from '../lib/session-log.mjs';
+import { srvRoot, currentRelease, enumerateReleases, unitStatus, staleUnit, roomTable, probe, tailnetAddress, REAL_PAGE_MARKERS } from '../lib/ops-status.mjs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -251,10 +252,14 @@ export const coreTools = [
   },
   {
     name: 'presenter_status',
-    description: 'Server URL + connected users (presence) + PVS lifecycle state (Plan 0493: whether a Presenter Voice Session is open, its comms mode, and its namespaced delivery cursor) + PUBLIC INGRESS state (S220: whether the tunnel is up and whether the public url actually answers — the local bind says nothing about reachability).',
+    description: 'Server URL + connected users (presence) + WHO HOLDS A SPOTLIGHT SHARE GRANT (spotlightHolders — Plan 0689 R4c, read-only; grant/revoke is presenter_spotlight) + PVS lifecycle state (Plan 0493: whether a Presenter Voice Session is open, its comms mode, and its namespaced delivery cursor) + PUBLIC INGRESS state (S220: whether the tunnel is up and whether the public url actually answers — the local bind says nothing about reachability).',
     input: { type: 'object', properties: {} },
     handler: async () => (server
-      ? { running: true, url: server.url(), presence: server.presence(), pvs: server.pvsState(), mode: server.commsMode().mode, auth: server.authPolicy(), tunnel: await tunnelStatus() }
+      // Plan 0689 R4c — spotlightHolders rides HERE, alongside the roster, exactly where the
+      // coverage manifest said it was owed. Read-only, no new capability: grant/revoke has been
+      // reachable via presenter_spotlight all along. What was missing was the ANSWER to "who holds
+      // one right now", which an agent could previously only infer from its own memory of grants.
+      ? { running: true, url: server.url(), presence: server.presence(), spotlightHolders: server.spotlightHolders(), pvs: server.pvsState(), mode: server.commsMode().mode, auth: server.authPolicy(), tunnel: await tunnelStatus() }
       : { running: false, tunnel: await tunnelStatus() })
   },
   {
@@ -348,6 +353,52 @@ export const coreTools = [
     }
   },
   {
+    /* ── Plan 0689 R4a + R5 — ⭐⭐⭐ THE POINT OF THE APP ────────────────────────────────────────
+     * Bruce, 2026-08-26: *"I totally want you to be able to draw arbitrary HTML in Presenter. It's
+     * the primary purpose of the app. NOW I understand why that's been failing and why you keep
+     * refusing… It's what the app is FOR."*
+     *
+     * ⛔⛔ THE REFUSAL WAS THE BUG. Successive sessions treated the app's central capability as an
+     * attack surface to be minimised, declined it, and left the coverage manifest saying "needs a
+     * decision" — so the decision was never taken and the primary purpose stayed unreachable. A
+     * presenter that can only draw from a fixed menu of components is not a presenter, and the
+     * decline stranded sixteen components that were built to be COMBINED with HTML, not to replace
+     * it.
+     *
+     * The containment was already sound and is unchanged: `sandbox="allow-scripts"` WITHOUT
+     * `allow-same-origin` ⇒ an opaque origin that cannot read the parent page, the session or
+     * cookies, cannot fetch as the user, and cannot escape the frame. Three message shapes come
+     * back, source-checked twice, and `op` still passes the server's permission check.
+     */
+    name: 'presenter_push_content',
+    description: '⭐⭐⭐ DRAW AN ARBITRARY HTML PAGE ON THE PRESENTER — the app\'s primary purpose (Plan 0689 R4a/R5, ruled by Bruce 2026-08-26). Push authored HTML to a target (userId | "all" | role), and MOUNT COMPONENTS INTO IT: `mounts:[{at:"#css-selector", component:"dice", opts:{…}}]` places any of the sixteen built components inside your own markup, so one page can carry a dice check beside a navmap beside a live poll. Inline `data-ap-component="dice"` (+ optional `data-ap-opts` JSON) works too. Each mount inherits the viewer\'s identity, and a mount marked `visibility:"gm"` is dropped SERVER-SIDE for participants — the bytes never leave. Components mounted this way round-trip through the same postMessage bridge push_component uses; there is ONE render path, not two. ⚠ `raw:true` sends your bytes VERBATIM with NO bundle — no registry, no component code, no bridge — so a raw page CANNOT host components; use it only for a self-contained page that wants nothing from us. ⏹ To wipe the stage: presenter_default_branding.',
+    input: {
+      type: 'object',
+      required: ['html'],
+      properties: {
+        html: { type: 'string', description: 'The page HTML. Body content, not a whole document — the wrapper supplies <html>/<head>, the theme, the component library and the bridge. (With raw:true it is sent exactly as given and nothing is supplied.)' },
+        mounts: { type: 'array', items: { type: 'object' }, description: 'Where components go: [{at:"#css-selector", component:"dice", opts:{…}, visibility:"gm"?}]. `at` is matched inside your page. ⛔ A selector that matches nothing is reported VISIBLY on the page — never silently skipped.' },
+        opts: { type: 'object', description: 'Page-level options every mount inherits unless it states its own (contentId, and anything your components share).' },
+        target: { type: 'string', description: 'userId | all | participant | presenter | ai', default: 'all' },
+        contentId: { type: 'string', description: 'Correlation id for this pushed content instance.' },
+        theme: { type: 'string', default: 'argus' },
+        requires: { type: 'array', items: { type: 'string' }, description: 'Plugin deps the page needs; the assembler bundles only that closure', default: [] },
+        raw: { type: 'boolean', description: '⚠ Send the bytes VERBATIM, unwrapped. No theme, no components, no bridge. Default false.' },
+      }
+    },
+    handler: async ({ html, mounts = [], opts = {}, target = 'all', contentId = null, theme = 'argus', requires = [], raw = false }) => {
+      const s = need();
+      if (raw) {
+        // ⛔ SAY WHAT WAS LOST. A raw push that silently could not host the mounts the caller
+        //    passed is the shape where a component is "pushed" and is not there.
+        const n = s.pushContent(target, String(html == null ? '' : html), contentId);
+        return { pushed: n, target, raw: true, mounted: 0, contentId, note: (Array.isArray(mounts) && mounts.length) ? '⚠ raw:true — `mounts` were IGNORED: a verbatim page carries no component library and no bridge, so nothing could be mounted into it. Drop raw:true to compose.' : 'sent verbatim: no theme, no component library, no bridge' };
+      }
+      const n = s.pushPage(target, html, { mounts, opts, theme, requires, contentId });
+      return { pushed: n, target, raw: false, mounted: Array.isArray(mounts) ? mounts.length : 0, contentId };
+    }
+  },
+  {
     name: 'open_poll',
     description: 'Open a poll — pushes a choice to participants and (optionally) a live results display.',
     input: {
@@ -392,6 +443,95 @@ export const coreTools = [
     description: 'Health check: status (green/degraded), per-connection liveness (stale detection), op throughput, error rate, state/op-log size, AND (Plan 0525 P2) whether THIS SESSION IS BEING RECORDED — `sessionLog: {enabled, sessionLogId, sessionLogDir, sessionLogDirSource, sessionLogDirError, stats}`. Check it once after presenter_start and again before you rely on the record: `enabled:false` means nothing is being written and sessionLogDirError says why, and a rising stats.dropped / stats.failures means the log is degrading mid-session while the session itself is fine. STATE ONLY — the directory and the counters, NEVER the content: the log is participants\' own words and reading it back is role-gated at GET /api/session-log (control credential required).',
     input: { type: 'object', properties: { staleMs: { type: 'number', default: 10000, description: 'A connection idle longer than this is stale' } } },
     handler: async ({ staleMs = 10000 } = {}) => need().health({ staleMs })
+  },
+  /* ── Plan 0689 R1 + R2 — THE OPS SURFACE ─────────────────────────────────────────────────────
+   * ⛔⛔ THESE TWO TOOLS DO NOT NEED A RUNNING PRESENTER, and deliberately do not call need().
+   * They answer questions about the BOX and the DEPLOYMENT, and the moment you most need them is
+   * the moment the presenter is down. A tool that refused with "presenter not started" during an
+   * outage would be useless in the only situation it exists for.
+   *
+   * ⛔ READ-ONLY. presenter_deploy / presenter_rollback are plan 0689 R3 and are NOT built: an
+   * agent-callable deploy is a different power from an agent-callable status read, and it is a
+   * decision for Bruce to record rather than for an agent to infer.
+   */
+  {
+    name: 'presenter_release_status',
+    description: '⭐ WHAT IS DEPLOYED, AND IS THE RUNNING PROCESS ACTUALLY ON IT (Plan 0689 R1). Returns the CURRENT release (its path, sha, contentHash, builtAt), every unit\'s ActiveState/SubState/MainPID/ExecMainStartTimestamp, and the enumerable releases with the reason each rejected directory was rejected. ⛔⛔ REPORT THE PID AND THE START TIMESTAMP, NEVER JUST THE SYMLINK — in the 0686 rollback failure `current` pointed at a release the running process was not executing, and only the start timestamp could show it: `staleUnit.stale:true` means the unit started BEFORE the current release was built, i.e. the symlink moved and nothing restarted onto it. Release identity is a property of the TREE (a layer.json naming a sha + contentHash), not of the directory NAME — one stray `PHANTOM-TEST-…` directory once made a name-matching enumerator count 0 releases out of 11 and left the presenter down. `rollbackReady` is false with a stated reason when fewer than two usable releases exist. ⛔ This tool is READ-ONLY: it deploys nothing and rolls back nothing.',
+    input: { type: 'object', properties: {
+      root: { type: 'string', description: 'Deployment root (default $ARGUS_SRV_ROOT, else /srv/argus).' },
+      unit: { type: 'string', description: 'Inspect ONLY this systemd unit. Omit to inspect the unit of every room the deployment config declares.' },
+    } },
+    handler: async ({ root = null, unit = null } = {}) => {
+      const R = root || srvRoot();
+      const current = currentRelease({ root: R });
+      const rel = enumerateReleases({ root: R });
+      let rooms = null, roomsError = null;
+      try { rooms = roomTable(); } catch (e) { roomsError = String((e && e.message) || e); }
+      const wanted = unit ? [{ name: '(explicit)', unit }] : ((rooms && rooms.rooms) || []);
+      const units = [];
+      for (const r of wanted) {
+        const u = await unitStatus(r.unit);
+        units.push({ room: r.name, ...u, staleUnit: staleUnit(current, u) });
+      }
+      return {
+        root: R,
+        current,
+        units,
+        rooms: rooms ? { configPath: rooms.configPath, configSource: rooms.configSource, legacy: rooms.legacy } : null,
+        roomsError,
+        releases: {
+          ok: rel.ok, dir: rel.dir, error: rel.error,
+          count: rel.releases.length,
+          // OLDEST FIRST, exactly as the enumerator orders them, so `previous` is the last-but-one.
+          usable: rel.releases.map(({ sortKey, ...keep }) => keep),
+          rejected: rel.rejected,
+        },
+        // ⛔ "could not" and "did" must never look alike (plan 0688 R2). A refusal states WHY.
+        rollbackReady: rel.ok && rel.releases.length >= 2,
+        rollbackReadyReason: !rel.ok
+          ? rel.error
+          : (rel.releases.length >= 2
+            ? `${rel.releases.length} usable releases`
+            : `only ${rel.releases.length} usable release(s) in ${rel.dir}${rel.rejected.length ? ` — ${rel.rejected.length} entr(ies) were rejected and are named in releases.rejected` : ''}`),
+      };
+    }
+  },
+  {
+    name: 'presenter_health_deep',
+    description: '⭐⭐ IS EVERY ROOM ACTUALLY SERVING, ON BOTH INTERFACES (Plan 0689 R2). For each room the deployment config declares: does the port answer on LOOPBACK and on the TAILNET, and does it serve a REAL PAGE — the display `id="stage"` AND the settings dialog `id="ap-config"` — rather than merely 200? ⛔⛔ A PORT ANSWERING IS NOT HEALTH: the phantom presenters answered 200 on everything for 26 hours while serving a page with no stage in it, so a 200 with `realPage:false` is the exact failure shape this tool exists to name. These are the SAME two markers pipeline/smoke.sh asserts, on purpose, so the tool and the pipeline cannot disagree about what healthy means. ⚠ An UNCHECKABLE tailnet is not a passed tailnet: with no address resolvable the verdict is `partial`, never `green`. Needs no running presenter — it probes the deployment, and the moment you need it is the moment the presenter is down. ⛔ READ-ONLY: it restarts nothing.',
+    input: { type: 'object', properties: {
+      timeoutMs: { type: 'number', description: 'Per-probe timeout in ms (default 8000).' },
+      skipTailnet: { type: 'boolean', description: 'Probe loopback only. ⚠ The verdict can then be `partial` at best — never green.' },
+    } },
+    handler: async ({ timeoutMs = 8000, skipTailnet = false } = {}) => {
+      let rooms;
+      try { rooms = roomTable(); }
+      catch (e) {
+        // ⛔ A room map we cannot read is NOT "no rooms". Probing nothing is not a pass.
+        return { verdict: 'refused', error: `cannot enumerate rooms — ${String((e && e.message) || e)}`, rooms: [] };
+      }
+      const tn = skipTailnet ? { address: null, source: null, error: 'skipped by request' } : await tailnetAddress();
+      const out = [];
+      let bad = 0;
+      for (const r of rooms.rooms) {
+        const probes = { loopback: await probe(`http://127.0.0.1:${r.port}/`, { timeoutMs }) };
+        if (tn.address) probes.tailnet = await probe(`http://${tn.address}:${r.port}/`, { timeoutMs });
+        const healthy = probes.loopback.ok && (!tn.address || probes.tailnet.ok);
+        if (!healthy) bad++;
+        out.push({ ...r, probes, healthy });
+      }
+      const verdict = bad ? 'red' : (tn.address ? 'green' : 'partial');
+      return {
+        verdict,
+        note: verdict === 'partial'
+          ? 'every room answered a REAL PAGE on loopback, but the tailnet leg was not checked — unverifiable is not healthy, so this run cannot be green'
+          : (verdict === 'red' ? `${bad} of ${out.length} room(s) are not serving a real page on every interface` : `${out.length} room(s), loopback + tailnet, real page on each`),
+        configPath: rooms.configPath, configSource: rooms.configSource, legacy: rooms.legacy,
+        tailnet: tn,
+        realPageMarkers: REAL_PAGE_MARKERS,
+        rooms: out,
+      };
+    }
   },
   {
     // ⏹ THE PANIC BUTTON. Bruce, 2026-07-27: there must be an obvious "return to default
@@ -609,11 +749,17 @@ export const coreTools = [
   },
   {
     name: 'presenter_attendance',
-    description: 'Room roster + summary keyed on CONNECTION LIVENESS (Plan 0468). Per user: connected (heartbeat fresh within staleMs ⇒ true; a frozen/half-open socket goes false — a CLEAN disconnect drops the row entirely), lastSeenAgoSec (bounded seconds since last ping/pong), connectedSec, and a SEPARATE explicit attention signal eyesOn / eyesOnAgoSec (true ONLY after a presenter_verify_watching CONFIRM — never from polling, voting, or receiving content), plus current display, ip, socketId. Summary: {connected, offline, eyesOn, total}. The AI is a controller → UNREDACTED view. Poll on demand (no push).',
+    description: 'Room roster + summary keyed on CONNECTION LIVENESS (Plan 0468). Per user: connected (heartbeat fresh within staleMs ⇒ true; a frozen/half-open socket goes false — a CLEAN disconnect drops the row entirely), lastSeenAgoSec (bounded seconds since last ping/pong), connectedSec, and a SEPARATE explicit attention signal eyesOn / eyesOnAgoSec (true ONLY after a presenter_verify_watching CONFIRM — never from polling, voting, or receiving content), plus current display, ip, socketId. Summary: {connected, offline, eyesOn, total}. Also `spotlightHolders` — who currently holds a share grant (Plan 0689 R4c, read-only; grant/revoke is presenter_spotlight). The AI is a controller → UNREDACTED view. Poll on demand (no push).',
     input: { type: 'object', properties: {
       staleMs: { type: 'number', default: 15000, description: 'lastSeen older than this ⇒ connected:false (default STALE_MS)' }
     } },
-    handler: async ({ staleMs } = {}) => need().attendance({ staleMs, viewerRole: 'ai' })
+    handler: async ({ staleMs } = {}) => {
+      const s = need();
+      // Plan 0689 R4c — the roster and the grant list belong in the same answer. Reading them
+      // separately is how "who may share their station?" became a question an agent answered from
+      // memory instead of from the server.
+      return { ...s.attendance({ staleMs, viewerRole: 'ai' }), spotlightHolders: s.spotlightHolders() };
+    }
   },
   {
     name: 'presenter_situation',
@@ -699,6 +845,14 @@ export const voiceTools = [
     description: 'Plan 0470 (inbound voice): REQUEST that a target enable microphone capture. Sends a voice_enable signal to the target; the human still passes the browser mic-permission prompt (uncoerceable) and sees an on-air badge with one-click stop. Recognized speech flows back — poll presenter_transcript to read it. This can NEVER silently hot a mic.',
     input: { type: 'object', properties: { target: { type: 'string', default: 'all', description: 'userId | all | participant | presenter | ai' } } },
     handler: async ({ target = 'all' } = {}) => ({ requested: need().voiceEnable(target), target })
+  },
+  {
+    // Plan 0689 R4b — presenter_voice_enable had NO COUNTERPART, so a request Argus made stayed
+    // outstanding until the human closed it himself. This is the courtesy half.
+    name: 'presenter_voice_release',
+    description: 'Plan 0689 R4b (inbound voice): RELEASE a microphone request you made — "I have stopped listening". Tells the target it may stop capturing, and drops the request Argus itself raised, so a mic does not stay requested until the human closes it by hand. ⛔ IT CAN ONLY EVER STOP CAPTURE, NEVER START IT: the browser permission prompt is uncoerceable and the on-air badge\'s one-click stop is untouched and still wins — this is the same yield the server already performs when a turn budget closes or the floor goes to hold. ⭐ CALL IT WHEN YOU STOP LISTENING: after presenter_pvs_stop, at the end of a session, or whenever you asked for a mic and no longer need it. Returns how many clients were told.',
+    input: { type: 'object', properties: { target: { type: 'string', default: 'all', description: 'userId | all | participant | presenter | ai' } } },
+    handler: async ({ target = 'all' } = {}) => ({ released: need().voiceRelease(target), target })
   },
   {
     name: 'presenter_transcript',
