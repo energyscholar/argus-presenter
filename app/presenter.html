@@ -563,6 +563,16 @@
   // for the binary PCM lane (no second connection). getSocket() always returns the current ws.
   // Plan 0473 P0: stripped server-side when PRESENTER_VOICE_ENABLED is off.
   window.APVoiceHost = { getSocket: function(){ return ws; }, onTranscript: null };
+  // Plan 0685 R1 — THE CAPTURE-SIDE HALF OF THE ECHO GUARD, and it lives INSIDE the voice fence
+  // on purpose. The TTS half (apSpeak, further down) is audio OUT and is never stripped; it may
+  // therefore hold no reference to the audio-IN runtime, or the OFF page would carry voice code
+  // (T-ZERO-WHEN-OFF). So audio-out calls THIS hook and finds it simply absent when voice is off —
+  // which is correct: with no capture there is nothing to duck.
+  // ⛔ CAPTURE-SIDE ONLY. This flips one boolean in the capture controller. It does NOT stop the
+  // media stream, release the mic, or touch getUserMedia — hands-free operation is a requirement.
+  window.__apDuckCapture = function(on){
+    try { var c = window.APVoice && window.APVoice.capture; if (c && typeof c.duckWhilePlaying === 'function') c.duckWhilePlaying(on); } catch(e){}
+  };
   /* AP-VOICE:END */
 
   var lastSnapshot = null;   // most recent server snapshot (relayed into new content frames)
@@ -835,13 +845,55 @@
     apPickVoice();
     speechSynthesis.addEventListener('voiceschanged', apPickVoice);
   }
+  // ---- ECHO GUARD (Plan 0685 R1 — closing RT-5, which has never actually run) --------------------
+  // lib/voice-capture.mjs has always EXPOSED duckWhilePlaying() and NOTHING has ever CALLED it, so
+  // the microphone stayed wide open through every utterance the agent spoke. That was survivable
+  // only while getUserMedia asked for echoCancellation:true. Plan 0685 R2 turns that flag off, so
+  // this is now the ONLY echo defence. Measured with neither in place (2026-08-25): the agent's own
+  // speech came back through the mic, was transcribed as the operator, repeatedly — and once MERGED
+  // with his real words into a single segment.
+  //
+  // ⛔ THE UN-DUCK IS UNCONDITIONAL, AND THAT IS DELIBERATE. A duck that fails to lift leaves the
+  // operator MUTE WITH NO ERROR, which is a worse failure than the echo it prevents. So every exit
+  // fires it — end, error, and the cancel() that precedes the next utterance — and an absolute
+  // watchdog fires it regardless of what the platform reports. The un-duck is NEVER gated on a
+  // generation counter: a stale end-event lifting a newer utterance's duck costs a moment of echo,
+  // whereas gating it risks a duck that never lifts. The benign direction is chosen on purpose.
+  var AP_DUCK_MAX_MS = 30000;                  // hard ceiling (the server clamps a spoken précis to ~300 chars)
+  var apDuckTimer = null;
+  // Watchdog bound, derived from the utterance: ~10 chars/sec is slower than any real voice, so it
+  // over-covers a genuine utterance, and the ceiling bounds it regardless.
+  function apDuckMs(text){ return Math.min(AP_DUCK_MAX_MS, 2000 + String(text || '').length * 100); }
+  function apDuckCapture(on){
+    try { if (typeof window.__apDuckCapture === 'function') window.__apDuckCapture(on); } catch(e){}
+  }
+  function apUnduck(){                         // UNCONDITIONAL: no state test, no generation check
+    if (apDuckTimer) { clearTimeout(apDuckTimer); apDuckTimer = null; }
+    apDuckCapture(false);
+  }
+  function apDuck(text){
+    apDuckCapture(true);
+    if (apDuckTimer) clearTimeout(apDuckTimer);
+    apDuckTimer = setTimeout(function(){
+      apDuckTimer = null; apDuckCapture(false);
+      console.warn('[ap-speak] duck lifted by watchdog — speechSynthesis reported neither end nor error');
+    }, apDuckMs(text));
+  }
+  // Test seam (precedent: window.__apBargeIn, window.__apVoicePaint). Exposing the bound lets the
+  // live test assert against the IMPLEMENTATION rather than against a copy of the formula.
+  window.__apSpeakDuck = { unduck: apUnduck, ms: apDuckMs };
+
   function apSpeak(text){
     if (!window.speechSynthesis || !text) return;
     if (!apSpeakVoice) apPickVoice();          // one more try in case voiceschanged hasn't fired yet
     if (!apSpeakVoice) { console.warn('[ap-speak] dropped — no local voice (OPSEC guard)'); return; }
+    apUnduck();                                // trap 3 corollary: cancel() ends the PREVIOUS utterance
     speechSynthesis.cancel();                  // trap 3: replace-don't-queue + iOS queue-lock workaround
     var u = new SpeechSynthesisUtterance(text);
     u.voice = apSpeakVoice;
+    u.onstart = function(){ apDuck(text); };   // duck when audio actually BEGINS (not when queued)
+    u.onend   = function(){ apUnduck(); };
+    u.onerror = function(){ apUnduck(); };
     speechSynthesis.speak(u);
   }
 
