@@ -3547,6 +3547,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     voiceSegFinalize,
     voiceSegStart,
     entriesAfter,
+    compactSpill,
     get seatResolver() { return seatResolver; },
     get commsMode() { return commsMode; },
     get inboxSeq() { return inboxSeq; },

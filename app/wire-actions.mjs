@@ -75,6 +75,23 @@ export function createWireActions(ctx) {
       return;
   });
 
+  wireActions.set("pvs_ack", ({ m, c, ws, req }) => {
+      // ⛔ Plan 0687 R2 (G5) — THE ACK, over the same socket that carried the turns. This is the
+      // ONLY wire frame that may move an `acked` position, and it moves ONLY the sender's own
+      // delivery record: the key comes from the subscriber table, never from the frame, so one
+      // watcher can never ack another's turns. A socket that is not a subscriber is refused by
+      // name — silently ignoring it would look exactly like a successful ack.
+      const sub = pvsSubscribers.get(ws);
+      if (!sub) { send(ws, { t: 'pvs_acked', ok: false, reason: 'not-a-subscriber' }); return; }
+      const live = ctx.inboxSeq;
+      const asked = (typeof m.seq === 'number' && Number.isFinite(m.seq)) ? m.seq : cursors.delivery(sub.consumer).sent;
+      const rec = cursors.ackDelivery(sub.consumer, Math.max(0, Math.min(asked, live)));
+      ctx.compactSpill();
+      send(ws, { t: 'pvs_acked', ok: true, consumer: sub.consumer, acked: rec.acked, sent: rec.sent, liveCursor: live });
+      log.info('pvs', 'ack-ws', { consumer: sub.consumer, acked: rec.acked, sent: rec.sent });
+      return;
+  });
+
   wireActions.set("hello", ({ m, c, ws, req }) => {
       // Plan 0472 P4 (SECURITY): a signed, scoped, revocable GUEST capability link (?cap=<token>).
       // The HMAC is verified over the RAW payload bytes BEFORE any field is trusted; exp + revocation
