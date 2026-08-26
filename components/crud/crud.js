@@ -5,8 +5,13 @@
  * lockable, role-permissioned. shared-list = 1-column CRUD; shared-select = a
  * single-record CRUD (configs land in F4).
  *
- * F1 (this): render items from the state slice (seeded by the connection snapshot,
- * kept live by crud/{id} diffs). Interactivity (ops) + locking land in F2/F3.
+ * ⚠ THIS HEADER WAS STALE AND IT MISLED A READER (corrected 2026-08-26). It said
+ * "F1 (this): render only — interactivity (ops) + locking land in F2/F3". F2 AND F3 ARE BUILT:
+ * this component adds (`op(slice,'add')`), deletes (`'remove'`), edits (`'merge'`) and
+ * locks/unlocks rows, and it has for some time. Measured end-to-end, not read: an add reaches
+ * the server, appears on another user's screen, and a locked row now refuses another user.
+ * ⇒ Render from the slice (seeded by the connection snapshot, kept live by crud/{id} diffs);
+ *   every mutation is an op, server-authoritative.
  *
  * opts = { id, title?, fields:[{name,label,type?}], items?, config? }
  * Patterns: Observer (slice subscription), Reducer (render from slice), Composite.
