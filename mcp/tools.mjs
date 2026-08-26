@@ -161,6 +161,11 @@ export const coreTools = [
       // survives a restart. Kept in the resolved state/log dir (so it honours PRESENTER_SESSION_LOG_DIR
       // test isolation); resolved here, not taken from the caller, like the session log dir.
       opts.revokedNonceFile = join(sessionLogTarget.sessionLogDir || defaultSessionLogDir(), 'revoked-caps.json');
+      // Plan 0693 T1 — the durable OIDC session store, resolved HERE for the same reason and by the
+      // same rule as the two paths above: it is deployment state, it lives in the declared state dir
+      // (never the checkout), and it is never taken from the caller. ⛔ It is a CREDENTIAL AT REST
+      // (0696 F9) — mode 0600, sha256(sid) only, and excluded from every backup and artifact.
+      opts.sessionStoreFile = join(sessionLogTarget.sessionLogDir || defaultSessionLogDir(), 'oidc-sessions.json');
       // Plan 0551 P2 — applied LAST so a config-stated revokedNonceFile overrides the derived path.
       Object.assign(opts, identityServerOptions(identity));
       server = await createServer(opts);

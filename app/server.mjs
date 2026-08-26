@@ -180,7 +180,7 @@ function sendStatic(res, req, absPath, contentType) {
   } catch (e) { res.writeHead(404); res.end('not found'); }
 }
 
-export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null, profile = DEFAULT_PROFILE, settlingMs = null, queueMaxPending = null, queueTtlMs = null, perTurnBudgetMs = null, perTurnWrapMs = null, floorThresholds = null, sessionLogDir = null, enforceOAuth = undefined, allowPasswordCommandOnLAN = undefined, allowlist = null, oidc = null, oidcDeps = null, oidcSessionTtlMs = null, tailscale = null, tailscaleResolve = null, tailscaleWhois = null, breakGlass = null, breakGlassDeps = null, revokedNonceFile = null, bindHosts = null, cursorDir = null } = {}) {
+export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null, profile = DEFAULT_PROFILE, settlingMs = null, queueMaxPending = null, queueTtlMs = null, perTurnBudgetMs = null, perTurnWrapMs = null, floorThresholds = null, sessionLogDir = null, enforceOAuth = undefined, allowPasswordCommandOnLAN = undefined, allowlist = null, oidc = null, oidcDeps = null, oidcSessionTtlMs = null, tailscale = null, tailscaleResolve = null, tailscaleWhois = null, breakGlass = null, breakGlassDeps = null, revokedNonceFile = null, sessionStoreFile = null, bindHosts = null, cursorDir = null } = {}) {
   // Plan 0543 P1 — the AUTH POLICY dial. Validated HERE (the single startup path shared by the CLI
   // self-run and presenter_start): an unknown enforceOAuth value THROWS rather than falling through
   // to a policy the deployer never chose. This slice is plumbing only — P3 makes the policy govern.
@@ -303,7 +303,19 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
    *   - tsAdapter      — a DIRECT tailnet peer's identity (never over the tunnel).
    */
   const AUTH_ALLOWLIST = makeAllowlist(allowlist);
-  const oidcAdapter = makeOidcAdapter(oidc, { ...(oidcDeps || defaultOidcDeps()), ...(oidcSessionTtlMs != null ? { sessionTtlMs: oidcSessionTtlMs } : {}) });
+  /*
+   * ── Plan 0693 T1 — THE SESSION STORE PATH IS DEPLOYMENT DATA, AND IT IS PASSED IN HERE ────────
+   * `sessionStoreFile` null (every bare library call, i.e. the whole suite) ⇒ the adapter keeps its
+   * sessions in memory exactly as before and writes nothing. Both launch paths resolve a path in
+   * the declared state dir, so a REAL deployment's sign-in survives the next deploy.
+   * ⛔ The warn hook receives CATEGORIES AND COUNTS ONLY — never a session id, never a principal.
+   */
+  const oidcAdapter = makeOidcAdapter(oidc, {
+    ...(oidcDeps || defaultOidcDeps()),
+    ...(oidcSessionTtlMs != null ? { sessionTtlMs: oidcSessionTtlMs } : {}),
+    sessionStoreFile,
+    onStoreWarn: (event, detail) => { try { log.warn('auth', event, detail || {}); } catch {} },
+  });
   /*
    * ── Plan 0650 §2a — THE TAILNET RESOLVER IS BUILT HERE, NOT ROUTED FROM CONFIG ────────────────
    *
@@ -3677,6 +3689,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     // Plan 0543 P4 — a durable store for revoked guest-link nonces (in the state/log dir) so a
     // revocation survives a restart. State, not content: it holds only nonces.
     revokedNonceFile: join(logTarget.sessionLogDir || defaultSessionLogDir(), 'revoked-caps.json'),
+    // Plan 0693 T1 — the durable OIDC session store, in the SAME declared state dir, for the same
+    // reason and by the same rule: state, never the checkout, and never a caller-chosen path.
+    // ⛔ A CREDENTIAL AT REST (0696 F9): mode 0600, sha256(sid) only, excluded from every backup.
+    sessionStoreFile: join(logTarget.sessionLogDir || defaultSessionLogDir(), 'oidc-sessions.json'),
     ...identityServerOptions(identity),
   }).then((s) => {
     const u = s.url();   // base like http://127.0.0.1:PORT (no trailing slash)

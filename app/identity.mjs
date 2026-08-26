@@ -17,6 +17,7 @@
  */
 import { createHash, createPublicKey, verify as cryptoVerify, randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
+import { createSessionStore } from '../lib/session-store.mjs';
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────────
  * THE LOOPBACK TRAP (§2.2) — the worst hole if it is wrong.
@@ -198,22 +199,32 @@ export const SESSION_COOKIE = 'ap_sid';
  * the tunnel origin — same-origin callback + SameSite=Lax. If that binding is wrong a verified user
  * reads as unverified at the socket (the A-lockout). Verify against the live tunnel before relying on it.
  */
-export function makeOidcAdapter(config, { exchangeCode, fetchJwks, now = () => Date.now(), sessionTtlMs = 12 * 3600 * 1000 } = {}) {
+export function makeOidcAdapter(config, { exchangeCode, fetchJwks, now = () => Date.now(), sessionTtlMs = 12 * 3600 * 1000, sessionStoreFile = null, onStoreWarn = null } = {}) {
   const active = !!(config && config.clientId && config.authEndpoint && config.tokenEndpoint && config.redirectUri);
-  const sessions = new Map();   // sid -> { principal, exp }
+  /*
+   * ── Plan 0693 T1 — THE SESSION STORE, WHICH USED TO BE `new Map()` AND NOTHING ELSE ─────────
+   * Sessions lived only in memory, so every restart destroyed every sign-in — and jill restarts on
+   * every push. The store is now an object that MAY be file-backed: `sessionStoreFile` null (a bare
+   * library call, i.e. the whole test suite) ⇒ in-memory, byte-for-byte the old behaviour and no
+   * I/O at all. A deployment path resolves a path in the declared state dir and a sign-in survives.
+   * ⛔ The store keys by sha256(sid) — see lib/session-store.mjs. The sid itself is never written.
+   */
+  const sessions = createSessionStore({ file: active ? sessionStoreFile : null, now, onWarn: onStoreWarn });
   const pending = new Map();    // state -> { verifier, nonce, exp }
   const PENDING_TTL = 10 * 60 * 1000;
 
   function sweep() {
     const t = now();
-    for (const [k, v] of sessions) if (v.exp <= t) sessions.delete(k);
+    void sessions.size;         // getter sweeps expired sessions (and persists any drop)
     for (const [k, v] of pending) if (v.exp <= t) pending.delete(k);
   }
 
   return {
     active,
-    _sessions: sessions,   // test-only observability
+    _sessions: sessions,   // test-only observability (keys are HASHES — see lib/session-store.mjs)
     _pending: pending,
+    /** Counts only, for the startup line. ⛔ Never a session id, never a principal. */
+    sessionStoreStats() { return sessions.stats(); },
 
     /** Begin login: mint state+nonce+PKCE, remember them server-side, return the authorization URL. */
     beginLogin() {
@@ -264,6 +275,8 @@ export function makeOidcAdapter(config, { exchangeCode, fetchJwks, now = () => D
       });
       if (!v.ok) return { ok: false, reason: 'idtoken-' + v.reason };
       const sid = randomToken();
+      // ⭐ Plan 0693 T1 — MINT WRITES THROUGH. The store persists here, so the session outlives the
+      //   process that minted it. ⛔ Deliberately still no log line carrying the sid or principal.
       sessions.set(sid, { principal: v.principal, exp: now() + sessionTtlMs });
       return { ok: true, sid, principal: v.principal };
     },
@@ -274,10 +287,8 @@ export function makeOidcAdapter(config, { exchangeCode, fetchJwks, now = () => D
       const cookies = parseCookies(req && req.headers && req.headers.cookie);
       const sid = cookies[SESSION_COOKIE];
       if (!sid) return null;
-      const s = sessions.get(sid);
-      if (!s) return null;
-      if (s.exp <= now()) { sessions.delete(sid); return null; }   // expired ⇒ treat as unverified (prompt re-auth, P3)
-      return s.principal;
+      const s = sessions.get(sid);   // expired ⇒ null, and dropped by the store (prompt re-auth, P3)
+      return s ? s.principal : null;
     },
 
     /** True iff the request carries a session cookie whose session has EXPIRED (for the re-auth prompt, T12). */
@@ -286,13 +297,14 @@ export function makeOidcAdapter(config, { exchangeCode, fetchJwks, now = () => D
       const cookies = parseCookies(req && req.headers && req.headers.cookie);
       const sid = cookies[SESSION_COOKIE];
       if (!sid) return false;
-      const s = sessions.get(sid);
-      return !!(s && s.exp <= now());
+      return sessions.expired(sid);
     },
 
     logout(req) {
       const cookies = parseCookies(req && req.headers && req.headers.cookie);
       const sid = cookies[SESSION_COOKIE];
+      // ⭐ Plan 0693 T1 — REVOKE WRITES THROUGH TOO. A sign-out that a restart undoes is not a
+      //   sign-out; that is the same defect as the lost session, pointed the other way.
       if (sid) sessions.delete(sid);
     },
 
