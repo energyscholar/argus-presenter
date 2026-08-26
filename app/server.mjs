@@ -29,7 +29,7 @@ import { ALL as ALL_READ_ROLES } from './permissions.mjs';
 import { validate, summarize } from './validate.mjs';
 import { createAsr } from './asr.mjs';
 import { verifyCapability, mintCapability } from '../lib/capability.mjs';
-import { presenterPort, authPolicy, normalizeAuthPolicy, identityConfig, identityServerOptions, identityStartupLine, bindHostsConfig } from '../lib/deployment-config.mjs';
+import { presenterPort, authPolicy, normalizeAuthPolicy, identityConfig, identityServerOptions, identityStartupLine, bindHostsConfig, roomConfig, roomStartupLine, installConfigReloader } from '../lib/deployment-config.mjs';
 import { makeAllowlist, makeOidcAdapter, makeTailscaleAdapter, defaultOidcDeps, makeTailscaleWhois, makeBreakGlassAdapter, isTailnetPeerAddress } from './identity.mjs';
 /* Plan 0650 §2a — how long a socket's first frames may wait for `tailscale whois`, and how many may
  * queue while they do. The deadline is the whois timeout plus slack: past it the peer is simply
@@ -3478,6 +3478,29 @@ if (import.meta.url === `file://${process.argv[1]}`) {
    */
   const identity = identityConfig();
   console.log(' ', identityStartupLine(identity));
+  /*
+   * Plan 0675 T3 (guard G12) — SAY WHICH ROOM THIS PROCESS SERVES, AND WHERE EVERY VALUE CAME FROM.
+   * An invisible resolution is the trap: on 2026-08-25 a correctly-configured presenter had no
+   * microphone and nothing anywhere stated what had actually been resolved.
+   *
+   * ⚠ PHASE 0 IS INERT. This line REPORTS; it changes nothing. No capability below is passed to
+   * createServer, which is why the line says so out loud rather than letting a reader assume the
+   * plugin set it names is the plugin set that loaded.
+   *
+   * ⛔ A malformed rooms block, or a PRESENTER_ROOM naming a room nobody declared, throws HERE —
+   * at startup, by name — exactly as a half-stated oidc block does. Booting on a policy nobody
+   * chose is the failure being prevented.
+   */
+  console.log(' ', roomStartupLine(roomConfig()));
+  /*
+   * Plan 0675 T5 — SIGHUP re-reads the deployment config and logs which top-level KEYS changed.
+   * ⛔ A bad file KEEPS the previous configuration and the process stays up: a typo in an unrelated
+   * section must not take down whatever this room was in the middle of. ⛔ Key names, never values.
+   * ⚠ Installing this handler means SIGHUP no longer terminates the process — the one
+   * externally-visible behaviour phase 0 changes, and it is installed HERE only, never by
+   * createServer() and never by a test.
+   */
+  installConfigReloader();
   createServer({
     port: p,
     controlToken: cliToken,
