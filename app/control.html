@@ -161,9 +161,38 @@
      ⚠ R9: full screen has NO send. It is strictly a looking-and-interacting mode; the transport
      keys and the GO button are both out of reach while it is open (see the keydown handler), so
      there is nothing here that can ship by accident. */
-  #btn-pvfull{position:absolute;right:2px;bottom:2px;z-index:4;font-size:10px;line-height:1;padding:2px 5px;
-    background:rgba(6,12,28,.72);border:1px solid #2a3a5a;color:var(--dim);border-radius:4px;cursor:pointer;}
-  #btn-pvfull:hover{color:#fff;border-color:var(--ok);}
+  /* ── Plan 0695 A1 — THE CONTROL MUST BE FINDABLE ──────────────────────────────────────────
+     ⛔ NOTHING BELOW CHANGES WHAT THIS BUTTON DOES. Full screen has worked since P7.2 and six
+     tests (0522 t17–t22) prove it. It was INVISIBLE: a 10px ⤢ glyph on a .72-opacity field,
+     padded 2px 5px, inset TWO pixels into the corner of a 432×282 box — about 0.15% of the
+     preview's area, in the dimmest colour on the page. Bruce commissioned this preview, uses it
+     constantly, and reported the maximise capability as MISSING. That is the measurement: a
+     feature nobody can find has the same value as a feature that does not exist, and it produces
+     the same bug report. So the fix is size, contrast, a WORD, and a hint — not new behaviour.
+     ⚠ The button is `position:absolute` inside #preview and takes part in no layout, so none of
+     the five hand-synchronised --pv-* constants above are involved (F11). Not one is touched. */
+  #btn-pvfull{position:absolute;right:6px;bottom:6px;z-index:5;display:inline-flex;align-items:center;gap:6px;
+    min-height:28px;min-width:28px;box-sizing:border-box;padding:6px 10px;
+    font:600 12px/1 'Segoe UI',system-ui,sans-serif;letter-spacing:.02em;
+    background:rgba(10,20,44,.94);border:1px solid #6b82ad;color:#d6e4f7;border-radius:5px;cursor:pointer;
+    box-shadow:0 1px 5px rgba(0,0,0,.55);}
+  #btn-pvfull [data-vp-glyph]{font-size:14px;line-height:1;}
+  #btn-pvfull:hover,#btn-pvfull:focus{color:#fff;border-color:var(--ok);background:rgba(11,34,44,.96);outline:none;}
+  #btn-pvfull:focus{box-shadow:0 0 0 2px rgba(34,229,160,.55);}
+  /* A2 — the ONE-TIME CUE. The first time real content lands in the DOCKED preview this pulses,
+     because the moment the operator first has something worth enlarging is the only moment a cue
+     is information rather than noise. It runs a fixed number of times and stops; it is not a
+     permanent flashing control. */
+  @keyframes pvfullcue{0%,100%{box-shadow:0 1px 5px rgba(0,0,0,.55);}
+    50%{box-shadow:0 0 0 5px rgba(34,229,160,.45),0 1px 5px rgba(0,0,0,.55);}}
+  #btn-pvfull.cue{animation:pvfullcue 1.1s ease-in-out 4;border-color:var(--ok);color:#fff;}
+  /* A2 — the PERSISTENT HINT. Shown on hover AND on keyboard focus (a control reachable only by
+     mouse is half-findable), and shown alongside the one-time cue so the cue explains itself
+     instead of merely blinking. A3's shortcut is named here, which is what makes it documented. */
+  #pvfulltip{display:none;position:absolute;right:6px;bottom:42px;z-index:5;max-width:calc(100% - 12px);
+    font-size:11px;line-height:1.4;color:#eaf4ff;background:rgba(6,12,28,.96);border:1px solid #6b82ad;
+    border-radius:4px;padding:5px 8px;pointer-events:none;text-align:right;box-shadow:0 2px 6px rgba(0,0,0,.5);}
+  #btn-pvfull:hover + #pvfulltip,#btn-pvfull:focus + #pvfulltip,#btn-pvfull.cue + #pvfulltip{display:block;}
   /* ⚠ #pvdock is position:fixed WITH a z-index, so it is its own stacking context and a z-index
      on #preview alone can never climb past it — the full-screen surface would sit under the
      settings overlay (61) and the green dot (60). The dock is raised with it. */
@@ -173,7 +202,8 @@
      centring offsets are half the SOURCE frame and must track it, so they are derived too. */
   #preview.fullscreen iframe{transform:scale(1);position:absolute;left:50%;top:50%;
     margin-left:calc(var(--pv-src-w) / -2);margin-top:calc(var(--pv-src-h) / -2);}
-  #preview.fullscreen #btn-pvfull{right:10px;bottom:10px;font-size:13px;padding:5px 10px;}
+  #preview.fullscreen #btn-pvfull{right:12px;bottom:12px;min-height:34px;font-size:14px;padding:9px 14px;}
+  #preview.fullscreen #pvfulltip{right:12px;bottom:56px;}
   /* R8 — the exit hint. Deliberately BARELY visible: it is a reminder for the operator who has
      forgotten, not a label competing with the content it sits on top of. */
   #pvfshint{display:none;position:absolute;left:8px;top:6px;z-index:3;font-size:10px;letter-spacing:.08em;
@@ -352,7 +382,7 @@
 <div id="pvdock">
   <!-- P7 (R7): sandbox stays allow-scripts and ONLY allow-scripts. allow-forms is NOT the lever
        that makes forms work here and would re-enable a native submit that navigates this frame. -->
-  <div id="preview"><iframe id="pvframe" sandbox="allow-scripts"></iframe><div id="pvstate">● LIVE</div><div id="pvfshint">Press ESC to exit</div><div id="pvfsnote"></div><div id="pvrehearse">rehearsal only — nothing was sent</div><div class="pvlabel" id="pvlabel">idle</div><div id="pvwarn"><div class="pvwarn-main">⚠ preview paused</div><div class="pvwarn-sub">system busy</div></div><button id="btn-pvfull" title="Full screen — the preview at native size, interactive. ESC exits. Nothing can be sent from full screen.">⤢</button></div>
+  <div id="preview"><iframe id="pvframe" sandbox="allow-scripts"></iframe><div id="pvstate">● LIVE</div><div id="pvfshint">Press ESC to exit</div><div id="pvfsnote"></div><div id="pvrehearse">rehearsal only — nothing was sent</div><div class="pvlabel" id="pvlabel">idle</div><div id="pvwarn"><div class="pvwarn-main">⚠ preview paused</div><div class="pvwarn-sub">system busy</div></div><button id="btn-pvfull" title="Full screen (or press F) — the preview at native size, interactive. ESC exits. Nothing can be sent from full screen."><span data-vp-glyph>⤢</span><span data-vp-text>Full screen</span></button><div id="pvfulltip">The preview at native size, interactive.<br>Press <b>F</b> to toggle · <b>ESC</b> to exit</div></div>
 </div>
 <label id="livepreview-lbl" title="live 'view-as' thumbnail — first thing dropped when the tab is busy"><input type="checkbox" id="livepreview" checked> live preview</label>
 <div id="ap-config" role="dialog" aria-label="Settings">
@@ -709,10 +739,25 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
       .catch(stale);
   }
 
+  // ── Plan 0695 A2 — THE ONE-TIME CUE ─────────────────────────────────────────────────────────
+  // Fired the FIRST time real content lands in the DOCKED preview, and never again this load. The
+  // moment the operator first has something worth enlarging is the only moment a cue carries
+  // information; a control that pulses forever is decoration, and decoration is what people learn
+  // to stop seeing. It is not fired in full screen (the control is already large and already
+  // where the eye is) and not on the blank idle frame (there is nothing to enlarge).
+  var pvCued=false;
+  function cuePreviewFull(){
+    if(pvCued || fsOpen) return;
+    var b=$('btn-pvfull'); if(!b) return;
+    pvCued=true;
+    b.classList.add('cue');
+    setTimeout(function(){ b.classList.remove('cue'); }, 5000);
+  }
+
   function renderPreview(html, label){
     var f=$('pvframe');
     if(html==null){ f.srcdoc='<body style="margin:0;background:#050510"></body>'; }
-    else if(html!==undefined){ f.srcdoc=html; }
+    else if(html!==undefined){ f.srcdoc=html; cuePreviewFull(); }
     if(label!==undefined) $('pvlabel').textContent=label||'—';
     // P5: the "as X" line reads THE TARGET, not `viewingAs` — a station target has no userId, and
     // labelling it "default (ALL)" would be the exact lie this phase removes.
@@ -1527,17 +1572,26 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
 
   // ── Plan 0522 P7.2 — FULL SCREEN ───────────────────────────────────────────────────────────
   // One flag, one function. Entering and leaving both route through here so the ESC key, the
-  // toggle button and any future caller cannot disagree about what "full screen" means.
+  // toggle button, the F shortcut (0695 A3) and any future caller cannot disagree about what
+  // "full screen" means.
   function setFullscreen(on){
     on=!!on;
     if(on===fsOpen) return;
     fsOpen=on;
     $('preview').classList.toggle('fullscreen',on);
     $('pvdock').classList.toggle('fullscreen',on);   // the dock owns the stacking context — see the CSS note
+    // 0695 A1: the glyph and the WORDS are separate nodes now, so flipping the glyph no longer
+    // eats the label. A button that is only a glyph is the defect Part A exists to fix.
     var b=$('btn-pvfull');
-    if(b){ b.textContent = on?'⤡':'⤢';
-      b.title = on ? 'Exit full screen (ESC) — nothing can be sent from here; exit first, then press GO'
-                   : 'Full screen — the preview at native size, interactive. ESC exits. Nothing can be sent from full screen.'; }
+    if(b){
+      var g=b.querySelector('[data-vp-glyph]'), t=b.querySelector('[data-vp-text]');
+      if(g) g.textContent = on?'⤡':'⤢'; else b.textContent = on?'⤡':'⤢';
+      if(t) t.textContent = on?'Exit full screen':'Full screen';
+      b.setAttribute('aria-pressed', on?'true':'false');
+      b.title = on ? 'Exit full screen (ESC, or press F) — nothing can be sent from here; exit first, then press GO'
+                   : 'Full screen (or press F) — the preview at native size, interactive. ESC exits. Nothing can be sent from full screen.';
+      b.setAttribute('aria-label', b.title);
+    }
     // Leaving re-applies the paused/degraded policy that full screen was suspending; entering
     // clears a stale note. Either way the state is recomputed, never assumed.
     applyPreviewState();
@@ -1684,6 +1738,14 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     // ever seeing the button they pressed. Exit first, then send — that is the whole ruling.
     // (A key pressed while focus is INSIDE the preview frame never reaches this page at all;
     // the ⤡ button in the corner is the exit for that case, which is why it stays clickable.)
+    // ── Plan 0695 A3 — F TOGGLES FULL SCREEN ─────────────────────────────────────────────────
+    // A control you must first SEE in order to use is the defect Part A exists to fix; a key is
+    // the second way in, and it is named on the button's own tooltip and on the hover/focus hint,
+    // so it is discoverable FROM THE CONTROL rather than from a manual nobody opens. Same guards
+    // as every other key on this page: never while typing, never with a modifier. It is placed
+    // ahead of the full-screen swallow on purpose — F is the one key that must work in BOTH
+    // directions, and R9 is not weakened by it: F ships nothing.
+    if(e.key==='f'||e.key==='F'){ setFullscreen(!fsOpen); e.preventDefault(); return; }
     if(fsOpen){
       if(e.key==='Escape'){ setFullscreen(false); e.preventDefault(); }
       return;
@@ -2092,6 +2154,7 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     queueModule:queueModule,   // P11 t31 hook: a series naming a module the lifecycle filter hides
     staged:function(){return staged;}, lastSent:function(){return lastSent;},   // P6 t14/t15/t16 hooks: the armed candidate + the last delivery receipt
     fullscreen:function(){return fsOpen;}, setFullscreen:setFullscreen,   // P7.2 t17/t18/t19 hooks
+    previewCued:function(){return pvCued;},   // 0695 A2 hook: has the one-time cue already fired?
     previewDrops:function(){return pvDrops.slice();},   // P7.1 t21 hook: results the preview posted and this page DROPPED
     degrade:function(b){ degraded=!!b; applyPreviewState(); } };   // MON-2 test hook: force the degraded state without real CPU load
 })();
