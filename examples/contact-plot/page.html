@@ -1,0 +1,241 @@
+<div class="cp">
+  <h1>Contact Plot</h1>
+  <p class="who" id="who">…</p>
+
+  <div class="stations">
+    <div class="stn" id="stn-A"><span class="mk mA">◆</span><span class="occ" id="occ-A">free</span>
+      <button class="join" id="join-A" type="button">Take A</button></div>
+    <div class="stn" id="stn-B"><span class="mk mB">◆</span><span class="occ" id="occ-B">free</span>
+      <button class="join" id="join-B" type="button">Take B</button></div>
+  </div>
+
+  <svg id="plot" viewBox="0 0 400 400" role="img" aria-label="tactical plot">
+    <defs>
+      <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+        <stop offset="0%" stop-color="#1a2430" stop-opacity="1"/>
+        <stop offset="100%" stop-color="#0d1117" stop-opacity="1"/>
+      </radialGradient>
+    </defs>
+    <rect x="0" y="0" width="400" height="400" fill="url(#glow)"/>
+    <g id="rings" stroke="#1b232e" fill="none"></g>
+    <g id="grid" stroke="#181e27" stroke-width="1"></g>
+    <line id="bearing" x1="0" y1="0" x2="0" y2="0" stroke="#3a4757" stroke-width="1.5" stroke-dasharray="4 4"/>
+    <g id="tokens"></g>
+  </svg>
+
+  <div class="readout">
+    <div><b id="r-range">—</b><span>range</span></div>
+    <div><b id="r-bearing">—</b><span>bearing A→B</span></div>
+    <div><b id="r-you">—</b><span>your position</span></div>
+  </div>
+  <p class="hint" id="hint">Drag your own contact. Everyone sees it move.</p>
+</div>
+<script>
+/*
+ * CONTACT PLOT — a shared tactical display, and the first demo with CONTINUOUS shared state.
+ *
+ * Everything before this wrote on a discrete act: a click, a commit, a submit. Dragging produces
+ * a value many times a second, and writing every one of them would put hundreds of ops a second
+ * into the store and every other client's diff stream.
+ *
+ * ⛔ SO THE DRAG IS THROTTLED AND THE RELEASE IS NOT. A throttle alone loses the last position --
+ *   the pointer stops moving, the final frame is swallowed by the interval, and the token settles
+ *   a few pixels from where it was dropped on every OTHER screen but not on yours. That divergence
+ *   is silent and permanent. Every throttled stream needs an unthrottled final write.
+ *
+ * Position is normalised 0..1, never pixels: the phone and the laptop have different viewports and
+ * a pixel is not a shared unit. (See the standing lesson: an absolute that should be a delta.)
+ */
+(function () {
+  var ME = (Argus.identity() || {}).userId || 'anon';
+  var MYNAME = (Argus.identity() || {}).userName || ME;
+  var SEATS = ['A', 'B'], SIZE = 400, THROTTLE = 70;
+
+  var svg = document.getElementById('plot');
+  var tokensG = document.getElementById('tokens');
+
+  function seatPath(s) { return 'shared/cp/seats/' + s; }
+  function occupant(s) { return Argus.lockOwner(seatPath(s)); }
+  function nameOf(id) { return id ? (Argus.state('shared/cp/names/' + id) || id) : null; }
+  function mySeat() { return occupant('A') === ME ? 'A' : occupant('B') === ME ? 'B' : null; }
+  function posOf(s) { return Argus.state('shared/cp/pos/' + s) || null; }
+
+  function publishName() {
+    if (Argus.state('shared/cp/names/' + ME) !== MYNAME) Argus.op('shared/cp/names/' + ME, 'set', MYNAME);
+  }
+  function join(s) {
+    if (occupant(s) || mySeat()) return;
+    publishName();
+    Argus.op(seatPath(s), 'lock', {});
+    if (!posOf(s)) Argus.op('shared/cp/pos/' + s, 'set', { x: s === 'A' ? 0.3 : 0.7, y: 0.5 });
+  }
+  function leave(s) { if (occupant(s) === ME) Argus.op(seatPath(s), 'unlock', null); }
+
+  /* Static decoration: range rings and a grid, drawn once. */
+  (function decorate() {
+    var rings = document.getElementById('rings'), grid = document.getElementById('grid');
+    for (var r = 50; r <= 200; r += 50) {
+      var c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      c.setAttribute('cx', 200); c.setAttribute('cy', 200); c.setAttribute('r', r);
+      c.setAttribute('fill', 'none'); c.setAttribute('stroke', '#1b232e');
+      c.setAttribute('stroke', '#1b232e'); c.setAttribute('stroke-width', '1');
+      rings.appendChild(c);
+    }
+    for (var g = 0; g <= 400; g += 50) {
+      var l1 = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      l1.setAttribute('x1', g); l1.setAttribute('y1', 0); l1.setAttribute('x2', g); l1.setAttribute('y2', 400);
+      grid.appendChild(l1);
+      var l2 = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      l2.setAttribute('x1', 0); l2.setAttribute('y1', g); l2.setAttribute('x2', 400); l2.setAttribute('y2', g);
+      grid.appendChild(l2);
+    }
+  })();
+
+  /* ── the throttled writer ─────────────────────────────────────────────────────────────── */
+  var last = 0, pendingVal = null, timer = null;
+  function writePos(v, final) {
+    var seat = mySeat(); if (!seat) return;
+    if (final) {
+      if (timer) { clearTimeout(timer); timer = null; }
+      pendingVal = null;
+      Argus.op('shared/cp/pos/' + seat, 'set', v);       // ⭐ the release is NEVER throttled
+      return;
+    }
+    var now = Date.now();
+    if (now - last >= THROTTLE) { last = now; Argus.op('shared/cp/pos/' + seat, 'set', v); return; }
+    pendingVal = v;
+    if (!timer) timer = setTimeout(function () {
+      timer = null;
+      if (pendingVal) { last = Date.now(); Argus.op('shared/cp/pos/' + mySeat(), 'set', pendingVal); pendingVal = null; }
+    }, THROTTLE - (now - last));
+  }
+
+  /* Pointer position → normalised 0..1 inside the viewBox, clamped. */
+  function toNorm(ev) {
+    var r = svg.getBoundingClientRect();
+    var cx = (ev.touches ? ev.touches[0].clientX : ev.clientX) - r.left;
+    var cy = (ev.touches ? ev.touches[0].clientY : ev.clientY) - r.top;
+    return { x: Math.max(0, Math.min(1, cx / r.width)), y: Math.max(0, Math.min(1, cy / r.height)) };
+  }
+
+  var dragging = false;
+  function down(ev) {
+    if (!mySeat()) return;
+    var t = ev.target.closest ? ev.target.closest('[data-seat]') : null;
+    if (!t || t.getAttribute('data-seat') !== mySeat()) return;   // only your own contact
+    dragging = true; ev.preventDefault();
+    svg.setAttribute('data-drag', '1');
+  }
+  function move(ev) { if (!dragging) return; ev.preventDefault(); writePos(toNorm(ev), false); }
+  function up(ev) {
+    if (!dragging) return;
+    dragging = false; svg.removeAttribute('data-drag');
+    writePos(toNorm(ev.changedTouches ? { touches: ev.changedTouches } : ev), true);
+  }
+  svg.addEventListener('mousedown', down);   window.addEventListener('mousemove', move);   window.addEventListener('mouseup', up);
+  svg.addEventListener('touchstart', down, { passive: false });
+  window.addEventListener('touchmove', move, { passive: false });
+  window.addEventListener('touchend', up);
+
+  function render() {
+    var me = mySeat();
+    document.getElementById('who').textContent = me
+      ? 'You are ' + MYNAME + ' — contact ' + me
+      : 'You are ' + MYNAME + ' — observing';
+    document.getElementById('who').className = 'who' + (me ? ' seated' : ' observer');
+
+    for (var si = 0; si < SEATS.length; si++) {
+      var s = SEATS[si], o = occupant(s), mine = o === ME;
+      var oc = document.getElementById('occ-' + s);
+      oc.textContent = o ? nameOf(o) : 'free';
+      oc.className = 'occ' + (o ? (mine ? ' mine' : ' taken') : '');
+      var b = document.getElementById('join-' + s);
+      b.textContent = mine ? 'Leave' : 'Take ' + s;
+      b.disabled = (!!o && !mine) || (!o && !!me);
+      document.getElementById('stn-' + s).className = 'stn' + (mine ? ' mine' : (o ? ' taken' : ''));
+    }
+
+    tokensG.innerHTML = '';
+    var pts = {};
+    for (var k = 0; k < SEATS.length; k++) {
+      var sq = SEATS[k], p = posOf(sq);
+      if (!p || !occupant(sq)) continue;
+      var px = p.x * SIZE, py = p.y * SIZE;
+      pts[sq] = { x: px, y: py };
+      var g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+      g.setAttribute('data-seat', sq);
+      g.setAttribute('class', 'tok tok' + sq + (occupant(sq) === ME ? ' mine' : ''));
+      var halo = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      halo.setAttribute('cx', px); halo.setAttribute('cy', py); halo.setAttribute('r', 16);
+      halo.setAttribute('class', 'halo');
+      var dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      dot.setAttribute('cx', px); dot.setAttribute('cy', py); dot.setAttribute('r', 7);
+      dot.setAttribute('class', 'dot');
+      var lab = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      lab.setAttribute('x', px); lab.setAttribute('y', py - 22); lab.setAttribute('text-anchor', 'middle');
+      lab.setAttribute('class', 'lab'); lab.textContent = sq + (nameOf(occupant(sq)) ? ' · ' + nameOf(occupant(sq)) : '');
+      g.appendChild(halo); g.appendChild(dot); g.appendChild(lab);
+      tokensG.appendChild(g);
+    }
+
+    var bl = document.getElementById('bearing');
+    if (pts.A && pts.B) {
+      bl.setAttribute('x1', pts.A.x); bl.setAttribute('y1', pts.A.y);
+      bl.setAttribute('x2', pts.B.x); bl.setAttribute('y2', pts.B.y);
+      var dx = pts.B.x - pts.A.x, dy = pts.B.y - pts.A.y;
+      var dist = Math.sqrt(dx * dx + dy * dy);
+      var brg = (Math.atan2(dx, -dy) * 180 / Math.PI + 360) % 360;
+      document.getElementById('r-range').textContent = Math.round(dist) + ' u';
+      document.getElementById('r-bearing').textContent = Math.round(brg) + '°';
+    } else {
+      bl.setAttribute('x1', 0); bl.setAttribute('y1', 0); bl.setAttribute('x2', 0); bl.setAttribute('y2', 0);
+      document.getElementById('r-range').textContent = '—';
+      document.getElementById('r-bearing').textContent = '—';
+    }
+    var mine = me ? posOf(me) : null;
+    document.getElementById('r-you').textContent = mine
+      ? Math.round(mine.x * SIZE) + ', ' + Math.round(mine.y * SIZE) : '—';
+    document.getElementById('hint').textContent = me
+      ? 'Drag your own contact — position is normalised, so both screens agree at any size.'
+      : 'Observers see every contact move live.';
+  }
+
+  for (var q = 0; q < SEATS.length; q++) (function (s) {
+    document.getElementById('join-' + s).addEventListener('click', function () {
+      if (occupant(s) === ME) leave(s); else join(s);
+    });
+  })(SEATS[q]);
+
+  window.addEventListener('argus-presenter:state', render);
+  render();
+})();
+</script>
+<style>
+  body{font:14px/1.5 system-ui,-apple-system,sans-serif;background:#0b0e13;color:#e3e6ec;margin:0;padding:18px}
+  .cp{max-width:470px;margin:0 auto;text-align:center}
+  h1{font-size:20px;margin:0 0 3px;letter-spacing:-.01em}
+  .who{font-size:12.5px;color:#7e8593;margin:0 0 13px} .who.seated{color:#7fd1a6}
+  .stations{display:flex;gap:8px;justify-content:center;margin-bottom:12px}
+  .stn{display:flex;align-items:center;gap:8px;padding:7px 10px;border:1px solid #262b35;
+       border-radius:8px;background:#141922;min-width:150px}
+  .stn.mine{border-color:#2f6b4d;background:#14211b} .stn.taken{opacity:.72}
+  .mk{font:700 14px/1 ui-monospace,monospace} .mk.mA{color:#6fb2ff} .mk.mB{color:#ffb36f}
+  .occ{flex:1;text-align:left;font-size:12px;color:#6b7280;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .occ.mine{color:#7fd1a6} .occ.taken{color:#b6bcc7}
+  .join{background:#1b2029;color:#dfe2e8;border:1px solid #333a45;border-radius:6px;
+        padding:5px 11px;font:12px inherit;cursor:pointer}
+  .join:disabled{opacity:.35;cursor:not-allowed}
+  svg{width:100%;height:auto;border:1px solid #1e242e;border-radius:10px;display:block;
+      touch-action:none;user-select:none}
+  svg[data-drag]{cursor:grabbing}
+  .tok .halo{fill:transparent;stroke:none}
+  .tok.mine .halo{fill:rgba(127,209,166,.10);stroke:rgba(127,209,166,.45);stroke-width:1}
+  .tok.mine{cursor:grab}
+  .tokA .dot{fill:#6fb2ff} .tokB .dot{fill:#ffb36f}
+  .lab{fill:#8b929e;font:600 10px ui-monospace,monospace}
+  .readout{display:flex;gap:8px;margin:12px 0 6px}
+  .readout div{flex:1;background:#12161d;border:1px solid #1e242e;border-radius:7px;padding:8px}
+  .readout b{display:block;font:700 17px/1.2 ui-monospace,monospace;color:#e9ecf1;font-variant-numeric:tabular-nums}
+  .readout span{font-size:10.5px;color:#666d79}
+  .hint{font-size:11.5px;color:#4f5661;margin:8px 0 0}
+</style>
