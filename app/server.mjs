@@ -1348,6 +1348,15 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       // participant). This branch runs BEFORE the participant dispatch so a subscriber can never act.
       if (pvsSubscribers.has(ws)) {
         if (m.t === 'pvs_unsubscribe') { pvsSubscribers.delete(ws); try { send(ws, { t: 'pvs_unsubscribed' }); } catch {} }
+        // ⛔ Plan 0687 R2 (G5) — `pvs_ack` is the ONE other frame a subscriber may send, and it is
+        // the reason this phase exists: only the consumer may say it has read a turn. It writes
+        // nothing but this socket's OWN delivery position (the key comes from the subscriber table,
+        // not the frame), so admitting it does not make a subscriber a participant. Everything else
+        // still falls through to the return below and is ignored.
+        else if (m.t === 'pvs_ack') {
+          const ackAction = wireActions.get('pvs_ack');
+          if (ackAction) { try { ackAction({ m, c: null, ws, req, send, telem, conns }); } catch (e) { log.warn('wire', 'action-threw', { t: m.t, err: String((e && e.message) || e).slice(0, 160) }); } }
+        }
         return;
       }
       try {
