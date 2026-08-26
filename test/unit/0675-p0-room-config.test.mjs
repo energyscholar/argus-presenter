@@ -30,7 +30,7 @@ import { test, check } from '../../harness/test.mjs';
 import {
   RoomConfigError, ROOM_KEYS, ROOM_ENV, roomDefaults,
   normalizeRoomConfig, normalizeRoomsConfig, roomValueSources,
-  resolveRoom, roomConfig,
+  resolveRoom, roomConfig, roomStartupLine, identityStartupLine,
   loadDeploymentConfig, CONFIG_BASENAME,
 } from '../../lib/deployment-config.mjs';
 import { mkdtempSync, writeFileSync } from 'node:fs';
@@ -286,4 +286,72 @@ test('t0675-09 — PRESENTER_ROOM unset ⇒ defaultRoom, fail-closed', () => {
   const bad = threw(() => roomConfig({ env: { HOME: home, [ROOM_ENV]: 'ghost' }, repoDir: repo }));
   check('...and a bad name through the real loader throws just the same',
     bad instanceof RoomConfigError, bad && bad.message);
+});
+
+/* ── 10 ────────────────────────────────────────────────────────────────────────────────────────
+ * ⭐ G12 — THE WHOLE RESOLVED PICTURE MUST BE VISIBLE FROM OUTSIDE, AND CARRY NO SECRET.
+ * Both halves are one test on purpose: a line that says everything is useless if it also says the
+ * client secret, and a line that is safe because it says nothing is the 0543 failure. */
+test('t0675-10 — the startup line names the room, every value AND its source, and leaks nothing', () => {
+  const SECRET = 'not-a-real-secret-0675';
+  const CLIENT_ID = 'test-client-id-0675.example.invalid';
+  const ALLOWED = 'someone@example.invalid';
+
+  const cfg = {
+    rooms: { table: { port: 3001, bindHosts: ['127.0.0.1'], plugins: ['ops-console'], record: '30d' } },
+    // Everything a leak could come from, present in the SAME config object the resolver is handed.
+    oidc: { clientId: CLIENT_ID, clientSecret: SECRET },
+    allowlist: { [ALLOWED]: { role: 'presenter', voice: true } },
+    configPath: '/test/config.json',
+  };
+  const line = roomStartupLine(resolveRoom({ [ROOM_ENV]: 'table' }, cfg));
+
+  check('names the room', line.includes('table'), line);
+  check('reports the port', /port 3001/.test(line), line);
+  check('reports the bind', /127\.0\.0\.1/.test(line), line);
+  check('reports the plugin set BY NAME — "2 plugins" would hide which two', /ops-console/.test(line), line);
+  check('reports the recording policy', /record 30d/.test(line), line);
+  check('reports voice', /voice false/.test(line), line);
+
+  // ⭐ THE SOURCE OF EVERY VALUE. `voice false(default)` and `voice false(config)` are the same
+  // value and completely different facts, and 2026-08-25 turned on exactly that difference.
+  check('port carries its source', /port 3001\(config\)/.test(line), line);
+  check('plugins carries its source', /plugins ops-console\(config\)/.test(line), line);
+  check('record carries its source', /record 30d\(config\)/.test(line), line);
+  check('an UNSTATED value is marked (default), not silently shown as if chosen',
+    /voice false\(default\)/.test(line), line);
+  check('the room SELECTION carries its source too', /table \(env\)/.test(line), line);
+  check('and WHICH FILE won is named — the whole-file resolution trap is otherwise invisible',
+    line.includes('/test/config.json'), line);
+  check('the line says it is inert, so nobody reads it as a description of what loaded',
+    /PHASE 0: REPORTED ONLY/.test(line), line);
+
+  // ⛔ THE LEAK CHECK.
+  check('⛔ NO client secret', !line.includes(SECRET), line);
+  check('⛔ NO client id', !line.includes(CLIENT_ID), line);
+  check('⛔ NO allowlist entry', !line.includes(ALLOWED) && !line.includes('example.invalid'), line);
+
+  const dflt = roomStartupLine(resolveRoom({}, cfg));
+  check('the defaultRoom line is legible too, and says which env var was unset',
+    dflt.includes('PRESENTER_ROOM unset'), dflt);
+  check('...and marks EVERY value (default)', (dflt.match(/\(default\)/g) || []).length >= 5, dflt);
+  check('...and leaks nothing either', !dflt.includes(SECRET) && !dflt.includes(CLIENT_ID), dflt);
+
+  const bare = roomStartupLine({});
+  check('called with nothing at all it still renders rather than throwing at startup',
+    typeof bare === 'string' && bare.includes('room:'), bare);
+});
+
+/* The existing identity line is under the same rule and must STAY under it — 0551 asserts this and
+ * this repeats it here so a future edit to either line meets the constraint from both directions. */
+test('t0675-10b — the two startup lines are the whole visible picture, and neither carries a secret', () => {
+  const line = identityStartupLine({
+    oidc: { clientId: 'cid-0675.example.invalid', clientSecret: 'secret-0675' },
+    allowlist: { 'a@example.invalid': { role: 'presenter' } },
+    configPath: '/test/config.json',
+  });
+  check('identity line still reports STATE', /OIDC sign-in ACTIVE/.test(line) && /allowlist 1 entry/.test(line), line);
+  check('...and still no secret', !line.includes('secret-0675'), line);
+  check('...and still no client id', !line.includes('cid-0675'), line);
+  check('...and still no allowlist entry', !line.includes('a@example.invalid'), line);
 });
