@@ -125,6 +125,12 @@ export function createWireActions(ctx) {
       c.userName = ident.userName;
       c.role = ident.role;
       if (ident.isGuest) { c.isGuest = true; c.capScope = ident.capScope; c.capNonce = ident.capNonce; }
+      /* ⛔ Plan 0692 F3 — REMEMBER THAT THIS IDENTITY WAS DERIVED FROM A SEAT LINK. resolveIdentity
+         returns a stationUid on exactly one branch: the one where userId = <stationCode>-<slug(userName)>.
+         On that branch the name IS the key, so a rename would silently make this connection a
+         different user and strand its seat. The `rename` action below refuses it, server-side,
+         rather than trusting the client to have hidden the control. */
+      c.seatDerived = ident.stationUid != null;
       // The SERVER-AUTHORITATIVE command-trust for this connection. Stamped on every turn this
       // connection emits (chat/voice) so the fence delimits it correctly. NEVER from the password.
       const trustVerdict = deriveConnTrust(ident, capGrant, authCtx);
@@ -230,6 +236,44 @@ export function createWireActions(ctx) {
           pushResult(r);
         }
       }
+  });
+
+  /* ── Plan 0692 T2 — RENAME: THE LABEL CHANGES, THE KEY DOES NOT ────────────────────────────
+   *
+   * ⭐ Bruce, 2026-08-26: "IDENTITY is one thing, current NAME is another matter. On one login I
+   *   might name myself 'Bob' and on another 'Conan' and that's fine. My IDENTITY to the server
+   *   should remain consistent where possible."
+   *
+   * ⛔ THIS HANDLER MUST NEVER TOUCH c.userId. Seats, locks, private slices, presence rows, the
+   *   op-log's `by`, the display binding and `bindUser` are ALL keyed on it. Changing it here
+   *   would evict the renamer from their station and leave a lock nobody can release — the exact
+   *   harm plan 0692 exists to prevent. There is no reconnect and no re-resolve: one field moves.
+   *
+   * ⛔ F3 — REFUSED ON A SEAT-DERIVED IDENTITY. There, userId = <stationCode>-<slug(userName)>
+   *   (t79), so the name IS the key and renaming would be exactly the identity change forbidden
+   *   above. The client hides the control; this refuses it anyway, because a rule enforced only in
+   *   the page is a rule a raw socket does not have.
+   *
+   * ⛔ REFUSED FOR A GUEST. A capability link's name comes from the signed token; letting the
+   *   holder overwrite it would let a client widen what the token said (0472 P4).
+   *
+   * ⛔ F2 — THIS IS NOT AN `op`. It is how an unnamed visitor becomes named, so it can never sit
+   *   behind the write-gate that unnamed visitors are subject to. */
+  wireActions.set("rename", ({ m, c, ws, req }) => {
+      if (!c || !c.userId) return;                                   // never said hello
+      if (c.seatDerived || c.isGuest) { send(ws, { t: 'renamed', userId: c.userId, userName: c.userName, refused: c.seatDerived ? 'seat-link' : 'guest' }); return; }
+      if (typeof m.userName !== 'string') return;
+      const nm = m.userName.replace(/\s+/g, ' ').trim().slice(0, 64);
+      if (!nm) return;                                               // a blank is not a name; the old one stands
+      /* ⛔ T6 — A DUPLICATE NAME IS ACCEPTED. Two people called Bruce both keep it; they are told
+         apart by the uid, which is the key. Refusing a name, or mutating it into 'Bruce (2)', would
+         be the server deciding what a person is called. Any disambiguation is for DISPLAY only. */
+      const before = c.userId;
+      c.userName = nm;
+      if (c.userId !== before) throw new Error('0692: a rename changed the userId');   // unreachable by construction; here so it can never become reachable silently
+      send(ws, { t: 'renamed', userId: c.userId, userName: c.userName });
+      log.info('conn', 'rename', { socketId: c.id, userId: c.userId });   // ⛔ the NAME is not logged: it is a person's chosen label, and the id is what a log needs
+      emit('presence', presence()); pushPresence();
   });
 
   wireActions.set("op", ({ m, c, ws, req }) => {
