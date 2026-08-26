@@ -1,0 +1,72 @@
+<div class="wrap">
+  <header>
+    <h1>Component showcase</h1>
+    <p>Every component mounted into one authored page, beside bound HTML controls.
+       Nothing here is campaign content — it is a toolkit test.</p>
+  </header>
+
+  <section><h2>Narrative</h2>
+    <div class="two"><div id="m-card"></div><div id="m-narration"></div></div>
+    <div id="m-prose"></div>
+  </section>
+
+  <section><h2>Ask the room</h2>
+    <div class="two"><div id="m-choice"></div><div id="m-results"></div></div>
+  </section>
+
+  <section><h2>Input</h2>
+    <div class="two"><div id="m-text"></div><div id="m-slider"></div></div>
+    <div id="m-form"></div>
+  </section>
+
+  <section><h2>Chance &amp; progress</h2>
+    <div class="two"><div id="m-dice"></div><div id="m-stepper"></div></div>
+  </section>
+
+  <section><h2>Shared collection</h2><div id="m-crud"></div></section>
+
+  <section><h2>Spatial</h2>
+    <div class="two"><div id="m-navmap"></div><div id="m-svg"></div></div>
+  </section>
+
+  <section><h2>Bound HTML — no component at all</h2>
+    <div class="bound">
+      <label>Theme
+        <select data-ap-bind="shared/demo/theme">
+          <option value="calm">Calm</option><option value="alert">Alert</option><option value="dark">Dark</option>
+        </select></label>
+      <label>Level <input type="range" min="0" max="10" data-ap-bind="shared/demo/level"></label>
+      <label>Ready <input type="checkbox" data-ap-bind="shared/demo/ready"></label>
+      <span class="echo" id="echo">—</span>
+    </div>
+  </section>
+</div>
+<script>
+  (function () {
+    function paint() {
+      var d = Argus.state('shared/demo') || {};
+      document.getElementById('echo').textContent =
+        'theme=' + (d.theme || '?') + ' level=' + (d.level == null ? '?' : d.level) + ' ready=' + !!d.ready;
+      document.body.setAttribute('data-theme-demo', d.theme || 'calm');
+    }
+    window.addEventListener('argus-presenter:state', paint);
+    paint();
+  })();
+</script>
+<style>
+  body { font:14px/1.55 system-ui,sans-serif; background:#0d0f14; color:#e2e4ea; margin:0; padding:20px; }
+  .wrap { max-width:860px; margin:0 auto; }
+  header h1 { font-size:22px; margin:0 0 4px; letter-spacing:-.01em; }
+  header p { color:#7d838f; font-size:13px; margin:0 0 22px; max-width:60ch; }
+  section { margin-bottom:22px; }
+  h2 { font:600 11px/1 ui-monospace,monospace; letter-spacing:.16em; text-transform:uppercase;
+       color:#5b6270; margin:0 0 10px; padding-bottom:6px; border-bottom:1px solid #1e222b; }
+  .two { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px; }
+  @media (max-width:640px) { .two { grid-template-columns:1fr; } }
+  .bound { display:flex; flex-wrap:wrap; align-items:center; gap:14px; padding:12px;
+           background:#12151c; border:1px solid #222733; border-radius:7px; }
+  .bound label { display:flex; align-items:center; gap:7px; color:#b6bcc7; font-size:13px; }
+  .echo { margin-left:auto; font:12px ui-monospace,monospace; color:#7fd1a6; }
+  body[data-theme-demo="alert"] { background:#170f10; }
+  body[data-theme-demo="dark"]  { background:#050608; }
+</style>

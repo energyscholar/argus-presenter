@@ -1,0 +1,167 @@
+<div class="ttt">
+  <h1>Tic&nbsp;Tac&nbsp;Toe</h1>
+  <p class="who" id="who">…</p>
+
+  <div class="board" id="board">
+    <button class="cell" data-i="0"></button><button class="cell" data-i="1"></button><button class="cell" data-i="2"></button>
+    <button class="cell" data-i="3"></button><button class="cell" data-i="4"></button><button class="cell" data-i="5"></button>
+    <button class="cell" data-i="6"></button><button class="cell" data-i="7"></button><button class="cell" data-i="8"></button>
+  </div>
+
+  <p class="status" id="status">Waiting for players…</p>
+  <div class="seats" id="seats"></div>
+  <button class="reset" id="reset">New game</button>
+</div>
+
+<script>
+/*
+ * TicTacToe — entirely scripted, standalone, ZERO LLM at runtime (Bruce's spec).
+ * The board IS the shared state machine: shared/ttt/{cells,turn,seats,winner}.
+ * Every client runs this identical logic; the server is the single source of truth.
+ *
+ * ⛔ First two seats to arrive PLAY; everyone else OBSERVES. A seat is claimed by writing
+ *   your own userId — last-write-wins is fine because a claim is idempotent per user.
+ */
+(function () {
+  var ME = (Argus.identity() || {}).userId || 'anon';
+  var MYNAME = (Argus.identity() || {}).userName || ME;
+  var WINS = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
+
+  var boardEl = document.getElementById('board');
+  var cells = [].slice.call(boardEl.querySelectorAll('.cell'));
+
+  function S() { return Argus.state('shared/ttt') || {}; }
+  function cellsOf(s) { return s.cells || {}; }
+
+  /*
+   * ⛔⛔ SEATING IS DERIVED, NEVER WRITTEN TO A CONTENDED KEY.
+   *
+   * The first version had each client read shared/ttt/seats and write itself into the first free
+   * one. That is a read-modify-write on a key several clients touch at once, and it raced exactly
+   * as you would expect once four browsers started together: everyone reads {} at the same instant,
+   * everyone writes X, last-write-wins picks one — and the losers, still holding the pre-write
+   * snapshot, then see X taken by someone else and write themselves into O. One run produced
+   * {X:"ann", O:"ann"}: a single player holding both seats, and no error anywhere.
+   *
+   * It also passed the first time I ran it. A race that resolves favourably is not a pass.
+   *
+   * ⇒ Each client writes ONLY ITS OWN key — shared/ttt/claims/<userId> — which nobody else ever
+   *   touches, so there is nothing to contend. Seating is then COMPUTED from the claim set by a
+   *   rule every client evaluates identically (earliest claim wins; userId breaks a tie). Same
+   *   input, same function, same answer on every screen, with no coordination at all.
+   */
+  function claimsOf(s) { return s.claims || {}; }
+  function seatsOf(s) {
+    var c = claimsOf(s), ids = [];
+    for (var k in c) if (c[k]) ids.push({ id: k, ts: c[k].ts || 0 });
+    ids.sort(function (a, b) { return a.ts - b.ts || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0); });
+    var out = {};
+    if (ids[0]) out.X = ids[0].id;
+    if (ids[1]) out.O = ids[1].id;
+    return out;
+  }
+  function mark(s) { var st = seatsOf(s); if (st.X === ME) return 'X'; if (st.O === ME) return 'O'; return null; }
+
+  function winner(c) {
+    for (var i = 0; i < WINS.length; i++) {
+      var w = WINS[i];
+      if (c[w[0]] && c[w[0]] === c[w[1]] && c[w[1]] === c[w[2]]) return { mark: c[w[0]], line: w };
+    }
+    var n = 0; for (var k in c) if (c[k]) n++;
+    return n === 9 ? { mark: 'draw', line: [] } : null;
+  }
+
+  /* Register interest, once. Writing only my own key means this can never contend with anyone. */
+  var claimed = false;
+  function claimSeat() {
+    if (claimed) return;
+    claimed = true;
+    Argus.op('shared/ttt/claims/' + ME, 'set', { ts: Date.now(), name: MYNAME });
+  }
+
+  function render() {
+    var s = S(), c = cellsOf(s), st = seatsOf(s), my = mark(s);
+    var w = s.winner || null;
+    var turn = s.turn || 'X';
+
+    for (var i = 0; i < 9; i++) {
+      var v = c[i] || '';
+      cells[i].textContent = v;
+      cells[i].className = 'cell' + (v ? ' taken m' + v : '') +
+        (w && w.line && w.line.indexOf(i) >= 0 ? ' win' : '');
+      cells[i].disabled = !!v || !!w || !my || turn !== my;
+    }
+
+    document.getElementById('who').textContent = my
+      ? 'You are ' + MYNAME + ' — playing ' + my
+      : 'You are ' + MYNAME + ' — observing';
+    document.getElementById('who').className = 'who' + (my ? ' player' : ' observer');
+
+    var status;
+    if (w) status = w.mark === 'draw' ? 'Draw.' : (w.mark + ' wins.');
+    else if (!st.X || !st.O) status = 'Waiting for a second player…';
+    else status = (turn === my ? 'Your move (' + turn + ')' : turn + ' to move');
+    document.getElementById('status').textContent = status;
+    document.getElementById('status').className = 'status' + (w ? ' done' : '');
+
+    document.getElementById('seats').textContent =
+      'X: ' + (st.X || '—') + '   ·   O: ' + (st.O || '—');
+    document.body.setAttribute('data-turn', w ? 'done' : turn);
+  }
+
+  boardEl.addEventListener('click', function (e) {
+    var b = e.target.closest ? e.target.closest('.cell') : null;
+    if (!b || b.disabled) return;
+    var i = b.getAttribute('data-i');
+    var s = S(), my = mark(s);
+    if (!my || (s.turn || 'X') !== my || (cellsOf(s)[i]) || s.winner) return;
+
+    /* Optimistic-free: write and let the server's diff paint. One op per move. */
+    Argus.op('shared/ttt/cells/' + i, 'set', my);
+    Argus.op('shared/ttt/turn', 'set', my === 'X' ? 'O' : 'X');
+
+    /* Win check runs on every client off the same state; whoever gets there first writes it.
+       Idempotent: they all compute the identical result from the identical board. */
+    var next = {}; for (var k in cellsOf(s)) next[k] = cellsOf(s)[k]; next[i] = my;
+    var w = winner(next);
+    if (w) Argus.op('shared/ttt/winner', 'set', w);
+  });
+
+  document.getElementById('reset').addEventListener('click', function () {
+    Argus.op('shared/ttt/cells', 'clear');
+    Argus.op('shared/ttt/winner', 'set', null);
+    Argus.op('shared/ttt/turn', 'set', 'X');
+    /* ⚠ claims are NOT cleared — a new game keeps the same two players at the table. */
+  });
+
+  window.addEventListener('argus-presenter:state', function () { claimSeat(); render(); });
+  claimSeat(); render();
+})();
+</script>
+
+<style>
+  body { font: 15px/1.5 system-ui, -apple-system, sans-serif; margin:0; padding:20px;
+         background:#0e1014; color:#e9eaee; transition: background .25s; }
+  body[data-turn="X"] { background:#0e1014; }
+  body[data-turn="O"] { background:#12100e; }
+  body[data-turn="done"] { background:#0d1512; }
+  .ttt { max-width: 380px; margin: 0 auto; text-align:center; }
+  h1 { font-size: 20px; letter-spacing:.02em; margin:0 0 2px; }
+  .who { font-size:12.5px; margin:0 0 16px; color:#7e828d; }
+  .who.player { color:#7fd1a6; }
+  .board { display:grid; grid-template-columns: repeat(3, 92px); grid-gap:8px; justify-content:center; }
+  .cell { width:92px; height:92px; font-size:44px; font-weight:600; line-height:1;
+          background:#181b22; color:#e9eaee; border:1px solid #262a33; border-radius:10px;
+          cursor:pointer; transition: background .12s, transform .08s; font-family:inherit; }
+  .cell:hover:not(:disabled) { background:#1f232c; }
+  .cell:active:not(:disabled) { transform: scale(.97); }
+  .cell:disabled { cursor:default; }
+  .cell.mX { color:#6fb2ff; } .cell.mO { color:#ffb36f; }
+  .cell.win { background:#1c3328; border-color:#2f6b4d; }
+  .status { margin:16px 0 4px; font-size:15px; min-height:22px; }
+  .status.done { color:#7fd1a6; font-weight:600; }
+  .seats { font: 12px/1.4 ui-monospace, monospace; color:#666b76; margin-bottom:14px; }
+  .reset { background:transparent; color:#8b909b; border:1px solid #2a2f39; border-radius:7px;
+           padding:6px 14px; font-size:13px; cursor:pointer; font-family:inherit; }
+  .reset:hover { color:#e9eaee; border-color:#414855; }
+</style>
