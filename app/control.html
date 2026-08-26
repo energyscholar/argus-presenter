@@ -642,7 +642,7 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
   function control(action,args){ lastControl={action:action,args:args||{}}; if(ws&&ws.readyState===1) ws.send(JSON.stringify({t:'control',action:action,args:args||{}})); }
   function connect(){
     ws=new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host);
-    ws.onopen=function(){ $('led2').classList.add('on'); $('statustext').textContent='connected · '+identity.userName; ws.send(JSON.stringify(Object.assign({t:'hello'},identity))); refreshModules(); refreshSeries(); };   // AUT-2b: re-scan modules on every (re)connect so the <select> never goes stale after a server restart / instance-swap / unlock reconnect. Plan 0529 P2 added refreshSeries here for the SAME reason, now that it needs a credential: the unlock path (a GM who types the password instead of arriving with ?token=) closes and reopens the socket, and boot's one refreshSeries() already ran and 403'd. Without this the series picker stays empty until a manual reload — the exact blank-panel failure P2 exists to avoid.
+    ws.onopen=function(){ $('led2').classList.add('on'); $('statustext').textContent='connected · '+identity.userName; ws.send(JSON.stringify(Object.assign({t:'hello'},identity))); refreshModules(); refreshSeries(); scheduleAuthReconcile(); };   // Plan 0693 T2: a restart destroys the server's session, and the ONLY thing that notices is a reconnect — so re-ask here, debounced (0696 F10).   // AUT-2b: re-scan modules on every (re)connect so the <select> never goes stale after a server restart / instance-swap / unlock reconnect. Plan 0529 P2 added refreshSeries here for the SAME reason, now that it needs a credential: the unlock path (a GM who types the password instead of arriving with ?token=) closes and reopens the socket, and boot's one refreshSeries() already ran and 403'd. Without this the series picker stays empty until a manual reload — the exact blank-panel failure P2 exists to avoid.
     ws.onclose=function(){ $('led2').classList.remove('on'); $('statustext').textContent='disconnected'; renderConfig(); setTimeout(connect,800); };
     ws.onmessage=onMsg;
   }
@@ -1888,11 +1888,27 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
       cst.style.color=!signedIn?'var(--dim)':(isSelf?'var(--ok)':'var(--warn)');
     }
   }
+  /* ── Plan 0693 T2 — RECONCILE WITH THE SERVER, AND ⛔ 0696 F10: A FAILED REQUEST IS NOT A LOGOUT ─
+   * The defect Bruce actually experienced was not the lost session — it was being told he was signed
+   * in when he was not. So this page re-asks on every (re)connect. But a client that signs people
+   * out because ONE fetch failed is a logout storm waiting for a flaky minute of wifi, so:
+   *   ⛔ ONLY AN AUTHORITATIVE SERVED NEGATIVE COUNTS. A 200 that says signedIn:false is the truth;
+   *     a network error, a non-2xx, or unparseable JSON leaves the LAST KNOWN STATE standing.
+   *   ⛔ AND IT IS DEBOUNCED. A reconnect storm must produce one reconciliation, not one per socket. */
+  var authStateLast=null, authInFlight=false, authLastAt=0, authPending=null;
+  var AUTH_RECONCILE_MIN_MS=1500;
   function refreshAuthState(){
+    if(authInFlight) return Promise.resolve(authStateLast);
+    authInFlight=true; authLastAt=Date.now();
     return fetch('/api/auth-state',{cache:'no-store'})
-      .then(function(r){ return r.ok?r.json():null; })
-      .then(function(st){ renderSignIn(st); return st; })
-      .catch(function(){ renderSignIn(null); return null; });
+      .then(function(r){ if(!r.ok) throw new Error('http '+r.status); return r.json(); })
+      .then(function(st){ authInFlight=false; authStateLast=st; renderSignIn(st); return st; })
+      .catch(function(){ authInFlight=false; renderSignIn(authStateLast); return authStateLast; });   // ⛔ NOT a logout
+  }
+  function scheduleAuthReconcile(){
+    if(authPending) return;
+    var wait=Math.max(0,AUTH_RECONCILE_MIN_MS-(Date.now()-authLastAt));
+    authPending=setTimeout(function(){ authPending=null; refreshAuthState(); },wait);
   }
   refreshAuthState();
 
