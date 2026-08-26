@@ -58,7 +58,12 @@ test('0551 P3 — /api/auth-state reports oidcActive, and an anonymous caller ma
   try {
     const s = await authState(off);
     check('with no oidc: oidcActive false', s.oidcActive === false, JSON.stringify(s));
-    check('...signedIn false, name null', s.signedIn === false && s.name === null, JSON.stringify(s));
+    /* ⚠ SUPERSEDED BY PLAN 0693 T4. This line read `s.name === null`: 0551 shipped the IdP's own
+       `name` claim on this payload, reasoned as "for their own eyes, on their own request". Bruce
+       ruled otherwise on 2026-08-26 — "Dont reveal actual OAuth login info - privacy violation" —
+       so the field is GONE, not merely null, and the assertion is now that it does not exist. */
+    check('...signedIn false, and NO identifier field at all', s.signedIn === false && !('name' in s), JSON.stringify(s));
+    check('...and `self` is the boolean that replaced it', s.self === false, JSON.stringify(s));
     check('...trust is the fenced default', s.trust === 'participant', JSON.stringify(s));
   } finally { await off.close(); }
 
@@ -84,13 +89,19 @@ test('0551 P3 — signed in AND allowlisted reads self; signed in and NOT reads 
     const ok = await signIn(server, { email: 'yes@example.invalid', name: 'Allowed Person' });
     const a = await authState(server, ok.cookie);
     check('an allowlisted principal reads signedIn', a.signedIn === true, JSON.stringify(a));
-    check('...with their DISPLAY NAME', a.name === 'Allowed Person', JSON.stringify(a));
+    /* ⚠ SUPERSEDED BY PLAN 0693 T4/T5 — see the note above. The endpoint reports WHETHER this
+       connection is `self`, and never WHO. A boolean cannot become an identifier later. */
+    check('⛔ ...and NOT with their account name — the principal authorises, it does not label',
+      !('name' in a) && !JSON.stringify(a).includes('Allowed Person'), JSON.stringify(a));
+    check('...it reports `self` instead: a boolean, never an identifier', a.self === true, JSON.stringify(a));
     check('...and trust self — the whole point of signing in', a.trust === 'self', JSON.stringify(a));
 
     const no = await signIn(server, { email: 'nope@example.invalid', name: 'Other Person' });
     const b = await authState(server, no.cookie);
     check('a NON-allowlisted principal is signed in', b.signedIn === true, JSON.stringify(b));
     check('...and still FENCED (fail-closed authorization, C2)', b.trust === 'participant', JSON.stringify(b));
+    check('...and reads self:false', b.self === false, JSON.stringify(b));
+    check('⛔ ...and their name is absent too', !JSON.stringify(b).includes('Other Person'), JSON.stringify(b));
     check('...and is TOLD why, rather than discovering it when a turn is fenced',
       b.reason === 'signed in, not authorized', JSON.stringify(b));
 
@@ -99,8 +110,8 @@ test('0551 P3 — signed in AND allowlisted reads self; signed in and NOT reads 
     check('⛔ no email reaches the browser', !/yes@example\.invalid|nope@example\.invalid/.test(raw), raw);
     check('⛔ no `sub` reaches the browser', !/sub-of-/.test(raw) && !('sub' in a), raw);
     check('⛔ no session id reaches the browser', !raw.includes(ok.sid) && !raw.includes(no.sid), raw);
-    check('⛔ and no key called sid/sessionId/email/sub exists at all',
-      ['sid', 'sessionId', 'email', 'sub', 'token'].every((k) => !(k in a) && !(k in b)), JSON.stringify(Object.keys(a)));
+    check('⛔ and no key called sid/sessionId/email/sub/name exists at all',
+      ['sid', 'sessionId', 'email', 'sub', 'token', 'name'].every((k) => !(k in a) && !(k in b)), JSON.stringify(Object.keys(a)));
   } finally { await server.close(); }
 });
 
@@ -118,6 +129,9 @@ test('0551 P3 — the sign-in control exists in BOTH clients and ships HIDDEN', 
     check(`${name} sizes the control for a PHONE (44px tap target)`, /#ap-signin\{[^}]*min-height:44px/.test(src), 'tap target too small');
     check(`⛔ ${name} never renders an email or a sub from the payload`,
       !/authState[^\n]*\.email|st\.email|st\.sub/.test(src), 'a client renders an identifier the endpoint must not send');
+    // Plan 0693 T4 — nor the account name, which the endpoint no longer sends either.
+    check(`⛔ ${name} never renders st.name from the payload`,
+      !/\bst\.name\b/.test(src), 'a client still renders the OIDC name claim');
   }
   // The served display page really carries it (renderPresenterPage strips regions when voice is off).
   const server = await createServer({ port: 0, oidc: OIDC, oidcDeps });
