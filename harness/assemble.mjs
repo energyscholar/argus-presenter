@@ -198,9 +198,30 @@ ${composed ? `
     var verb = m.writes.verb || 'set';
     var field = m.writes.from || 'value';
     Argus.subscribe(function (msg) {
-      if (!msg || msg.promptId !== pid) return;
+      if (!msg) return;
+      /* ⚠ TWO EMIT SHAPES IN THE WILD, and routing must tolerate both. answer() and send() put
+         promptId at the MESSAGE level. But card, narration and stepper call
+         Argus.emit(type, {promptId: ..., ...}), which nests it INSIDE the payload — so
+         msg.promptId is undefined for them and a message-level match silently never fires.
+         Measured: correlating only on msg.promptId routed 5 of the 8 emitting components, and the
+         3 misses looked like "those components cannot write" when they simply label differently. */
+      var inner = (msg.value && typeof msg.value === 'object') ? msg.value : null;
+      var mine = msg.promptId === pid || (inner && inner.promptId === pid);
+      if (!mine) return;
       if (m.writes.type && msg.type !== m.writes.type) return;
-      var v = msg[field];
+      /* Pull the VALUE out of whichever shape arrived.
+         ⛔ Do not just hand the nested payload through: slider emits BOTH shapes, and routing the
+         payload wrote {promptId:'s1',value:4} where the message-level answer would have written 4.
+         The promptId is addressing, never data — strip it. A payload that is nothing BUT a
+         promptId (narration's 'continue') is a bare signal, so record that it fired. */
+      var v;
+      if (msg.promptId === pid) v = msg[field];
+      else if (inner && inner[field] !== undefined) v = inner[field];
+      else if (inner) {
+        var rest = {}, any = false;
+        for (var k in inner) if (Object.prototype.hasOwnProperty.call(inner, k) && k !== 'promptId') { rest[k] = inner[k]; any = true; }
+        v = any ? rest : true;
+      }
       if (v === undefined || v === null) return;
       Argus.op(m.writes.path, verb, v);
     });
