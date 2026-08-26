@@ -129,9 +129,20 @@
      ⭐ Same treatment as #ap-seat, which solved the identical problem at the top corner and says so:
      "two fixed boxes in one corner is a collision, not a layout." pointer-events:none because it is
      a readout and must never eat a click meant for the panel. */
+  /* ⭐ Plan 0692 T3 — THIS READOUT IS NOW ALSO THE NAMING CONTROL, and it costs ZERO new chrome:
+     it is already in the always-present inventory, and it already renders the very thing the
+     control changes. ⛔ pointer-events is no longer `none` — that is the one line that made it a
+     readout rather than a target. Unnamed it brightens and gains a cursor; named it goes back to
+     ambient. ⚠ The 7-element budget (docs/display-chrome-budget.md, t0537-P4-C5) is unchanged. */
   #who{position:fixed;bottom:8px;left:12px;font-size:.65rem;opacity:.55;letter-spacing:.1em;
     background:rgba(6,10,24,.86);border:1px solid #1e2c46;border-radius:5px;padding:3px 9px;
-    pointer-events:none;z-index:54;}
+    cursor:pointer;z-index:54;}
+  #who:hover{opacity:.95;border-color:#22e5a0;}
+  #who.unnamed{opacity:1;border-color:#f9a76c;color:#ffd9b0;}
+  #cfg-name-row #cfg-name{color:#eafff6;font-weight:bold;}
+  #cfg-name-row #cfg-name-why{color:#8ab;font-size:10px;flex-basis:100%;margin:2px 0 0;}
+  #cfg-name-row #cfg-name-input{background:#0b1220;color:#cfe9ff;border:1px solid #2a3a5a;
+    border-radius:4px;padding:3px 6px;font:12px/1.4 'Courier New',monospace;min-width:12ch;}
   /* ── Plan 0537 P4.1 — THE REPLY CHANNEL MOVES TO THE RIGHT EDGE ─────────────────────────────
      Bruce, S229: "we did have it as just the green dot, no other always-present controls. Clean."
      The bottom bar was 4 of the 8 always-present elements and 44px of permanent full-width
@@ -255,7 +266,24 @@
   <!-- The station selector is HIDDEN unless a plugin declares stations, so a deployment with no
        stations (e.g. teaching) sees no change whatsoever. -->
   <div class="row" id="cfg-station-row" style="display:none"><span class="k" id="cfg-station-label">Station</span> <select id="cfg-station-select"></select></div>
-  <div class="row" id="cfg-name-row" style="display:none"><span class="k">Name</span> <span id="cfg-name"></span></div>
+  <!-- Plan 0692 T3 / ⛔ F13 — THE NAME ROW THAT ALREADY EXISTED, MADE EDITABLE AND ALWAYS SHOWN.
+       It shipped as a read-only <span> revealed only in a seat context, which meant the one place
+       on the page that names you was invisible to everyone who is not sitting at a station. It is
+       now the page's ONLY name editor: readout + ✎ Change, swapping to field + Save + Cancel.
+       ⛔ Do NOT add a second name row beside this one — that is the defect F13 names.
+       ⛔ On a SEAT LINK the ✎ Change button is replaced by an explanation, because the seat link IS
+       the identity: userId is derived from the name server-side, so renaming there would lose the
+       seat (F3). ⚠ 'NAME UNKNOWN' is the 0525 §5 seat convention and is preserved verbatim. -->
+  <div class="row" id="cfg-name-row"><span class="k">Name</span>
+    <span id="cfg-name"></span>
+    <button id="cfg-name-edit" type="button" title="Change the name other people see. Your identity to the server does not change.">✎ Change</button>
+    <span id="cfg-name-why" style="display:none"></span>
+    <span id="cfg-name-editor" style="display:none">
+      <input id="cfg-name-input" type="text" autocomplete="off" spellcheck="false" maxlength="64" aria-label="Your display name">
+      <button id="cfg-name-save" type="button">Save</button>
+      <button id="cfg-name-cancel" type="button">Cancel</button>
+    </span>
+  </div>
   <h4>Your screen</h4>
   <!-- Plan 0508 — STATION SCREEN. "My station" is self-scoped and always available.
        Plan 0514 §13.4: it now means "show MY STATION", which is what the button says — the source
@@ -346,8 +374,32 @@
   // Role precedence: explicit URL ?role= wins; else a role the viewer chose earlier
   // (persisted in localStorage via the Config overlay); else default participant.
   var ROLE_KEY = NS + ':role';
-  var savedRole = null;
-  try { savedRole = localStorage.getItem(ROLE_KEY); } catch(e){}
+  /* ── Plan 0692 T1/T2 — TWO VALUES, TWO LIFETIMES ───────────────────────────────────────────
+   * ⭐ Bruce, 2026-08-26: "IDENTITY is one thing, current NAME is another matter. On one login I
+   *   might name myself 'Bob' and on another 'Conan' and that's fine. My IDENTITY to the server
+   *   should remain consistent where possible."
+   *
+   *   userId  — the KEY. Seats, locks, private state and presence rows are all keyed on it. Minted
+   *             ONCE per browser and kept forever.
+   *   userName— the LABEL a human reads. Changes as often as the person likes and changes NOTHING
+   *             else.
+   *
+   * ⛔ `userId = slug(userName)` IS FORBIDDEN OFF A SEAT LINK. It makes a rename a different
+   *   person: the renamer silently drops their station and strands a lock nobody can release.
+   *   (It IS the rule ON a seat link — derived server-side — and that is exactly why renaming is
+   *   disabled there; see F3 below.)
+   *
+   * ⚠ F4 — `localStorage` IS PER-ORIGIN. The tunnel URL and a tailnet URL are different origins
+   *   with different stores, so the same person on the same laptop is TWO persistent identities
+   *   depending on which link they opened. Not fixable from here; prefer one URL in shared links.
+   *
+   * ⚠ EVERY read AND write is wrapped: a private window (or blocked site data) throws on both, and
+   *   the page must still work — just without stickiness. */
+  var UID_KEY = NS + ':uid', NAME_KEY = NS + ':name';
+  function lsGet(k){ try { return localStorage.getItem(k); } catch(e){ return null; } }
+  function lsSet(k, v){ try { localStorage.setItem(k, v); return true; } catch(e){ return false; } }
+  function mintUid(){ return 'u-' + (Math.random().toString(36).slice(2,6) + Math.random().toString(36).slice(2,6)).slice(0,8); }
+  var savedRole = lsGet(ROLE_KEY);
   // Plan 0514 §5 / §5.1 — SEAT PROVISIONING, BY UID.
   //   ?stationUID=4   the SELECTOR. An integer looked up in the registry server-side.
   //   ?station=…      COSMETIC ONLY. Its VALUE is never read or matched — that is what stops it
@@ -360,11 +412,33 @@
   var stationUID = (uidParam != null && uidParam !== '' && /^-?\d+$/.test(uidParam)) ? parseInt(uidParam, 10) : null;
   var seatLinked = uidParam != null || q.get('station') != null;   // this link is addressed to a seat
   var nameParam = q.get('name') || q.get('n');
+  /* ── THE PRECEDENCE, unchanged at the top and extended only at the bottom (plan 0692 §3) ─────
+   *   userId : seat-link derivation (SERVER-SIDE) > ?userId= / ?u= > stored uid > fresh mint
+   *   name   : ?name= / ?n=                       > stored name    > unset (⇒ unnamed)
+   *   role   : ?role=                             > stored role    > 'participant'   (unchanged)
+   * A URL parameter ALWAYS wins. Storage only fills a gap that used to be filled by a per-load
+   * random value or by the literal string 'Guest'.
+   *
+   * ⛔ A URL `?userId=` DOES NOT OVERWRITE THE STORE. It is a one-shot override for this load;
+   *   the browser's own identity is still waiting for it on the next plain link. */
+  var urlUid = q.get('userId') || q.get('u');
+  var storedUid = urlUid ? null : lsGet(UID_KEY);
+  var resolvedUid = urlUid || storedUid;
+  if (!resolvedUid) { resolvedUid = mintUid(); if (!urlUid) lsSet(UID_KEY, resolvedUid); }
+  /* ⛔ THE STORED NAME IS NOT APPLIED ON A SEAT LINK, and this is a deliberate narrowing of §3.
+   *   On a seat link the server DERIVES userId = <stationCode>-<slug(userName)> (t79), so feeding
+   *   it a name this browser happens to remember would derive a DIFFERENT seat id than the same
+   *   link opened on any other browser — the seat link would stop being a seat link. On a seat
+   *   link the name comes from the link, or not at all, and the server writes 'NAME UNKNOWN'. */
+  var storedName = seatLinked ? null : lsGet(NAME_KEY);
   var identity = {
-    userId: q.get('userId') || q.get('u') || ('anon-' + Math.random().toString(36).slice(2,8)),
-    // A seat link with no name shows as NAME UNKNOWN, literally and never blank (§5). Without a
-    // seat link the long-standing 'Guest' default is unchanged.
-    userName: nameParam || (seatLinked ? '' : 'Guest'),
+    userId: resolvedUid,
+    /* ⛔ THE LITERAL 'Guest' DEFAULT IS GONE (plan 0692 T5/AC4). Nobody is named until a human
+       types a name; an unnamed visitor SEES everything and WRITES nothing (T4). A seat link with
+       no name still shows as NAME UNKNOWN — that wording is the 0525 §5 seat convention and the
+       server supplies it. ⚠ The `'Guest …'` strings elsewhere in the tests are capability-token
+       names supplied explicitly by their callers; none of them asserted this default. */
+    userName: nameParam || storedName || '',
     // Always sent (null when the link carries none) so the server resolves the seat rather than
     // falling back to the anonymous identity path.
     stationUID: seatLinked ? stationUID : undefined,
@@ -377,8 +451,104 @@
     // (participant only). No client-side trust — the client just forwards the bearer token.
     cap: q.get('cap') || null
   };
-  function renderWho(){ document.getElementById('who').textContent = identity.role + ' · ' + identity.userName + ' (' + identity.userId + ')'; }
+  /* ══ Plan 0692 T3/T4/T5 — THE NAMING AFFORDANCE AND THE SOFT GATE ═══════════════════════════
+   *
+   * ⭐ #who IS THE CHIP. It is already fixed chrome, already always visible, and already renders
+   *   exactly this identity — "a control belongs on the thing it changes". ⛔ A NEW top-frame chip
+   *   was the obvious build and it is the wrong one: docs/display-chrome-budget.md pins the
+   *   always-present element count at SEVEN and t0537-P4-C5 / t0539-C8 assert it. Naming yourself
+   *   is not worth an eighth permanent box when the readout that already shows your name can grow
+   *   a verb for free. Measured, not assumed: the inventory is unchanged at 7.
+   *
+   * ⭐ THE EDITOR IS THE EXISTING SETTINGS ROW (F13). app/presenter.html already shipped
+   *   `#cfg-name-row` — a read-only <span>, hidden outside a seat context. It is now ALWAYS shown
+   *   and it is where the text field, Save and Cancel live. ⛔ There is exactly ONE name editor on
+   *   this page; a second row beside a hidden one is what F13 forbids. Clicking #who opens
+   *   Settings and starts that editor with the field focused.
+   *
+   * ⛔ NOT window.prompt (T3). The top frame is not sandboxed so it would work here, but a modal
+   *   blocks the stage and the pattern must match the components' inline editors.
+   *
+   * ⛔ F3 — RENAMING IS DISABLED ON A SEAT LINK, and this is not a nicety. On a seat link the
+   *   server DERIVES userId = <stationCode>-<slug(userName)> (t79, and it is what lets a reload
+   *   return to the same seat). Renaming there would therefore make you A DIFFERENT USER and lose
+   *   your seat — the exact harm this plan exists to prevent. On a seat link the LINK is the
+   *   identity, and the editor says so instead of offering a field that would cost you your chair. */
+  function isNamed(){
+    /* ⛔ A SEAT LINK IS ALWAYS 'NAMED' for gate purposes, whatever the label says. Its identity
+       comes from the link, the server fills the label with the 0525 'NAME UNKNOWN' convention, and
+       renaming is disabled — so gating its writes would be a DEADLOCK with no key: blocked from
+       writing, and blocked from the one action that would unblock it. Same for a `?cap=` guest,
+       whose name is carried by the signed token. */
+    if (seatLinked || identity.cap) return true;
+    return !!(identity.userName && identity.userName.trim());
+  }
+  var NAME_MAX = 64;
+  /* The neutral default. ⛔ NEVER the OIDC account name or email — Bruce, 2026-08-26: "Dont reveal
+     actual OAuth login info - privacy violation." A real name reaches the room only because a human
+     typed it, so this is a PLACEHOLDER and never a value. */
+  function defaultNameHint(){ return 'Guest ' + String(identity.userId || '').slice(-4); }
+  function renderWho(){
+    var el = document.getElementById('who');
+    if (!el) return;
+    var named = isNamed();
+    /* ⚠ The parenthesised (userId) is load-bearing: t0529-p3 waits on `/\(/` in this element to
+       know a browser is seated. Both branches keep it. */
+    el.textContent = named ? (identity.role + ' · ' + identity.userName + ' (' + identity.userId + ')')
+                           : ('\u270e Set a name to join · ' + identity.role + ' (' + identity.userId + ')');
+    el.classList.toggle('unnamed', !named);
+    el.setAttribute('title', named ? 'You are ' + identity.userName + ' \u00b7 click to change your name'
+                                   : 'Nobody knows who you are yet \u2014 click to set a name');
+  }
+  /* ── T2 — SETTING A NAME. ⛔ It changes a LABEL and nothing else: no new userId, no reconnect,
+   *   no seat or lock disturbed. The `rename` frame carries the name only; the server keeps the
+   *   connection's userId exactly as `hello` decided it.
+   * ⛔ F2 — IDENTITY TRAVELS ON ITS OWN FRAME AND BYPASSES THE WRITE-GATE. The gate below blocks
+   *   `op`/`answer` while unnamed; if naming went through it, an unnamed visitor could never name
+   *   themselves. This send does NOT call sendWrite(). */
+  function setUserName(n){
+    n = String(n == null ? '' : n).replace(/\s+/g, ' ').trim().slice(0, NAME_MAX);
+    if (!n) return false;
+    /* ⛔ F3 — on a seat link the NAME IS THE KEY (the server derives userId from it), so renaming
+       would lose the seat. ⛔ And a `?cap=` guest's name belongs to the SIGNED TOKEN: the server
+       refuses to change it (0472 P4), so offering a field here would be a control that silently
+       does nothing. Both are refused in the page AND in the server; neither relies on the other. */
+    if (seatLinked || identity.cap) return false;
+    identity.userName = n;
+    lsSet(NAME_KEY, n);                              // may fail (private window); the name still works this session
+    renderWho();
+    try { if (typeof window.__apPaintNameRow === 'function') window.__apPaintNameRow(); } catch(e){}
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t:'rename', userName: n }));
+    return true;
+  }
+  /* ── T4 — THE SOFT GATE, AT ONE CHOKE POINT. An unnamed visitor SEES EVERYTHING and WRITES
+   *   NOTHING. ⛔ Enforced by CONSTRUCTION here, in the outbound path, not by asking each of
+   *   thirteen components to remember a rule. The stage still renders; only writes are dropped. */
+  function nudgeName(){
+    var e = document.getElementById('ap-echo');
+    if (e) {
+      e.textContent = '\u270e Set a name to join in \u2014 click your name at the bottom left, or open Settings.';
+      e.classList.add('show'); clearTimeout(e.__apT);
+      e.__apT = setTimeout(function(){ e.classList.remove('show'); }, 6000);
+    }
+    try { window.__apNameNudges = (window.__apNameNudges || 0) + 1; } catch(err){}
+  }
+  function sendWrite(msg){
+    if (!isNamed()) { nudgeName(); return false; }
+    if (!ws || ws.readyState !== 1) return false;
+    ws.send(JSON.stringify(msg));
+    return true;
+  }
   renderWho();
+  /* Test/console hook. ⛔ Read-only on userId — nothing outside the resolution above may mint one. */
+  window.__apIdentity = {
+    userId: function(){ return identity.userId; },
+    userName: function(){ return identity.userName; },
+    named: function(){ return isNamed(); },
+    canRename: function(){ return !seatLinked && !identity.cap; },
+    setName: function(n){ return setUserName(n); },
+    hint: function(){ return defaultNameHint(); }
+  };
 
   // AUTH-ROLE (P5.5): is the presenter role password-gated, and what public salt does the
   // browser hash with? Default UNGATED on fetch failure. The Role picker (below) reads these.
@@ -640,6 +810,16 @@
     dbgLog(m);
     if (m.t === 'ping') { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t:'pong', ts:m.ts })); return; }   // X3 RTT
     if (m.t === 'chat_listeners') { updateChat(m.n); return; }   // P3
+    /* Plan 0692 T2 — the server's receipt for a rename. ⛓ It carries the userId as well, and the
+       client asserts it did NOT move: a rename that changed the key would have stranded this
+       connection's seat and locks, and the only place that is observable from here is right here. */
+    if (m.t === 'renamed') {
+      if (typeof m.userName === 'string' && m.userName) identity.userName = m.userName;
+      renderWho();
+      try { if (typeof window.__apPaintNameRow === 'function') window.__apPaintNameRow(); } catch(e){}
+      try { window.__apRenamed = { userId: m.userId, userName: m.userName }; } catch(e){}   // test hook
+      return;
+    }
     if (m.t === 'chat_private') {
       // Plan 0537 P2.3 — the server's receipt for a `/gm …` aside. ⛓ THE POINT OF THIS BRANCH:
       // a private message is INDISTINGUISHABLE FROM A LOST ONE unless something says so. The room
@@ -697,8 +877,16 @@
       // Plan 0514 §5/§8 — identity is SERVER-AUTHORITATIVE: a seat link's userId is derived
       // server-side from the resolved station, so adopt what came back rather than what we guessed.
       if (typeof m.userId === 'string') identity.userId = m.userId;
-      if (typeof m.userName === 'string') identity.userName = m.userName;
+      /* ⛔ Plan 0692 AC4 — DO NOT ADOPT THE SERVER'S PLACEHOLDER AS A NAME. The anonymous identity
+         path answers `userName: m.userName || userId`, so an UNNAMED visitor's welcome comes back
+         carrying its own id in the name field. Adopting that would make every unnamed visitor
+         instantly "named" and the soft gate would never close — the visitor would be labelled with
+         a random string they never chose, which is precisely the `Guest, Guest, Guest` roster this
+         plan exists to end. A name the server ACTUALLY has (the 0525 'NAME UNKNOWN' seat
+         convention, a capability token's name, an echo of what we sent) is adopted as before. */
+      if (typeof m.userName === 'string' && m.userName && m.userName !== m.userId) identity.userName = m.userName;
       renderWho();
+      try { if (typeof window.__apPaintNameRow === 'function') window.__apPaintNameRow(); } catch(e){}
       // The registry + this seat's station + its spotlight grant ride the welcome, so a reconnect
       // RESTORES the client's own state instead of losing it (the 0508 D1 class of bug).
       if (typeof window.__apOnStationWelcome === 'function') window.__apOnStationWelcome(m);
@@ -1037,6 +1225,19 @@
     if (!attReqTimer) attReqTimer = setInterval(attRequest, 2000);
   }
   function closeAttendance(){ attEl.classList.remove('open'); if (attReqTimer){ clearInterval(attReqTimer); attReqTimer = null; } }
+  /* ⭐ Plan 0692 T6 — COLLISIONS ARE ALLOWED, AND DISAMBIGUATED FOR DISPLAY ONLY.
+   * Two people called Bruce both KEEP the name — the name is a label and the uid is the key, so
+   * refusing one or rewriting the stored value would be the room deciding what a person is called.
+   * ⛔ THIS FUNCTION RETURNS A STRING TO PAINT. It writes nothing, sends nothing, and the roster it
+   *   reads is untouched: the suffix exists only where a reader would otherwise see one name twice
+   *   and have no way to tell which row is which. */
+  function attLabel(r, roster){
+    var nm = r.userName || r.userId;
+    var dupes = 0;
+    for (var i = 0; i < roster.length; i++) if ((roster[i].userName || roster[i].userId) === nm) dupes++;
+    if (dupes < 2) return nm;
+    return nm + ' \u00b7 ' + String(r.userId || '').slice(-4);
+  }
   function onAttendance(m){
     if (!attEl.classList.contains('open')) return;   // ignore late replies after close
     var roster = (m && m.roster) || [], sm = (m && m.summary) || {};
@@ -1044,7 +1245,7 @@
       // Plan 0468: dot from r.connected; 👁 badge when r.eyesOn (explicit verify_watching CONFIRM). No r.status.
       var eyes = r.eyesOn ? ' <span class="att-eyes" title="confirmed watching">👁</span>' : '';
       return '<div class="att-row"><span class="att-dot" style="background:' + attDotColor(r.connected) + '" title="' + (r.connected ? 'connected' : 'offline') + '"></span>'
-        + '<span class="att-name">' + attEscape(r.userName || r.userId) + '</span>'
+        + '<span class="att-name">' + attEscape(attLabel(r, roster)) + '</span>'
         + '<span class="att-role">' + attEscape(r.role) + '</span>' + eyes + '</div>';
     }).join('') || '<div style="opacity:.6">(no one else visible)</div>';
     document.getElementById('att-summary').textContent =
@@ -1108,15 +1309,18 @@
     }
     window.__apOnStationWelcome = function(m){
       var row = document.getElementById('cfg-station-row');
-      var nameRow = document.getElementById('cfg-name-row');
+      /* ⛔ Plan 0692 F13 — THE NAME ROW IS NO LONGER OWNED BY THE STATION CODE. It used to be
+         revealed here and hidden on a stationless deployment, which is why everyone who was not
+         seated at a station had no name row at all. Its visibility and its text are now the name
+         editor's business alone, and it repaints from the welcome like everything else. */
       var reg = m && m.stationRegistry;
       // P13: the ambient badge reads from the SAME relay as the selector, so the two can never
       // disagree about where this seat is, and both vanish together on a stationless deployment.
       seatReg = (Array.isArray(reg) && reg.length) ? reg : null;
       seatKey = (m && typeof m.stationSelectorLabel === 'string') ? m.stationSelectorLabel : '';
-      if (!Array.isArray(reg) || !reg.length || !selEl) { if (row) row.style.display = 'none'; if (nameRow) nameRow.style.display = 'none'; paintSeat(null); return; }
+      try { if (typeof window.__apPaintNameRow === 'function') window.__apPaintNameRow(); } catch(e){}
+      if (!Array.isArray(reg) || !reg.length || !selEl) { if (row) row.style.display = 'none'; paintSeat(null); return; }
       if (row) row.style.display = '';
-      if (nameRow) { nameRow.style.display = ''; document.getElementById('cfg-name').textContent = identity.userName || 'NAME UNKNOWN'; }
       var lab = document.getElementById('cfg-station-label');
       if (lab && typeof m.stationSelectorLabel === 'string') lab.textContent = m.stationSelectorLabel;
       selEl.innerHTML = '';
@@ -1263,7 +1467,10 @@
   })();
 
   // P3: bottom chat input — always present, enabled only when a listener is attached.
-  function sendOp(path, verb, value){ if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t:'op', path:path, verb:verb, value:value, opId: identity.userId + ':' + Date.now() })); }
+  /* ⛔ Plan 0692 T4 — THROUGH THE ONE CHOKE POINT. Every write this page emits goes through
+     sendWrite(), which drops it while unnamed and surfaces the prompt. A per-surface check is a
+     rule thirteen components can each forget. */
+  function sendOp(path, verb, value){ sendWrite({ t:'op', path:path, verb:verb, value:value, opId: identity.userId + ':' + Date.now() }); }
   // Plan 0537 P4.2 — the input is CONDITIONAL, not unbuilt, and the old copy did not say so. "chat
   // (disabled until a listener is attached)" names the code's condition; a facilitator reading it
   // cannot tell whether the feature exists, whether they broke it, or what to do next — Bruce read
@@ -1552,7 +1759,13 @@
     if (!d || d.source !== NS) return;
     if (frame && e.source !== frame.contentWindow) return;   // only our iframe
     if (ws.readyState !== 1) return;
-    if (d.type === 'op') ws.send(JSON.stringify({ t:'op', path:d.path, verb:d.verb, value:d.value, opId:d.opId }));
+    /* ⛔ Plan 0692 T4 — THE SAME CHOKE POINT, for the writes that come UP OUT OF A COMPONENT. An
+       `op` and an `answer` (a poll vote, a prompt reply) are the two frames that WRITE, and both
+       are dropped while this visitor is unnamed. Everything else — ready/step/change/view/click,
+       `station-show`, the whole read-and-look-around surface — still flows: a passive audience
+       member is never blocked, which is the point of a SOFT gate. */
+    if (d.type === 'op') sendWrite({ t:'op', path:d.path, verb:d.verb, value:d.value, opId:d.opId });
+    else if (d.type === 'answer') sendWrite({ t:'result', msg: d });
     // Plan 0584 C1 — A COMPONENT MAY ASK FOR ITS OWN SEAT TO BE RE-SHOWN. This is core's own
     // `station-show` verb, and it is SELF-SCOPED AND UNGATED by core's own argument (server.mjs,
     // "the six messages that put something on a screen"): it shows you only what is already yours,
@@ -1597,6 +1810,82 @@
     [].forEach.call(panel.querySelectorAll('[data-scale]'), function(b){ b.addEventListener('click', function(){ cfg.scale = parseFloat(b.getAttribute('data-scale')); apply(); }); });
     document.getElementById('cfg-contrast').addEventListener('click', function(){ cfg.contrast = !cfg.contrast; apply(); });
     document.getElementById('cfg-close').addEventListener('click', function(){ toggle(false); });
+
+    /* ── Plan 0692 T3 — THE ONE NAME EDITOR (F13: the row that already existed) ────────────────
+     * ⛔ Not window.prompt: a modal blocks the stage, and this must match the inline pattern the
+     *   components use. Enter saves, Escape cancels, Cancel restores — nothing is written until
+     *   Save, and what is written is a LABEL.
+     * ⛔ On a seat link there is no field at all: userId is DERIVED from the name server-side
+     *   (t79), so typing a new one would make you a different user and lose your seat (F3). The
+     *   row says that instead of offering the trap. */
+    (function(){
+      var row = document.getElementById('cfg-name-row');
+      var out = document.getElementById('cfg-name');
+      var editBtn = document.getElementById('cfg-name-edit');
+      var why = document.getElementById('cfg-name-why');
+      var box = document.getElementById('cfg-name-editor');
+      var input = document.getElementById('cfg-name-input');
+      var saveBtn = document.getElementById('cfg-name-save');
+      var cancelBtn = document.getElementById('cfg-name-cancel');
+      if (!row || !out || !editBtn || !box || !input) return;
+      var editing = false;
+      function paint(){
+        row.style.display = '';                       // ALWAYS shown — F13
+        var nm = identity.userName;
+        /* ⚠ 'NAME UNKNOWN' is the 0525 §5 seat-link convention and is kept verbatim where a seat
+           link carries no name. Off a seat link an unnamed visitor is told what to do instead. */
+        out.textContent = nm ? nm : (seatLinked ? 'NAME UNKNOWN' : '\u2014 not set \u2014');
+        var fixed = seatLinked || !!identity.cap;
+        editBtn.style.display = (!fixed && !editing) ? '' : 'none';
+        editBtn.textContent = nm ? '\u270e Change' : '\u270e Set a name';
+        box.style.display = editing ? '' : 'none';
+        if (why) {
+          why.style.display = fixed ? '' : 'none';
+          why.textContent = seatLinked
+            ? 'This is a seat link, and the link is your identity: the server works out who you are from the station and the name in the link, which is what lets a reload put you back in the same seat. Changing the name here would make you a different person and lose the seat, so it is fixed. Open a plain link to choose your own name.'
+            : (identity.cap ? 'You joined through an invitation link, and the name on that invitation is the name the room sees. Open a plain link to choose your own name.' : '');
+        }
+      }
+      window.__apPaintNameRow = paint;
+      function begin(){
+        if (seatLinked || identity.cap) return false;
+        editing = true; paint();
+        input.value = identity.userName || '';
+        /* ⛔ T5 — THE PLACEHOLDER IS NEUTRAL AND DERIVED FROM THE uid, NEVER FROM THE IdP. The OIDC
+           account name/email is never prefilled, offered or logged: "Dont reveal actual OAuth login
+           info - privacy violation" (Bruce, 2026-08-26). */
+        input.placeholder = defaultNameHint();
+        try { input.focus(); input.select(); } catch(e){}
+        return true;
+      }
+      function done(){ editing = false; paint(); }
+      function save(){ if (setUserName(input.value)) { done(); readout(); } else { done(); } }
+      editBtn.addEventListener('click', function(e){ e.stopPropagation(); begin(); });
+      if (saveBtn) saveBtn.addEventListener('click', function(e){ e.stopPropagation(); save(); });
+      if (cancelBtn) cancelBtn.addEventListener('click', function(e){ e.stopPropagation(); done(); });
+      input.addEventListener('keydown', function(e){
+        if (e.key === 'Enter') { e.stopPropagation(); save(); }
+        /* ⚠ stopPropagation on Escape: the panel's own document-level handler closes Settings on
+           Escape, so without this, cancelling the field would also shut the panel. */
+        else if (e.key === 'Escape') { e.stopPropagation(); done(); }
+      });
+      /* ⭐ #who IS THE CHIP (T3): always visible, always clickable, and it is the very readout the
+         edit changes. It opens Settings and starts the editor — ONE editor, reached from the thing
+         it changes. */
+      var whoEl = document.getElementById('who');
+      if (whoEl) whoEl.addEventListener('click', function(e){
+        e.stopPropagation(); toggle(true); begin();
+      });
+      window.__apNameEditor = {
+        open: function(){ return editing; },
+        begin: begin, save: save, cancel: done,
+        readout: function(){ return out.textContent; },
+        placeholder: function(){ return input.placeholder; },
+        offered: function(){ return editBtn.style.display !== 'none'; },
+        visible: function(){ return row.style.display !== 'none'; }
+      };
+      paint();
+    })();
 
     /* AP-VOICE:BEGIN */
     // Plan 0470 (RT-27): voice on/off row. Default OFF. ON => APVoice.enable() (mic prompt);
