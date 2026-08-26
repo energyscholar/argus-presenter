@@ -228,3 +228,86 @@ test('t0684-07 — the startup line reports profile and pluginsDir with their so
   check('called with nothing at all it still renders rather than throwing at startup',
     typeof bare === 'string' && bare.includes('profile unset(default)'), bare);
 });
+
+/* ══ R2 — RECORDING MUST SAY WHERE, AND IT MAY NOT BE THE RELEASE TREE ═════════════════════════ */
+
+/* ── 8 ─────────────────────────────────────────────────────────────────────────────────────────
+ * ⛔⛔ THE DATA-LOSS DEFECT. `PRESENTER_TRANSCRIPT_DIR` defaults inside the release tree; the
+ * pipeline keeps ten releases and prunes the rest. A deployment that records without naming a
+ * destination therefore WORKS — visibly, at every moment a human might check — and is then deleted
+ * by a later prune. There is no point at which it looks broken, which is why a warning is not
+ * enough and this is a refusal. */
+test('t0684-08 — a room that RECORDS and names no transcriptDir is a NAMED STARTUP ERROR', () => {
+  const cfg = { rooms: { a: { port: 3001, record: '30d' } }, configPath: '/test/config.json' };
+
+  const e = threw(() => resolveRoom({ [ROOM_ENV]: 'a' }, cfg));
+  check('it throws', e instanceof RoomConfigError, String(e));
+  check('...naming the room', e && e.message.includes('"a"'), e && e.message);
+  check('...naming the retention it was asked for', e && e.message.includes('30d'), e && e.message);
+  check('...and saying WHY, in the terms that matter — the release tree and the prune',
+    e && /release tree/.test(e.message) && /prune/.test(e.message), e && e.message);
+
+  const dflt = threw(() => resolveRoom({}, { defaultRoom: { record: '7d' }, configPath: '/test/config.json' }));
+  check('⛔ and the defaultRoom is under the same rule — it is where an unset PRESENTER_ROOM lands',
+    dflt instanceof RoomConfigError, String(dflt));
+
+  // …and end-to-end through the real loader, so this is a STARTUP error and not a library nicety.
+  const home = scratch(), repo = scratch();
+  writeConfig(repo, { presenterPort: 0, rooms: { a: { port: 3001, record: '30d' } } });
+  const live = threw(() => roomConfig({ env: { HOME: home, [ROOM_ENV]: 'a' }, repoDir: repo }));
+  check('the real loader refuses it too', live instanceof RoomConfigError, String(live));
+});
+
+/* ── 9 ─────────────────────────────────────────────────────────────────────────────────────────
+ * The requirement is satisfiable from EITHER source — the config file, or R1's documented env
+ * fallback. It is a requirement that the destination be KNOWN, not that it be written in one place. */
+test('t0684-09 — the requirement is met by the config OR by $PRESENTER_TRANSCRIPT_DIR, and says which', () => {
+  const cfg = { rooms: { a: { port: 3001, record: '30d', transcriptDir: '/srv/state/a/transcripts' } }, configPath: '/test/config.json' };
+  const a = resolveRoom({ [ROOM_ENV]: 'a' }, cfg);
+  check('a config-stated destination satisfies it', a.capabilities.transcriptDir === '/srv/state/a/transcripts');
+  check('...and reports (config)', a.capabilitySources.transcriptDir === 'config', a.capabilitySources.transcriptDir);
+
+  const envCfg = { rooms: { a: { port: 3001, record: '30d' } }, configPath: '/test/config.json' };
+  const b = resolveRoom({ [ROOM_ENV]: 'a', PRESENTER_TRANSCRIPT_DIR: '/srv/state/from-env' }, envCfg);
+  check('the environment fallback satisfies it too', b.capabilities.transcriptDir === '/srv/state/from-env');
+  check('...and is reported as (env), so nobody reads it as a choice the config file made',
+    b.capabilitySources.transcriptDir === 'env', b.capabilitySources.transcriptDir);
+  check('the startup line carries it', /transcriptDir \/srv\/state\/from-env\(env\)/.test(roomStartupLine(b)), roomStartupLine(b));
+
+  const none = resolveRoom({ [ROOM_ENV]: 'a' }, { rooms: { a: { port: 3001 } }, configPath: '/test/config.json' });
+  check('⛔ and a room that does NOT record is not asked for one — the check is conditional, not blanket',
+    none.capabilities.record === 'none' && none.capabilities.transcriptDir === null, JSON.stringify(none.capabilities));
+});
+
+/* ── 10 ────────────────────────────────────────────────────────────────────────────────────────
+ * ⛔ A DESTINATION INSIDE THE RELEASE TREE IS REFUSED, and so is a relative path — which resolves
+ * against the process's working directory, i.e. the release tree again. Satisfying the requirement
+ * by naming the very place the defect lives would be a rule that reads as enforced and is not. */
+test('t0684-10 — a transcriptDir inside the release tree, or a relative one, is REFUSED', () => {
+  for (const bad of [join(REPO_ROOT, '.transcripts'), join(REPO_ROOT, 'a', 'b'), REPO_ROOT]) {
+    const e = threw(() => normalizeRoomConfig({ record: '30d', transcriptDir: bad }, '/test/config.json', 'a'));
+    check(`${bad} is refused`, e instanceof RoomConfigError, String(e));
+    check('...and the message says it is the release tree, not just "invalid"',
+      e && /release tree/.test(e.message), e && e.message);
+  }
+  for (const rel of ['.transcripts', 'var/transcripts', './t']) {
+    const e = threw(() => normalizeRoomConfig({ transcriptDir: rel }, '/test/config.json', 'a'));
+    check(`relative ${JSON.stringify(rel)} is refused`, e instanceof RoomConfigError, String(e));
+    check('...naming the working-directory trap', e && /ABSOLUTE/.test(e.message), e && e.message);
+  }
+  check('an absolute path outside the tree is accepted, so the rule is not simply "refuse everything"',
+    normalizeRoomConfig({ transcriptDir: '/srv/state/x' }, '/x', 'a').transcriptDir === '/srv/state/x');
+
+  /* ⛔ AND THE ENV FALLBACK IS HELD TO THE SAME RULE. A rule the config file obeys and the
+   * environment variable does not is a rule with a documented way around it. */
+  const e = threw(() => parseCapabilityEnv('transcriptDir', join(REPO_ROOT, '.transcripts')));
+  check('$PRESENTER_TRANSCRIPT_DIR pointing into the release tree is refused too',
+    e instanceof RoomConfigError, String(e));
+  check('...and names the variable', e && e.message.includes('PRESENTER_TRANSCRIPT_DIR'), e && e.message);
+
+  /* ⚠ …and pluginsDir is DELIBERATELY NOT under this rule: plugins are CODE, they ship inside the
+   * release, and `/srv/argus/current/plugins` is the correct value on the live box. The
+   * prohibition is about durable DATA, which a prune destroys; code a prune merely replaces. */
+  check('pluginsDir inside the tree is ACCEPTED — the asymmetry is deliberate, not an oversight',
+    normalizeRoomConfig({ pluginsDir: join(REPO_ROOT, 'plugins') }, '/x', 'a').pluginsDir === join(REPO_ROOT, 'plugins'));
+});
