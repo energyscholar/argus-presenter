@@ -174,10 +174,42 @@ ${composed ? `
     if (!window.ApComponents || !ApComponents.has(name)) { problems.push('no such component: ' + name + ' (' + where + ')'); return; }
     ApComponents.mount(name, el, inherit(o));
   }
+  /* ⭐⭐ Plan 0691b — ROUTE A COMPONENT'S RESULT INTO THE SHARED STORE.
+   *
+   *  Thirteen of the sixteen components never touch shared state. That is not a defect in them:
+   *  they EMIT a result (fire-and-forget, over the in-page bus and up to the host) and the server
+   *  decides what it means. Correct for a poll, useless for an author who wants this slider to be
+   *  THIS ship's power level.
+   *
+   *  'writes' closes that without touching a single component:
+   *      { at:'#p', component:'slider', opts:{promptId:'pw'}, writes:{ path:'shared/ship/power' } }
+   *
+   *  Correlation is by promptId, which is the identity the result protocol already carries — so a
+   *  page may mount four sliders and each writes its own path. One is generated if the author did
+   *  not supply one (an unnamed control still needs a name to be routed by).
+   *
+   *  ⛔ The write is a NORMAL op: permission-checked, lock-checked, refused like any other. This
+   *    grants reach, never authority. */
+  function routeWrites(m, i){
+    if (!m.writes || !m.writes.path || !window.Argus) return;
+    var pid = (m.opts && m.opts.promptId) || ('w' + i + '-' + Math.random().toString(36).slice(2, 7));
+    if (!m.opts) m.opts = {};
+    if (!m.opts.promptId) m.opts.promptId = pid;
+    var verb = m.writes.verb || 'set';
+    var field = m.writes.from || 'value';
+    Argus.subscribe(function (msg) {
+      if (!msg || msg.promptId !== pid) return;
+      if (m.writes.type && msg.type !== m.writes.type) return;
+      var v = msg[field];
+      if (v === undefined || v === null) return;
+      Argus.op(m.writes.path, verb, v);
+    });
+  }
   MOUNTS.forEach(function(m, i){
     if (!m || !m.component) { problems.push('mounts[' + i + '] names no component'); return; }
     var el = null; try { el = m.at ? page.querySelector(m.at) : null; } catch(e){ problems.push('mounts[' + i + '] has an invalid selector: ' + m.at); return; }
     if (!el) { problems.push('mounts[' + i + '] (' + m.component + ') found nothing at ' + JSON.stringify(m.at || null) + ' — the page has no such element'); return; }
+    routeWrites(m, i);                       // BEFORE mount: the component may emit on first render
     mountInto(el, m.component, m.opts, 'mounts[' + i + ']');
   });
   Array.prototype.forEach.call(page.querySelectorAll('[data-ap-component]'), function(el){

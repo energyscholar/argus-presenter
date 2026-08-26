@@ -8,7 +8,7 @@
     <button class="cell" data-i="6"></button><button class="cell" data-i="7"></button><button class="cell" data-i="8"></button>
   </div>
 
-  <p class="status" id="status">Waiting for players…</p>
+  <p class="status" id="status">Waiting for a second participant…</p>
   <div class="seats" id="seats"></div>
   <button class="reset" id="reset">New game</button>
 </div>
@@ -93,13 +93,13 @@
     }
 
     document.getElementById('who').textContent = my
-      ? 'You are ' + MYNAME + ' — playing ' + my
+      ? 'You are ' + MYNAME + ' — you are ' + my
       : 'You are ' + MYNAME + ' — observing';
-    document.getElementById('who').className = 'who' + (my ? ' player' : ' observer');
+    document.getElementById('who').className = 'who' + (my ? ' seated' : ' observer');
 
     var status;
     if (w) status = w.mark === 'draw' ? 'Draw.' : (w.mark + ' wins.');
-    else if (!st.X || !st.O) status = 'Waiting for a second player…';
+    else if (!st.X || !st.O) status = 'Waiting for a second participant…';
     else status = (turn === my ? 'Your move (' + turn + ')' : turn + ' to move');
     document.getElementById('status').textContent = status;
     document.getElementById('status').className = 'status' + (w ? ' done' : '');
@@ -148,7 +148,7 @@
   .ttt { max-width: 380px; margin: 0 auto; text-align:center; }
   h1 { font-size: 20px; letter-spacing:.02em; margin:0 0 2px; }
   .who { font-size:12.5px; margin:0 0 16px; color:#7e828d; }
-  .who.player { color:#7fd1a6; }
+  .who.seated { color:#7fd1a6; }
   .board { display:grid; grid-template-columns: repeat(3, 92px); grid-gap:8px; justify-content:center; }
   .cell { width:92px; height:92px; font-size:44px; font-weight:600; line-height:1;
           background:#181b22; color:#e9eaee; border:1px solid #262a33; border-radius:10px;
