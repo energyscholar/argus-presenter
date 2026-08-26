@@ -31,10 +31,11 @@ import {
   RoomConfigError, ROOM_KEYS, ROOM_ENV, roomDefaults,
   normalizeRoomConfig, normalizeRoomsConfig, roomValueSources,
   resolveRoom, roomConfig, roomStartupLine, identityStartupLine,
+  writeConfigSection,
   loadDeploymentConfig, CONFIG_BASENAME,
 } from '../../lib/deployment-config.mjs';
-import { mkdtempSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdtempSync, writeFileSync, readFileSync, statSync, existsSync, readdirSync, unlinkSync, utimesSync } from 'node:fs';
+import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 
 const scratch = () => mkdtempSync(join(tmpdir(), 'ap-0675-'));
@@ -354,4 +355,164 @@ test('t0675-10b — the two startup lines are the whole visible picture, and nei
   check('...and still no secret', !line.includes('secret-0675'), line);
   check('...and still no client id', !line.includes('cid-0675'), line);
   check('...and still no allowlist entry', !line.includes('a@example.invalid'), line);
+});
+
+/* ══ T4 — THE ONE WRITER ═══════════════════════════════════════════════════════════════════════
+ * This file holds the OIDC clientSecret in cleartext. Every test below is really one question:
+ * after a write, is the deployment still the deployment it was? */
+
+/** A config file that looks like a real one: a secret, a comment key, an unknown key, mode 0600. */
+function writeRealisticConfig(dir) {
+  const p = join(dir, CONFIG_BASENAME);
+  const text = [
+    '{',
+    '  "// NOTE": "keep presenterPort and sessionLogDir in the SAME file — resolution is whole-file",',
+    '  "presenterPort": 3000,',
+    '  "oidc": {',
+    '    "clientId": "test-client-id-0675.example.invalid",',
+    '    "clientSecret": "not-a-real-secret-0675-KEEP-ME",',
+    '    "authEndpoint": "https://idp.example.invalid/authorize"',
+    '  },',
+    '  "allowlist": { "someone@example.invalid": { "role": "presenter", "voice": true } },',
+    '  "somethingThisCodeHasNeverHeardOf": { "deep": [1, 2, 3] },',
+    '  "// TRAILING": "a second comment key, last in the file"',
+    '}',
+    '',
+  ].join('\n');
+  writeFileSync(p, text, { mode: 0o600 });
+  return p;
+}
+
+/* ── 11 ──────────────────────────────────────────────────────────────────────────────────────── */
+test('t0675-11 — writeConfigSection round-trips the WHOLE document: secret, mode, unknown keys, order', async () => {
+  const dir = scratch();
+  const p = writeRealisticConfig(dir);
+  const beforeText = readFileSync(p, 'utf8');
+  const beforeKeys = Object.keys(JSON.parse(beforeText));
+
+  const logged = [];
+  await writeConfigSection('rooms', TWO_ROOMS, { configPath: p, actor: 'test:t0675-11', log: (l) => logged.push(l) });
+
+  const after = JSON.parse(readFileSync(p, 'utf8'));
+  check('the section was written', after.rooms && after.rooms.table.port === 3001, JSON.stringify(after.rooms && Object.keys(after.rooms)));
+
+  // ⛔ THE ONE THAT MATTERS.
+  check('⛔ the OIDC clientSecret survives BYTE FOR BYTE',
+    after.oidc.clientSecret === 'not-a-real-secret-0675-KEEP-ME', JSON.stringify(after.oidc));
+  check('⛔ the rest of the oidc block survives too',
+    after.oidc.clientId && after.oidc.authEndpoint, JSON.stringify(after.oidc));
+  check('⛔ the allowlist survives, entry and voice capability alike',
+    after.allowlist['someone@example.invalid'].voice === true, JSON.stringify(after.allowlist));
+  check('⛔ an unknown top-level key survives whole',
+    JSON.stringify(after.somethingThisCodeHasNeverHeardOf) === '{"deep":[1,2,3]}',
+    JSON.stringify(after.somethingThisCodeHasNeverHeardOf));
+  check('⛔ a `//`-comment key survives — it is a message from one human to the next',
+    after['// NOTE'] && after['// TRAILING'], JSON.stringify(Object.keys(after)));
+
+  const afterKeys = Object.keys(after);
+  check('⛔ KEY ORDER survives, with the new section appended rather than the file re-sorted',
+    JSON.stringify(afterKeys.slice(0, beforeKeys.length)) === JSON.stringify(beforeKeys),
+    JSON.stringify(afterKeys));
+
+  check('⛔ file MODE is still 0600 — a temp file at the ambient umask would have widened the secret',
+    (statSync(p).mode & 0o777) === 0o600, (statSync(p).mode & 0o777).toString(8));
+  check('the file still ends with a newline, as it did before', readFileSync(p, 'utf8').endsWith('\n'));
+  check('and its indentation was not reformatted', /\n  "presenterPort"/.test(readFileSync(p, 'utf8')));
+
+  // ⛔ THE AUDIT LINE.
+  check('exactly one audit line', logged.length === 1, JSON.stringify(logged));
+  check('...naming the actor', logged[0].includes('test:t0675-11'), logged[0]);
+  check('...naming the section', logged[0].includes('"rooms"'), logged[0]);
+  check('...and NOT the value — the room names are nowhere in it', !logged[0].includes('voicelink'), logged[0]);
+  check('...and no secret in the audit line either', !logged[0].includes('KEEP-ME'), logged[0]);
+
+  // Deleting a section is the same contract.
+  await writeConfigSection('rooms', undefined, { configPath: p, actor: 'test:t0675-11', log: () => {} });
+  const gone = JSON.parse(readFileSync(p, 'utf8'));
+  check('undefined REMOVES the section', gone.rooms === undefined);
+  check('...and still does not touch the secret', gone.oidc.clientSecret === 'not-a-real-secret-0675-KEEP-ME');
+
+  // The refusals.
+  const noActor = await writeConfigSection('rooms', {}, { configPath: p }).then(() => null, (e) => e);
+  check('an unattributed write is REFUSED', noActor instanceof RoomConfigError, noActor && noActor.message);
+  const noFile = await writeConfigSection('rooms', {}, { actor: 'x', env: { HOME: scratch() }, repoDir: scratch() }).then(() => null, (e) => e);
+  check('with no config file anywhere it REFUSES rather than inventing one somewhere nobody chose',
+    noFile instanceof RoomConfigError, noFile && noFile.message);
+});
+
+/* ── 12 ──────────────────────────────────────────────────────────────────────────────────────── */
+test('t0675-12 — two concurrent writes both complete, and NEITHER loses the other\'s change', async () => {
+  const dir = scratch();
+  const p = writeRealisticConfig(dir);
+
+  // Both are launched before either can finish: whichever takes the lock second must READ the
+  // first one's result, not the copy it saw at call time.
+  const results = await Promise.all([
+    writeConfigSection('rooms', TWO_ROOMS, { configPath: p, actor: 'writer-a', log: () => {} }),
+    writeConfigSection('defaultRoom', { plugins: [], record: 'none', voice: false }, { configPath: p, actor: 'writer-b', log: () => {} }),
+  ]);
+  check('both calls completed', results.length === 2 && results.every((r) => r && r.configPath === p));
+
+  const after = JSON.parse(readFileSync(p, 'utf8'));
+  check('⛔ writer A\'s change is present', after.rooms && Object.keys(after.rooms).length === 2, JSON.stringify(after.rooms && Object.keys(after.rooms)));
+  check('⛔ writer B\'s change is present TOO — a lost update is the whole failure mode',
+    after.defaultRoom && after.defaultRoom.record === 'none', JSON.stringify(after.defaultRoom));
+  check('and the secret survived both', after.oidc.clientSecret === 'not-a-real-secret-0675-KEEP-ME');
+  check('the lock file was released', !existsSync(p + '.lock'));
+  check('no temp file was left behind',
+    readdirSync(dir).filter((f) => f.includes('.tmp.')).length === 0, JSON.stringify(readdirSync(dir)));
+
+  // A STALE lock is stolen rather than waited on: a writer killed mid-write must not wedge the
+  // file forever. The refusal to steal a FRESH lock is the other half, and is what makes it safe.
+  writeFileSync(p + '.lock', '99999');
+  const t = new Date(Date.now() - 120_000);
+  utimesSync(p + '.lock', t, t);
+  const stole = await writeConfigSection('rooms', TWO_ROOMS, { configPath: p, actor: 'writer-c', log: () => {} }).then(() => true, () => false);
+  check('a lock older than the stale window is STOLEN — a dead writer must not wedge the file forever', stole);
+
+  writeFileSync(p + '.lock', '99999');   // fresh: not stale
+  const refused = await writeConfigSection('rooms', TWO_ROOMS, { configPath: p, actor: 'writer-d', log: () => {}, lock: { timeoutMs: 60 } })
+    .then(() => null, (e) => e);
+  check('a FRESH lock is respected and the write times out by name, rather than barging in',
+    refused instanceof RoomConfigError, refused && refused.message);
+  unlinkSync(p + '.lock');
+});
+
+/* ── 13 ──────────────────────────────────────────────────────────────────────────────────────── */
+test('t0675-13 — a write interrupted BEFORE the rename leaves the original intact and parseable', async () => {
+  const dir = scratch();
+  const p = writeRealisticConfig(dir);
+  const before = readFileSync(p, 'utf8');
+
+  let sawTemp = null;
+  const boom = await writeConfigSection('rooms', TWO_ROOMS, {
+    configPath: p, actor: 'writer-crash', log: () => {},
+    _hooks: {
+      beforeRename: ({ tmpPath }) => {
+        // The new content is fully on disk, in the same directory, under a different name...
+        sawTemp = { path: tmpPath, exists: existsSync(tmpPath), body: readFileSync(tmpPath, 'utf8') };
+        throw new Error('simulated crash before rename');
+      },
+    },
+  }).then(() => null, (e) => e);
+
+  check('the write reported failure rather than claiming success', boom instanceof Error, String(boom));
+  check('the new content HAD been written to a temp file first (so the rename is the only mutation)',
+    sawTemp && sawTemp.exists && sawTemp.body.includes('"rooms"'), JSON.stringify(sawTemp && sawTemp.path));
+  check('...in the SAME directory, because rename is only atomic within one filesystem',
+    sawTemp && dirname(sawTemp.path) === dirname(p), sawTemp && sawTemp.path);
+
+  const after = readFileSync(p, 'utf8');
+  check('⛔ the ORIGINAL FILE IS BYTE-FOR-BYTE UNCHANGED', after === before);
+  check('⛔ ...and still parses', JSON.parse(after).oidc.clientSecret === 'not-a-real-secret-0675-KEEP-ME');
+  check('⛔ ...and the half-written temp file was cleaned up, not left to confuse the next reader',
+    !existsSync(sawTemp.path), sawTemp.path);
+  check('⛔ ...and the lock was released even on the failure path', !existsSync(p + '.lock'));
+
+  // A file that does not parse is never overwritten: a rewrite from a partial parse would destroy
+  // the one copy of the secret.
+  writeFileSync(p, '{ this is not json', { mode: 0o600 });
+  const bad = await writeConfigSection('rooms', {}, { configPath: p, actor: 'writer-e', log: () => {} }).then(() => null, (e) => e);
+  check('an unparseable config is REFUSED, not rewritten', bad instanceof RoomConfigError, bad && bad.message);
+  check('...and left exactly as it was', readFileSync(p, 'utf8') === '{ this is not json');
 });
