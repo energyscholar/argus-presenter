@@ -11,7 +11,7 @@ import { assemble } from '../harness/assemble.mjs';
 import { tunnelConfigured, tunnelStatus, tunnelUp, tunnelDown } from './tunnel.mjs';
 import { readFileSync, existsSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
-import { presenterPort, authPolicy, identityConfig, identityServerOptions, identityStartupLine, bindHostsConfig } from '../lib/deployment-config.mjs';
+import { presenterPort, authPolicy, identityConfig, identityServerOptions, identityStartupLine, bindHostsConfig, controlTokenConfig } from '../lib/deployment-config.mjs';
 import { resolveSessionLogDir, defaultSessionLogDir } from '../lib/session-log.mjs';
 import { srvRoot, currentRelease, enumerateReleases, unitStatus, staleUnit, roomTable, probe, tailnetAddress, REAL_PAGE_MARKERS } from '../lib/ops-status.mjs';
 import { join, dirname } from 'node:path';
@@ -142,7 +142,21 @@ export const coreTools = [
       // ⚠ Only when the caller supplies neither a controlToken nor the env var: an explicit
       // credential still wins, and a rolePassword-only deployment gets a token as well, because
       // module writes verify against CONTROL_TOKEN or ROLE_HASH and either one is a real gate.
-      const mintedToken = (opts.controlToken || process.env.PRESENTER_CONTROL_TOKEN || rest.rolePassword)
+      /*
+       * ── Plan 0693 T3 — A DECLARED TOKEN IS PINNED; ONLY AN UNDECLARED ONE IS MINTED ──────────
+       * The mint above changed the credential on EVERY restart, and jill restarts on every push, so
+       * the operator's fallback way in expired whenever anyone deployed. A deployment may now state
+       * the token ($PRESENTER_CONTROL_TOKEN or `controlToken` in presenter-config.json) and it then
+       * survives every restart unchanged. ⛔ The declared value is APPLIED to opts, not merely used
+       * to suppress the mint: createServer falls back to the env var but has never read the config
+       * file, so a config-stated token that only suppressed minting would have left the server
+       * UNGATED while `gated` reported true.
+       * ⛔ THE FALLBACK STAYS. No declaration and no rolePassword ⇒ still minted, so the module
+       * write-back never ships open (P12/R15). ⛔ And a declared token is never logged or returned.
+       */
+      const declaredToken = controlTokenConfig();
+      if (!opts.controlToken && declaredToken.controlToken) opts.controlToken = declaredToken.controlToken;
+      const mintedToken = (opts.controlToken || rest.rolePassword)
         ? null : randomBytes(16).toString('hex');
       if (mintedToken) opts.controlToken = mintedToken;
       /*
@@ -182,6 +196,10 @@ export const coreTools = [
       // branch is therefore unreachable and gone — it announced a hazard on a SUCCESSFUL return
       // and left it standing, which is the anti-pattern P16.1 catalogues. Prevented, not warned.
       const gated = !!(opts.controlToken || rest.rolePassword || process.env.PRESENTER_CONTROL_TOKEN);
+      // Plan 0693 T3 — say that the credential is PINNED (so a restart does not lock the operator
+      // out), and where it was declared. ⛔ STATE, NEVER CONTENTS: the value itself is never here.
+      const controlTokenPinned = { controlTokenPinned: !mintedToken && !!opts.controlToken,
+        ...(declaredToken.controlTokenSource ? { controlTokenSource: declaredToken.controlTokenSource } : {}) };
       const publicUrl = ingress.publicUrl || null;
       /*
        * Plan 0551 P2 — the startup line, RETURNED rather than printed. stdout is this process's
@@ -237,6 +255,7 @@ export const coreTools = [
         capLinks: !!rest.capSecret,
         tunnel: ingress,
         identity: identityLine,
+        ...controlTokenPinned,
         ...minted,
       };
     }

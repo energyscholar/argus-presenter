@@ -29,7 +29,7 @@ import { ALL as ALL_READ_ROLES } from './permissions.mjs';
 import { validate, summarize } from './validate.mjs';
 import { createAsr } from './asr.mjs';
 import { verifyCapability, mintCapability } from '../lib/capability.mjs';
-import { presenterPort, authPolicy, normalizeAuthPolicy, identityConfig, identityServerOptions, identityStartupLine, bindHostsConfig, roomConfig, roomStartupLine, installConfigReloader } from '../lib/deployment-config.mjs';
+import { presenterPort, authPolicy, normalizeAuthPolicy, identityConfig, identityServerOptions, identityStartupLine, bindHostsConfig, controlTokenConfig, roomConfig, roomStartupLine, installConfigReloader } from '../lib/deployment-config.mjs';
 import { makeAllowlist, makeOidcAdapter, makeTailscaleAdapter, defaultOidcDeps, makeTailscaleWhois, makeBreakGlassAdapter, isTailnetPeerAddress } from './identity.mjs';
 /* Plan 0650 §2a — how long a socket's first frames may wait for `tailscale whois`, and how many may
  * queue while they do. The deadline is the whois timeout plus slack: past it the peer is simply
@@ -3633,7 +3633,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   // self-run — createServer() from tests stays ungated unless a credential is passed.
   // Plan 0471 H1: default to a REAL control token (random when unset) so the module
   // write-back never ships open — printed in the banner for the creator/writeback client.
-  const cliToken = process.env.PRESENTER_CONTROL_TOKEN || 'password';   // TISSUE-THIN gate (deliberate, pre-OAuth): the visible literal password to enter the Control page
+  /* Plan 0693 T3 — the token is DECLARED (env > presenter-config.json) and therefore SURVIVES a
+   * restart. Absent any declaration the CLI keeps its documented tissue-thin literal 'password'
+   * (deliberate, pre-OAuth), which is the one value it may safely print. */
+  const cliTokenDecl = controlTokenConfig();
+  const cliToken = cliTokenDecl.controlToken || 'password';   // TISSUE-THIN gate (deliberate, pre-OAuth): the visible literal password to enter the Control page
   // Plan 0522 P16.2 (R3): a REAL session logs to disk by default — that is the whole point, and
   // it is why the resolution happens HERE rather than inside createServer(). The library default
   // stays off so 475 tests never write into a human's ~/.local/state; the deployment default is
@@ -3701,7 +3705,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     console.log('  display :', u + '/');
     console.log('  control :', u + '/control');
     console.log('  creator :', u + '/creator');
-    console.log('  control token (x-control-token / ?token=):', cliToken);
+    /* ⛔ Plan 0693 T3 — NEVER PRINT A CONFIGURED TOKEN. The literal fallback is public by design
+     *   and is printed so a fresh checkout is usable; a declared credential is the operator's own
+     *   secret and the startup banner is a log. State WHERE it came from, never what it is. */
+    console.log('  control token (x-control-token / ?token=):',
+      cliTokenDecl.controlToken ? `(declared in ${cliTokenDecl.controlTokenSource} — NOT printed)` : cliToken);
     console.log('  session log:', slog.enabled ? `${slog.sessionLogDir}/${slog.sessionLogId}.p0.jsonl  (read: ${u}/api/session-log?token=…)` : `DISABLED — ${slog.sessionLogDirError}`);
   });
 }
