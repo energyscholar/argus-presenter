@@ -43,7 +43,11 @@ export const DEFAULT_POLICY = [
    */
   { glob: 'shared/**', roles: ['participant'], verbs: ['set', 'merge', 'add', 'remove', 'clear', 'lock', 'unlock'] },
   /*
-   * ⭐ Plan 0692 — PRIVATE PER-USER STATE. The other half of a shared surface.
+   * ⭐ PRIVATE PER-USER STATE — the other half of a shared surface.
+   * ⚠ Added 2026-08-26 alongside the Hidden Fleet example (commit 510fa43). It has NO numbered
+   *   plan: it was built during a demo run. An earlier draft of this comment cited "Plan 0692",
+   *   which is a DIFFERENT piece of work (visitor self-identification) — one number, two features
+   *   is exactly the confusion a reader cannot recover from. Cite the commit, not a wrong plan.
    *
    * `shared/**` is the collaborative space and is world-READABLE by design. There was no space for
    * state a participant owns and nobody else may see: a player's own hand, a station's unsent
@@ -78,7 +82,7 @@ export const DEFAULT_READ_POLICY = [
   // Plan 0691 — the shared authoring slice is world-readable by design: it exists so several
   // people can see the same control. A prefix rule, so every descendant is covered.
   { glob: 'shared', roles: ALL },
-  // Plan 0692 — a participant reads ONLY THEIR OWN private subtree. No rule grants a participant
+  // Private slice (see above; no numbered plan) — a participant reads ONLY THEIR OWN subtree. No rule grants a participant
   // `private` or `private/*`, so another user's branch is not merely hidden from the UI — it never
   // enters their snapshot or their diffs. A referee needs the whole picture, so gm reads all of it.
   { glob: 'private/{self}', roles: ['participant'], self: true },
