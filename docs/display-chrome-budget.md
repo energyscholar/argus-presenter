@@ -119,3 +119,14 @@ it matters, and a vehicle nobody is flying occupies no corner of anyone's screen
    paid forever.
 5. **Does it survive the count?** Re-run the inventory above. **If the number went up, say so out
    loud** — this crept from 1 to 8 without anyone deciding to.
+
+## Plan 0692 — naming yourself cost ZERO chrome
+
+The visitor's identity readout at the bottom-left (`#who`) was already in the always-present
+inventory and already rendered the very thing a naming control changes. It is now also the control:
+clicking it opens ⚙ Settings with the name field focused, and it brightens to `✎ Set a name to join`
+while nobody has named themselves.
+
+⛔ A new top-frame identity chip was the obvious build and it is the wrong one — it would have made
+the always-present count EIGHT for a control that already had a home. **The count is unchanged at
+seven**, and t0537-P4-C5 / t0539-C8 still assert it.

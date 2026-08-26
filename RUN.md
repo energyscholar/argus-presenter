@@ -31,6 +31,45 @@ and set `presenterPort`. No config file anywhere ⇒ 3000.
 
 A **display link addressed to a seat** (one carrying `?stationUID=<int>`, or any `?station=`) **derives** its identity from the link — `<stationCode>-<slug(?n=name)>` — so that a reload returns to the same seat; on such a link any `?userId=` / `?u=` you add is **ignored**. Off a seat link, `?userId=` / `?u=` is honoured exactly as given.
 
+### Who you are, and what you are called (plan 0692)
+
+They are two different things, and only one of them is allowed to change.
+
+- **identity** (`userId`) is the **key**. Seats, locks, private state and roster rows are all keyed
+  on it. Off a seat link the browser mints one *once* — `u-xxxxxxxx` in
+  `localStorage['argus-presenter:uid']` — and reuses it forever, so a reload comes back as the same
+  person instead of orphaning a seat.
+- **name** (`userName`) is the **label** a human reads. Change it as often as you like; it changes
+  nothing else. It is remembered in `localStorage['argus-presenter:name']`.
+
+Precedence — a URL parameter always wins, and storage only fills a gap:
+
+| | precedence |
+|---|---|
+| `userId` | seat-link derivation (server-side) → `?userId=` / `?u=` → stored uid → freshly minted |
+| `userName` | `?name=` / `?n=` → stored name (off a seat link only) → **unset** |
+| `role` | `?role=` → stored role → `participant` |
+
+A `?userId=` in the link is a **one-shot override**; it does not overwrite the browser's own stored
+identity.
+
+Nobody is named until a human types a name. Until then the visitor **sees everything and writes
+nothing**: the stage renders as usual, and `op`/`answer` writes are dropped with a prompt to set a
+name. Click the identity readout at the bottom-left (or open ⚙ Settings → You → Name) to set one.
+
+⛔ **On a seat link the name cannot be changed**, because there the name *is* the key: the server
+derives `userId` from it, which is what lets a reload return to the same seat. Renaming would make
+you a different person and lose the seat. Open a plain link to choose your own name.
+
+⚠ **`localStorage` is per-origin.** The tunnel URL and a tailnet URL are different origins with
+different stores, so the same person on the same laptop is two persistent identities depending on
+which link they opened. Prefer one URL in shared links. Storage that is unavailable (a private
+window, blocked site data) costs only the stickiness — the page still works, with a fresh identity
+each load.
+
+⛔ **The sign-in account name is never used as a display name.** The identity provider authorises;
+it does not label. A real name reaches the room only because a human typed it.
+
 The self-run server is **gated**: becoming the presenter needs a password. The
 default is `password` (override with `PRESENTER_ROLE_PASSWORD`).
 
