@@ -14,7 +14,7 @@ Clean. Now we also have other components beginning to clutter the display. Caref
 | `led` | top-right | 10×10 | **the green dot** — the original, and for a long time the only one |
 | `ap-seat-k` | top-left | 30×14 | "Role" |
 | `ap-seat-v` | top-left | 94×18 | "👁 Observer" |
-| `who` | fixed, bottom-left | 240×12 | `participant · Guest (anon-…)` |
+| `who` | fixed, bottom-left | 240×12 | `participant · Guest (anon-…)` — ⚠ reads `✎ Set a name to join · participant (u-…)` since plan 0692, and is now a CONTROL |
 | `ap-echo` | fixed, bottom | 1280×6 | full-width strip |
 | `ap-chat-input` | bottom | 1074×30 | the participant's only way to talk back |
 | `ap-chat-send` | bottom | 60×30 | "Send" |
@@ -119,3 +119,14 @@ it matters, and a vehicle nobody is flying occupies no corner of anyone's screen
    paid forever.
 5. **Does it survive the count?** Re-run the inventory above. **If the number went up, say so out
    loud** — this crept from 1 to 8 without anyone deciding to.
+
+## Plan 0692 — naming yourself cost ZERO chrome
+
+The visitor's identity readout at the bottom-left (`#who`) was already in the always-present
+inventory and already rendered the very thing a naming control changes. It is now also the control:
+clicking it opens ⚙ Settings with the name field focused, and it brightens to `✎ Set a name to join`
+while nobody has named themselves.
+
+⛔ A new top-frame identity chip was the obvious build and it is the wrong one — it would have made
+the always-present count EIGHT for a control that already had a home. **The count is unchanged at
+seven**, and t0537-P4-C5 / t0539-C8 still assert it.
