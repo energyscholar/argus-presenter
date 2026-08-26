@@ -2649,6 +2649,13 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // Audio segment WAVs are ALWAYS deleted after ASR regardless of the flag — only text is ever
   // persistable. When ON, clients are TOLD (welcome.transcriptPersisting) — never save silently.
   const TRANSCRIPT_PERSIST = /^(1|true|yes|on)$/i.test(process.env.PRESENTER_TRANSCRIPT_PERSIST || '');
+  // ⛔⛔ Plan 0684 R2 — THIS DEFAULT IS THE DEFECT, and it is left in place ON PURPOSE. It resolves
+  // INSIDE the release tree; the deploy pipeline keeps ten releases and prunes the rest, so
+  // recording here works visibly and is then deleted by a later prune. Phase 0b is INERT and may
+  // not change what is recorded or where, so the refusal lives one layer up: a ROOM that declares
+  // `record` other than "none" and names no `transcriptDir` (and has no $PRESENTER_TRANSCRIPT_DIR)
+  // is refused at startup — see assertRecordingIsDurable in lib/deployment-config.mjs. ⇒ When the
+  // phase that wires rooms to recording arrives, THIS LINE is what it replaces.
   const TRANSCRIPT_DIR = process.env.PRESENTER_TRANSCRIPT_DIR || join(__dirname, '..', '.transcripts');
   const TRANSCRIPT_FILE = join(TRANSCRIPT_DIR, 'transcripts.jsonl');
   // RT-26 (Plan 0472: applies to TEXT too). Persist ONE JSONL line per inbox item — voice or text —

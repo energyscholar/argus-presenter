@@ -46,9 +46,15 @@ const scratch = () => mkdtempSync(join(tmpdir(), 'ap-0675-'));
 const writeConfig = (dir, obj) => { writeFileSync(join(dir, CONFIG_BASENAME), JSON.stringify(obj, null, 2)); return join(dir, CONFIG_BASENAME); };
 const threw = (fn) => { try { fn(); return null; } catch (e) { return e; } };
 
-/** A valid two-room config. Neutral names throughout — see the header note. */
+/** A valid two-room config. Neutral names throughout — see the header note.
+ *
+ * ⚠ AMENDED BY PLAN 0684 R2: a room that records must now NAME ITS TRANSCRIPT DIRECTORY, and one
+ * that does not is a named startup error. This fixture declared `record:'30d'` and no destination,
+ * which was legal when it was written and is an illegal configuration now — so the key is added
+ * rather than the assertion weakened. The fixture's PURPOSE (a room that records, beside one that
+ * does not) is unchanged, and the new rule has its own tests in 0684-p0b-capability-config. */
 const TWO_ROOMS = Object.freeze({
-  voicelink: { port: 3000, bindHosts: ['127.0.0.1', 'tailnet'], plugins: [], record: '30d', voice: true, label: 'voice link' },
+  voicelink: { port: 3000, bindHosts: ['127.0.0.1', 'tailnet'], plugins: [], record: '30d', voice: true, label: 'voice link', transcriptDir: '/srv/state/voicelink/transcripts' },
   table:     { port: 3001, bindHosts: ['127.0.0.1', 'tailnet'], plugins: ['ops-console'], record: 'none', voice: false, label: 'the table' },
 });
 
@@ -303,7 +309,8 @@ test('t0675-10 — the startup line names the room, every value AND its source, 
   const ALLOWED = 'someone@example.invalid';
 
   const cfg = {
-    rooms: { table: { port: 3001, bindHosts: ['127.0.0.1'], plugins: ['ops-console'], record: '30d' } },
+    // ⚠ transcriptDir added by 0684 R2 — a recording room must name a durable destination.
+    rooms: { table: { port: 3001, bindHosts: ['127.0.0.1'], plugins: ['ops-console'], record: '30d', transcriptDir: '/srv/state/table/transcripts' } },
     // Everything a leak could come from, present in the SAME config object the resolver is handed.
     oidc: { clientId: CLIENT_ID, clientSecret: SECRET },
     allowlist: { [ALLOWED]: { role: 'presenter', voice: true } },
@@ -591,7 +598,9 @@ test('t0675-15 — INERTNESS: a full two-room config changes NO routed option, N
    * selected a room whose `record` was already "none", so the recording half of the assertion could
    * not have failed — caught by writing the forbidden implementation and watching it pass. The probe
    * room therefore states a port, a plugin, a retention and voice, all different from the defaults. */
-  const PROBE = { probe: { port: 3001, bindHosts: ['127.0.0.1'], plugins: ['ops-console'], record: '30d', voice: true, label: 'probe' } };
+  // ⚠ transcriptDir added by 0684 R2 — a recording room must name a durable destination, and
+  // this probe room's whole job is to STATE every capability so the inertness claim is not vacuous.
+  const PROBE = { probe: { port: 3001, bindHosts: ['127.0.0.1'], plugins: ['ops-console'], record: '30d', voice: true, label: 'probe', transcriptDir: '/srv/state/probe/transcripts' } };
   writeFileSync(join(withRooms, CONFIG_BASENAME),
     JSON.stringify({ ...base, rooms: PROBE, defaultRoom: { plugins: [], record: 'none', voice: false } }, null, 2), { mode: 0o600 });
   writeFileSync(join(without, CONFIG_BASENAME), JSON.stringify(base, null, 2), { mode: 0o600 });
