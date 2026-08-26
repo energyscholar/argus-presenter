@@ -252,10 +252,14 @@ export const coreTools = [
   },
   {
     name: 'presenter_status',
-    description: 'Server URL + connected users (presence) + PVS lifecycle state (Plan 0493: whether a Presenter Voice Session is open, its comms mode, and its namespaced delivery cursor) + PUBLIC INGRESS state (S220: whether the tunnel is up and whether the public url actually answers — the local bind says nothing about reachability).',
+    description: 'Server URL + connected users (presence) + WHO HOLDS A SPOTLIGHT SHARE GRANT (spotlightHolders — Plan 0689 R4c, read-only; grant/revoke is presenter_spotlight) + PVS lifecycle state (Plan 0493: whether a Presenter Voice Session is open, its comms mode, and its namespaced delivery cursor) + PUBLIC INGRESS state (S220: whether the tunnel is up and whether the public url actually answers — the local bind says nothing about reachability).',
     input: { type: 'object', properties: {} },
     handler: async () => (server
-      ? { running: true, url: server.url(), presence: server.presence(), pvs: server.pvsState(), mode: server.commsMode().mode, auth: server.authPolicy(), tunnel: await tunnelStatus() }
+      // Plan 0689 R4c — spotlightHolders rides HERE, alongside the roster, exactly where the
+      // coverage manifest said it was owed. Read-only, no new capability: grant/revoke has been
+      // reachable via presenter_spotlight all along. What was missing was the ANSWER to "who holds
+      // one right now", which an agent could previously only infer from its own memory of grants.
+      ? { running: true, url: server.url(), presence: server.presence(), spotlightHolders: server.spotlightHolders(), pvs: server.pvsState(), mode: server.commsMode().mode, auth: server.authPolicy(), tunnel: await tunnelStatus() }
       : { running: false, tunnel: await tunnelStatus() })
   },
   {
@@ -346,6 +350,52 @@ export const coreTools = [
     handler: async ({ component, opts = {}, target = 'all', theme = 'argus', requires = [] }) => {
       const n = need().pushComponent(target, component, opts, theme, requires);  // role-aware (OPSEC strip) + dep-driven bundling
       return { pushed: n, component, target };
+    }
+  },
+  {
+    /* ── Plan 0689 R4a + R5 — ⭐⭐⭐ THE POINT OF THE APP ────────────────────────────────────────
+     * Bruce, 2026-08-26: *"I totally want you to be able to draw arbitrary HTML in Presenter. It's
+     * the primary purpose of the app. NOW I understand why that's been failing and why you keep
+     * refusing… It's what the app is FOR."*
+     *
+     * ⛔⛔ THE REFUSAL WAS THE BUG. Successive sessions treated the app's central capability as an
+     * attack surface to be minimised, declined it, and left the coverage manifest saying "needs a
+     * decision" — so the decision was never taken and the primary purpose stayed unreachable. A
+     * presenter that can only draw from a fixed menu of components is not a presenter, and the
+     * decline stranded sixteen components that were built to be COMBINED with HTML, not to replace
+     * it.
+     *
+     * The containment was already sound and is unchanged: `sandbox="allow-scripts"` WITHOUT
+     * `allow-same-origin` ⇒ an opaque origin that cannot read the parent page, the session or
+     * cookies, cannot fetch as the user, and cannot escape the frame. Three message shapes come
+     * back, source-checked twice, and `op` still passes the server's permission check.
+     */
+    name: 'presenter_push_content',
+    description: '⭐⭐⭐ DRAW AN ARBITRARY HTML PAGE ON THE PRESENTER — the app\'s primary purpose (Plan 0689 R4a/R5, ruled by Bruce 2026-08-26). Push authored HTML to a target (userId | "all" | role), and MOUNT COMPONENTS INTO IT: `mounts:[{at:"#css-selector", component:"dice", opts:{…}}]` places any of the sixteen built components inside your own markup, so one page can carry a dice check beside a navmap beside a live poll. Inline `data-ap-component="dice"` (+ optional `data-ap-opts` JSON) works too. Each mount inherits the viewer\'s identity, and a mount marked `visibility:"gm"` is dropped SERVER-SIDE for participants — the bytes never leave. Components mounted this way round-trip through the same postMessage bridge push_component uses; there is ONE render path, not two. ⚠ `raw:true` sends your bytes VERBATIM with NO bundle — no registry, no component code, no bridge — so a raw page CANNOT host components; use it only for a self-contained page that wants nothing from us. ⏹ To wipe the stage: presenter_default_branding.',
+    input: {
+      type: 'object',
+      required: ['html'],
+      properties: {
+        html: { type: 'string', description: 'The page HTML. Body content, not a whole document — the wrapper supplies <html>/<head>, the theme, the component library and the bridge. (With raw:true it is sent exactly as given and nothing is supplied.)' },
+        mounts: { type: 'array', items: { type: 'object' }, description: 'Where components go: [{at:"#css-selector", component:"dice", opts:{…}, visibility:"gm"?}]. `at` is matched inside your page. ⛔ A selector that matches nothing is reported VISIBLY on the page — never silently skipped.' },
+        opts: { type: 'object', description: 'Page-level options every mount inherits unless it states its own (contentId, and anything your components share).' },
+        target: { type: 'string', description: 'userId | all | participant | presenter | ai', default: 'all' },
+        contentId: { type: 'string', description: 'Correlation id for this pushed content instance.' },
+        theme: { type: 'string', default: 'argus' },
+        requires: { type: 'array', items: { type: 'string' }, description: 'Plugin deps the page needs; the assembler bundles only that closure', default: [] },
+        raw: { type: 'boolean', description: '⚠ Send the bytes VERBATIM, unwrapped. No theme, no components, no bridge. Default false.' },
+      }
+    },
+    handler: async ({ html, mounts = [], opts = {}, target = 'all', contentId = null, theme = 'argus', requires = [], raw = false }) => {
+      const s = need();
+      if (raw) {
+        // ⛔ SAY WHAT WAS LOST. A raw push that silently could not host the mounts the caller
+        //    passed is the shape where a component is "pushed" and is not there.
+        const n = s.pushContent(target, String(html == null ? '' : html), contentId);
+        return { pushed: n, target, raw: true, mounted: 0, contentId, note: (Array.isArray(mounts) && mounts.length) ? '⚠ raw:true — `mounts` were IGNORED: a verbatim page carries no component library and no bridge, so nothing could be mounted into it. Drop raw:true to compose.' : 'sent verbatim: no theme, no component library, no bridge' };
+      }
+      const n = s.pushPage(target, html, { mounts, opts, theme, requires, contentId });
+      return { pushed: n, target, raw: false, mounted: Array.isArray(mounts) ? mounts.length : 0, contentId };
     }
   },
   {
@@ -699,11 +749,17 @@ export const coreTools = [
   },
   {
     name: 'presenter_attendance',
-    description: 'Room roster + summary keyed on CONNECTION LIVENESS (Plan 0468). Per user: connected (heartbeat fresh within staleMs ⇒ true; a frozen/half-open socket goes false — a CLEAN disconnect drops the row entirely), lastSeenAgoSec (bounded seconds since last ping/pong), connectedSec, and a SEPARATE explicit attention signal eyesOn / eyesOnAgoSec (true ONLY after a presenter_verify_watching CONFIRM — never from polling, voting, or receiving content), plus current display, ip, socketId. Summary: {connected, offline, eyesOn, total}. The AI is a controller → UNREDACTED view. Poll on demand (no push).',
+    description: 'Room roster + summary keyed on CONNECTION LIVENESS (Plan 0468). Per user: connected (heartbeat fresh within staleMs ⇒ true; a frozen/half-open socket goes false — a CLEAN disconnect drops the row entirely), lastSeenAgoSec (bounded seconds since last ping/pong), connectedSec, and a SEPARATE explicit attention signal eyesOn / eyesOnAgoSec (true ONLY after a presenter_verify_watching CONFIRM — never from polling, voting, or receiving content), plus current display, ip, socketId. Summary: {connected, offline, eyesOn, total}. Also `spotlightHolders` — who currently holds a share grant (Plan 0689 R4c, read-only; grant/revoke is presenter_spotlight). The AI is a controller → UNREDACTED view. Poll on demand (no push).',
     input: { type: 'object', properties: {
       staleMs: { type: 'number', default: 15000, description: 'lastSeen older than this ⇒ connected:false (default STALE_MS)' }
     } },
-    handler: async ({ staleMs } = {}) => need().attendance({ staleMs, viewerRole: 'ai' })
+    handler: async ({ staleMs } = {}) => {
+      const s = need();
+      // Plan 0689 R4c — the roster and the grant list belong in the same answer. Reading them
+      // separately is how "who may share their station?" became a question an agent answered from
+      // memory instead of from the server.
+      return { ...s.attendance({ staleMs, viewerRole: 'ai' }), spotlightHolders: s.spotlightHolders() };
+    }
   },
   {
     name: 'presenter_situation',
@@ -789,6 +845,14 @@ export const voiceTools = [
     description: 'Plan 0470 (inbound voice): REQUEST that a target enable microphone capture. Sends a voice_enable signal to the target; the human still passes the browser mic-permission prompt (uncoerceable) and sees an on-air badge with one-click stop. Recognized speech flows back — poll presenter_transcript to read it. This can NEVER silently hot a mic.',
     input: { type: 'object', properties: { target: { type: 'string', default: 'all', description: 'userId | all | participant | presenter | ai' } } },
     handler: async ({ target = 'all' } = {}) => ({ requested: need().voiceEnable(target), target })
+  },
+  {
+    // Plan 0689 R4b — presenter_voice_enable had NO COUNTERPART, so a request Argus made stayed
+    // outstanding until the human closed it himself. This is the courtesy half.
+    name: 'presenter_voice_release',
+    description: 'Plan 0689 R4b (inbound voice): RELEASE a microphone request you made — "I have stopped listening". Tells the target it may stop capturing, and drops the request Argus itself raised, so a mic does not stay requested until the human closes it by hand. ⛔ IT CAN ONLY EVER STOP CAPTURE, NEVER START IT: the browser permission prompt is uncoerceable and the on-air badge\'s one-click stop is untouched and still wins — this is the same yield the server already performs when a turn budget closes or the floor goes to hold. ⭐ CALL IT WHEN YOU STOP LISTENING: after presenter_pvs_stop, at the end of a session, or whenever you asked for a mic and no longer need it. Returns how many clients were told.',
+    input: { type: 'object', properties: { target: { type: 'string', default: 'all', description: 'userId | all | participant | presenter | ai' } } },
+    handler: async ({ target = 'all' } = {}) => ({ released: need().voiceRelease(target), target })
   },
   {
     name: 'presenter_transcript',

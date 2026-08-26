@@ -127,9 +127,21 @@ export const API_COVERAGE = {
   // the failure P16.2 exists to fix. read()/sessions() stay behind the one gate. STATE is not
   // CONTENT, and only the state crossed.
   sessionLog:          { declined: 'PARTLY EXPOSED, DELIBERATELY. STATE — status(): enabled / sessionLogDir / sessionLogDirSource / sessionLogId / stats — is reported by presenter_health (Plan 0525 P2, I1). CONTENT — read()/sessions() — is NOT, and remains role-gated at GET /api/session-log (Plan 0522 P16.2 / R6): the log is the session transcript, so a second read surface for participants\' own words is a decision, not a convenience. append()/flush()/close() are the server\'s own plumbing.' },
-  // GAP #4 of the S210 six: the server CAN push raw HTML (server.mjs:1820) and no tool exposes
-  // it. Argus told Bruce it was impossible; it wasn't. Recorded as owed, not quietly dropped.
-  pushContent:         { declined: 'NOT YET EXPOSED — owed. Raw-HTML push into the sandboxed iframe; needs a decision on the injection surface before it gets a tool.' },
+  /* ✅ GAP #4 of the S210 six, AND IT WAS THE APP'S PRIMARY PURPOSE. The entry above used to read
+   * "NOT YET EXPOSED — owed… needs a decision on the injection surface before it gets a tool", and
+   * that decision was never taken, so successive sessions declined the one thing the app is for.
+   * ⛔⛔ THE REFUSAL WAS THE DEFECT. Bruce ruled 2026-08-26: *"I totally want you to be able to draw
+   * arbitrary HTML in Presenter. It's the primary purpose of the app… It's what the app is FOR."*
+   * The security survey (plan 0689 §2d) reached SHIP IT on the containment that was already there:
+   * `allow-scripts` with NO `allow-same-origin` ⇒ opaque origin, three source-checked message
+   * shapes back, `op` still through the permission layer. The correct mitigation is VISIBILITY,
+   * not prohibition — the same reasoning the microphone shipped under. */
+  pushContent:         { tool: 'presenter_push_content' },
+  /* Plan 0689 R5 — the COMPOSITION half, and the reason the decline mattered so much: it stranded
+   * sixteen components that exist to be combined with authored HTML rather than to replace it.
+   * Assembles the component bundle around the author's markup and stamps it PER VIEWER, so a
+   * `visibility:'gm'` mount is dropped server-side rather than merely hidden. */
+  pushPage:            { tool: 'presenter_push_content' },
 
   // --- module / beats (Plan 0488 + S210)
   setModule:           { tool: 'present_module' },
@@ -182,7 +194,10 @@ export const API_COVERAGE = {
   surfaceScreen:       { declined: 'NOT EXPOSED — same reason as `surfaces` above, restated at 0526 P4. It answers "does this surface exist, may a viewer be shown it, what does it render as"; the acting-on-that-answer half is self-scoped and lives on the participant\'s own connection. An agent that wants the room to see a screen has push_component and presenter_station_project; peek is deliberately not an agent\'s to press.' },
   pluginTools:         { tool: 'presenter_plugin_tool' },
   callPluginTool:      { tool: 'presenter_plugin_tool' },
-  spotlightHolders:    { declined: 'NOT YET EXPOSED — owed. Who currently holds a share grant is READ-only state; it belongs on presenter_status/attendance alongside the roster rather than in its own tool. Grant/revoke is already reachable via presenter_spotlight.' },
+  // ✅ Plan 0689 R4c CLOSED THIS. The entry used to say "NOT YET EXPOSED — owed… it belongs on
+  // presenter_status/attendance alongside the roster rather than in its own tool". It now does,
+  // on BOTH, exactly as written: read-only, no new capability, grant/revoke still presenter_spotlight.
+  spotlightHolders:    { tool: 'presenter_status' },
 
   // --- polls
   openPoll:            { tool: 'open_poll' },
@@ -226,6 +241,12 @@ export const API_COVERAGE = {
 
   // --- voice
   voiceEnable:         { tool: 'presenter_voice_enable' },
+  // Plan 0689 R4b — the counterpart voiceEnable never had. ⛔ It is a RELEASE, not a force: the
+  // browser permission prompt is uncoerceable and the on-air badge's one-click stop is untouched,
+  // so this can only ever STOP capture. Same yield the server already performs on turn_budget
+  // 'closed' and floor 'hold'; what was missing was a name for the one the agent needed. Without
+  // it a request Argus made stayed outstanding until Bruce closed it himself.
+  voiceRelease:        { tool: 'presenter_voice_release' },
   voiceSessionCount:   { declined: VIA_MCP_STATE },
   isSpeaking:          { declined: VIA_MCP_STATE },
   setSpeaking:         { declined: 'set by the voice pipeline itself; an agent toggling it would desync the floor' },

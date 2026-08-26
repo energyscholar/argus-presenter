@@ -31,8 +31,17 @@ export async function closeBrowser() { if (_browser) { await _browser.close(); _
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
-export async function drive({ component, opts = {}, theme = 'argus', actions = [], viewport = { width: 1280, height: 720 }, shot = null, settle = 400, probe = null, requires = [] }) {
-  const html = assemble({ component, opts, theme, requires });
+/*
+ * ⭐ Plan 0689 R5 — `page` DRIVES THE COMPOSED FORM. Pass {page:{html, mounts}} instead of a
+ * component and the rig assembles an AUTHORED page hosting components, waits on `#ap-page` rather
+ * than `#ap-mount`, and collects bridge messages exactly as before. Same rig, same assertions —
+ * which is the point: if composition needed a different harness it would not be one render path.
+ */
+export async function drive({ component, opts = {}, theme = 'argus', actions = [], viewport = { width: 1280, height: 720 }, shot = null, settle = 400, probe = null, requires = [], page: pageSpec = null }) {
+  const composed = !!(pageSpec && typeof pageSpec.html === 'string');
+  const html = composed
+    ? assemble({ html: pageSpec.html, mounts: pageSpec.mounts || [], opts, theme, requires })
+    : assemble({ component, opts, theme, requires });
   const browser = await getBrowser();
   const page = await browser.newPage();
   await page.setViewport(viewport);
@@ -46,11 +55,11 @@ export async function drive({ component, opts = {}, theme = 'argus', actions = [
 
   // Load via a real file:// navigation so evaluateOnNewDocument fires reliably
   // (setContent uses document.write and can skip the on-new-document hook).
-  const tmp = join(SHOTS, `_tmp-${component}-${Math.random().toString(36).slice(2)}.html`);
+  const tmp = join(SHOTS, `_tmp-${composed ? 'page' : component}-${Math.random().toString(36).slice(2)}.html`);
   writeFileSync(tmp, html);
   try {
     await page.goto('file://' + tmp, { waitUntil: 'domcontentloaded' });
-    await page.waitForSelector('#ap-mount *', { timeout: 5000 }).catch(() => {});
+    await page.waitForSelector(composed ? '#ap-page *' : '#ap-mount *', { timeout: 5000 }).catch(() => {});
     await wait(settle);
 
     for (const a of actions) {

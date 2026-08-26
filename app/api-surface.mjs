@@ -54,6 +54,24 @@ export function createApiSurface(M) {
         for (const ws of M.targets(target)) { if (M.send(ws, { t: 'content', contentId: contentId || null, html })) n++; }
         return n;
       },
+    /*
+     * ⭐⭐ Plan 0689 R5 — AN AUTHORED PAGE THAT HOSTS COMPONENTS. The composition half of the app's
+     * stated purpose: a page can carry a dice check beside a navmap beside a live poll, with the
+     * author's own markup around them.
+     *
+     * ⛔ NOT the same as pushContent, and the difference is the whole point. pushContent sends the
+     * caller's bytes VERBATIM — no registry, no component code, no bridge — so a raw page cannot
+     * host a component: none of the machinery is on it. This assembles the same bundle a component
+     * page gets, PER VIEWER, so identity is stamped and `visibility:'gm'` mounts are dropped
+     * server-side rather than merely hidden.
+     */
+    pushPage(target, html, { mounts = [], opts = {}, theme = 'argus', requires = [], contentId = null } = {}) {
+        const desc = { kind: 'page', html: String(html == null ? '' : html), mounts: Array.isArray(mounts) ? mounts : [], opts: opts || {}, theme, requires, contentId };
+        M.setDisplay(target, desc);                          // C6: remember for (re)connects
+        let count = 0;
+        for (const ws of M.targets(target)) { if (M.sendPageTo(ws, M.conns.get(ws), desc)) count++; }
+        return count;
+      },
     pushComponent(target, component, opts = {}, theme = 'argus', requires = [], deliveredOut = null) {
         const desc = { kind: 'component', component, opts, theme, requires };
         M.setDisplay(target, desc);                          // C6: remember for (re)connects
@@ -159,6 +177,24 @@ export function createApiSurface(M) {
         return n;
       },
     voiceEnable: (target = 'all') => { M.ensureAsr(); return M.targets(target).map((ws) => M.send(ws, { t: 'voice_enable' })).length; },
+    /*
+     * ⭐ Plan 0689 R4b — THE COUNTERPART voiceEnable NEVER HAD.
+     *
+     * An agent could REQUEST a mic and had no way to drop the request, so Bruce's mic stayed
+     * requested until he closed it himself. This is the courtesy half — "I have stopped listening"
+     * — and it is a RELEASE, never a force.
+     *
+     * ⛔⛔ IT MUST REMAIN IMPOSSIBLE TO FORCE A MIC ON, AND THIS DOES NOT WEAKEN THAT. The safety
+     * property is the browser's own permission prompt (uncoerceable) plus the on-air badge's
+     * one-click stop, and both are untouched. Releasing a request THIS AGENT MADE is the opposite
+     * direction of travel: it can only ever stop capture, never start it.
+     *
+     * ⭐ THE CLIENT PATH ALREADY EXISTS AND IS ALREADY TRUSTED. `turn_budget:closed` and
+     * `floor:hold` both call APVoice.disable() today — the server has been yielding other people's
+     * microphones for two plans. This adds no new client power; it adds a name for the one the
+     * agent needed.
+     */
+    voiceRelease: (target = 'all') => M.targets(target).map((ws) => M.send(ws, { t: 'voice_release' })).length,
     getTranscripts: (since = 0) => ({ transcripts: M.inbox.filter((t) => t.kind === 'voice' && t.seq > (since || 0)).map((t) => annotateTrust(t, t.trust)), cursor: M.inboxSeq }),
     getInbox: (since = 0, waitMs = 0) => {
         const s = since || 0;
