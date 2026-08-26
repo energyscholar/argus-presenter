@@ -29,7 +29,7 @@ import { ALL as ALL_READ_ROLES } from './permissions.mjs';
 import { validate, summarize } from './validate.mjs';
 import { createAsr } from './asr.mjs';
 import { verifyCapability, mintCapability } from '../lib/capability.mjs';
-import { presenterPort, authPolicy, normalizeAuthPolicy, identityConfig, identityServerOptions, identityStartupLine, bindHostsConfig, roomConfig, roomStartupLine } from '../lib/deployment-config.mjs';
+import { presenterPort, authPolicy, normalizeAuthPolicy, identityConfig, identityServerOptions, identityStartupLine, bindHostsConfig, roomConfig, roomStartupLine, installConfigReloader } from '../lib/deployment-config.mjs';
 import { makeAllowlist, makeOidcAdapter, makeTailscaleAdapter, defaultOidcDeps, makeTailscaleWhois, makeBreakGlassAdapter, isTailnetPeerAddress } from './identity.mjs';
 /* Plan 0650 §2a — how long a socket's first frames may wait for `tailscale whois`, and how many may
  * queue while they do. The deadline is the whois timeout plus slack: past it the peer is simply
@@ -3492,6 +3492,15 @@ if (import.meta.url === `file://${process.argv[1]}`) {
    * chose is the failure being prevented.
    */
   console.log(' ', roomStartupLine(roomConfig()));
+  /*
+   * Plan 0675 T5 — SIGHUP re-reads the deployment config and logs which top-level KEYS changed.
+   * ⛔ A bad file KEEPS the previous configuration and the process stays up: a typo in an unrelated
+   * section must not take down whatever this room was in the middle of. ⛔ Key names, never values.
+   * ⚠ Installing this handler means SIGHUP no longer terminates the process — the one
+   * externally-visible behaviour phase 0 changes, and it is installed HERE only, never by
+   * createServer() and never by a test.
+   */
+  installConfigReloader();
   createServer({
     port: p,
     controlToken: cliToken,

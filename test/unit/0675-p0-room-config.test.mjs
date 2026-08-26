@@ -31,12 +31,16 @@ import {
   RoomConfigError, ROOM_KEYS, ROOM_ENV, roomDefaults,
   normalizeRoomConfig, normalizeRoomsConfig, roomValueSources,
   resolveRoom, roomConfig, roomStartupLine, identityStartupLine,
-  writeConfigSection,
+  writeConfigSection, installConfigReloader,
+  identityConfig, identityServerOptions, presenterPort, bindHostsConfig, authPolicy,
+  DEPLOYMENT_ROUTED_OPTIONS, REPO_ROOT,
   loadDeploymentConfig, CONFIG_BASENAME,
 } from '../../lib/deployment-config.mjs';
 import { mkdtempSync, writeFileSync, readFileSync, statSync, existsSync, readdirSync, unlinkSync, utimesSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
+import { resolveSessionLogDir } from '../../lib/session-log.mjs';
+import { spawn } from 'node:child_process';
 
 const scratch = () => mkdtempSync(join(tmpdir(), 'ap-0675-'));
 const writeConfig = (dir, obj) => { writeFileSync(join(dir, CONFIG_BASENAME), JSON.stringify(obj, null, 2)); return join(dir, CONFIG_BASENAME); };
@@ -515,4 +519,163 @@ test('t0675-13 — a write interrupted BEFORE the rename leaves the original int
   const bad = await writeConfigSection('rooms', {}, { configPath: p, actor: 'writer-e', log: () => {} }).then(() => null, (e) => e);
   check('an unparseable config is REFUSED, not rewritten', bad instanceof RoomConfigError, bad && bad.message);
   check('...and left exactly as it was', readFileSync(p, 'utf8') === '{ this is not json');
+});
+
+/* ── 14 ────────────────────────────────────────────────────────────────────────────────────────
+ * ⛔ A RUNNING ROOM MUST NOT DIE BECAUSE SOMEBODY FAT-FINGERED AN EDIT. A reload that exits on a
+ * bad file turns a typo in an unrelated section into an outage of whatever the room was doing. */
+test('t0675-14 — SIGHUP swaps a VALID config and logs changed keys; an INVALID one is kept out and the process stays up', () => {
+  const home = scratch(), repo = scratch();
+  const p = join(repo, CONFIG_BASENAME);
+  writeFileSync(p, JSON.stringify({ presenterPort: 3000, sessionLogDir: '/tmp/ap-0675-logs' }, null, 2), { mode: 0o600 });
+
+  const logged = [];
+  // install:false — a unit test must not put a signal handler on the RUNNER's process.
+  const h = installConfigReloader({ env: { HOME: home }, repoDir: repo, log: (l) => logged.push(l), install: false });
+  check('it starts holding the file that is there', h.current().presenterPort === 3000, JSON.stringify(h.current().presenterPort));
+
+  // ── a VALID edit swaps, and says what moved
+  writeFileSync(p, JSON.stringify({ presenterPort: 3000, sessionLogDir: '/tmp/ap-0675-logs', rooms: TWO_ROOMS }, null, 2), { mode: 0o600 });
+  const ok = h.reload();
+  check('the reload succeeded', ok.ok === true, JSON.stringify(ok));
+  check('the new config is live', !!h.current().rooms && Object.keys(h.current().rooms).length === 2);
+  check('it names the CHANGED key', ok.changed.join(',') === 'rooms', JSON.stringify(ok.changed));
+  check('...and does NOT name the keys that did not change',
+    !ok.changed.includes('presenterPort') && !ok.changed.includes('sessionLogDir'), JSON.stringify(ok.changed));
+  check('the log line carries the key names', logged[logged.length - 1].includes('rooms'), logged[logged.length - 1]);
+  check('⛔ ...and NOT the values', !logged[logged.length - 1].includes('3001'), logged[logged.length - 1]);
+
+  // ── an UNPARSEABLE file is kept out
+  const good = h.current();
+  writeFileSync(p, '{ not json at all', { mode: 0o600 });
+  const broken = h.reload();
+  check('the reload reports failure', broken.ok === false, JSON.stringify(broken));
+  check('⛔ the PREVIOUS configuration is still live', h.current() === good, JSON.stringify(h.current().rooms && Object.keys(h.current().rooms)));
+  check('⛔ ...and it said so LOUDLY rather than silently keeping going',
+    /REFUSED/.test(logged[logged.length - 1]) && /stays up/.test(logged[logged.length - 1]), logged[logged.length - 1]);
+
+  // ── a file that PARSES but is WRONG is also kept out. Parses ≠ correct.
+  writeFileSync(p, JSON.stringify({ presenterPort: 3000, rooms: { table: { voice: 'true' } } }, null, 2), { mode: 0o600 });
+  const invalid = h.reload();
+  check('a file that parses but whose room block is invalid is REFUSED', invalid.ok === false, JSON.stringify(invalid));
+  check('⛔ ...and did not become the live configuration merely because JSON.parse liked it',
+    h.current() === good, JSON.stringify(h.current().rooms && h.current().rooms.table));
+  check('...and the reason names the offending capability', /voice/.test(invalid.error), invalid.error);
+
+  // ── and the good file coming back works
+  writeFileSync(p, JSON.stringify({ presenterPort: 3000, sessionLogDir: '/tmp/ap-0675-logs', rooms: TWO_ROOMS }, null, 2), { mode: 0o600 });
+  check('a repaired file reloads cleanly, so the outage really was avoided', h.reload().ok === true);
+  check('an unchanged file reloads and says nothing changed', h.reload().changed.length === 0);
+
+  h.dispose();
+});
+
+/* ── 15 ────────────────────────────────────────────────────────────────────────────────────────
+ * ⭐⭐ THE INERTNESS PROOF (0676 A1·R5). This is the criterion that makes phase 0 safe to ship
+ * against the LIVE deployment: a full two-room config, WITH A ROOM SELECTED, must produce exactly
+ * the same plugins, the same bound port and the same recording as a config with no rooms key.
+ *
+ * ⚠ THE FIRST VERSION OF THIS TEST WAS VACUOUS AND WAS REWRITTEN. It compared two createServer()
+ * calls in-process — but createServer does not read the config file, so it could not have failed
+ * whatever the loader did. A forbidden implementation that routed the room's plugin set into the
+ * server was written specifically to check, and the test passed. A gate you have only seen pass is
+ * untested. It now asserts at the two places that CAN move: the options the launch path routes,
+ * and the CLI self-run's own observable startup.
+ */
+test('t0675-15 — INERTNESS: a full two-room config changes NO routed option, NO port, NO recording', async () => {
+  const home = scratch();
+  const withRooms = scratch(), without = scratch();
+  const logDir = scratch();
+  const base = { presenterPort: 0, sessionLogDir: join(logDir, 'logs') };
+  /* ⚠ THE SELECTED ROOM MUST DECLARE EVERY CAPABILITY THIS TEST CLAIMS TO CHECK. The first version
+   * selected a room whose `record` was already "none", so the recording half of the assertion could
+   * not have failed — caught by writing the forbidden implementation and watching it pass. The probe
+   * room therefore states a port, a plugin, a retention and voice, all different from the defaults. */
+  const PROBE = { probe: { port: 3001, bindHosts: ['127.0.0.1'], plugins: ['ops-console'], record: '30d', voice: true, label: 'probe' } };
+  writeFileSync(join(withRooms, CONFIG_BASENAME),
+    JSON.stringify({ ...base, rooms: PROBE, defaultRoom: { plugins: [], record: 'none', voice: false } }, null, 2), { mode: 0o600 });
+  writeFileSync(join(without, CONFIG_BASENAME), JSON.stringify(base, null, 2), { mode: 0o600 });
+
+  const envA = { HOME: home, [ROOM_ENV]: 'probe' };   // a room SELECTED, not merely declared
+  const envB = { HOME: home };
+
+  /* ── (a) the OPTIONS the launch paths route into createServer ────────────────────────────── */
+  const optsA = identityServerOptions(identityConfig({ env: envA, repoDir: withRooms }));
+  const optsB = identityServerOptions(identityConfig({ env: envB, repoDir: without }));
+  check('the routed identity options are identical', JSON.stringify(optsA) === JSON.stringify(optsB), JSON.stringify([optsA, optsB]));
+  check('⛔ and no room capability rode in with them',
+    !('rooms' in optsA) && !('plugins' in optsA) && !('record' in optsA) && !('voice' in optsA),
+    JSON.stringify(Object.keys(optsA)));
+  /* ⚠ `bindHosts` is deliberately NOT asserted absent here: it is a DEPLOYMENT-WIDE routed option
+   * that predates rooms and legitimately belongs in this set. The room-scoped one is a different
+   * value that happens to share a name, and phase 1 is where they meet. */
+  check('⛔ nor did the room MODEL itself become a routed option',
+    !DEPLOYMENT_ROUTED_OPTIONS.includes('rooms') && !DEPLOYMENT_ROUTED_OPTIONS.includes('defaultRoom')
+      && !DEPLOYMENT_ROUTED_OPTIONS.includes('plugins') && !DEPLOYMENT_ROUTED_OPTIONS.includes('record'),
+    JSON.stringify(DEPLOYMENT_ROUTED_OPTIONS));
+  check('the resolved PORT is identical',
+    presenterPort({ env: envA, repoDir: withRooms }) === presenterPort({ env: envB, repoDir: without }));
+  check('the resolved BIND HOSTS are identical',
+    JSON.stringify(bindHostsConfig({ env: envA, repoDir: withRooms })) === JSON.stringify(bindHostsConfig({ env: envB, repoDir: without })));
+  check('the resolved AUTH POLICY is identical',
+    JSON.stringify(authPolicy({ env: envA, repoDir: withRooms })) === JSON.stringify(authPolicy({ env: envB, repoDir: without })));
+  check('the resolved SESSION LOG target is identical',
+    resolveSessionLogDir({ env: envA, repoDir: withRooms }).sessionLogDir === resolveSessionLogDir({ env: envB, repoDir: without }).sessionLogDir);
+
+  /* ⚠ …and this is only meaningful because the room config WAS read. A schema nobody parses is
+   * trivially inert and proves nothing. */
+  const resolved = roomConfig({ env: envA, repoDir: withRooms });
+  check('the room really did resolve, and it states a port, a plugin, a retention AND voice — every capability this test claims to check',
+    resolved.name === 'probe' && resolved.room.plugins.length === 1 && resolved.room.port === 3001
+      && resolved.room.record === '30d' && resolved.room.voice === true,
+    JSON.stringify(resolved.room));
+
+  /* ── (b) the CLI SELF-RUN's own observable startup, end to end ────────────────────────────── */
+  const runCli = (env) => new Promise((res) => {
+    const child = spawn(process.execPath, ['app/server.mjs'], {
+      cwd: REPO_ROOT,
+      env: { PATH: process.env.PATH, HOME: env.HOME, ...(env[ROOM_ENV] ? { [ROOM_ENV]: env[ROOM_ENV] } : {}),
+             PRESENTER_CONFIG_FILE: join(env._dir, CONFIG_BASENAME) },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let out = '';
+    const done = (why) => { try { child.kill('SIGKILL'); } catch {} res({ out, why }); };
+    const timer = setTimeout(() => done('timeout'), 20_000);
+    // ⚠ Wait for the LAST banner line, not the first. Killing on 'creator :' truncated the banner
+    // and made the comparison below compare two different prefixes — which looked like a real
+    // difference and was not.
+    child.stdout.on('data', (d) => { out += d; if (/^ +session log:/m.test(out)) { clearTimeout(timer); done('up'); } });
+    child.stderr.on('data', (d) => { out += d; });
+    child.on('error', () => { clearTimeout(timer); done('spawn-error'); });
+  });
+
+  const a = await runCli({ ...envA, _dir: withRooms });
+  const b = await runCli({ ...envB, _dir: without });
+  check('both CLI runs came up', a.why === 'up' && b.why === 'up', JSON.stringify([a.why, b.why, a.out.slice(-300)]));
+
+  const portOf = (o) => (o.match(/display : http:\/\/127\.0\.0\.1:(\d+)\//) || [])[1];
+  check('⛔ the room declares port 3001 and the process did NOT bind it — phase 0 binds nothing from a room',
+    portOf(a.out) !== '3001', portOf(a.out));
+  check('both bound an OS-assigned port, exactly as the shared presenterPort:0 asks',
+    !!portOf(a.out) && !!portOf(b.out), JSON.stringify([portOf(a.out), portOf(b.out)]));
+
+  const logLine = (o) => (o.match(/^ +session log:.*$/m) || [''])[0].replace(/[^ ]*\/logs\/[^ ]*/, '<id>');
+  check('⛔ the recording state is identical, though one config declares a room with record "30d"',
+    logLine(a.out).replace(/\d+/g, '#') === logLine(b.out).replace(/\d+/g, '#'),
+    JSON.stringify([logLine(a.out), logLine(b.out)]));
+
+  /* Normalise the three things that legitimately differ between two throwaway trees — the OS-
+   * assigned port, the session-log id, and the scratch directory each config file lives in —
+   * and require everything else to match exactly. */
+  const banner = (o) => o.split('\n').filter((l) => !/^ +room:/.test(l))
+    .map((l) => l
+      .replace(/:\d{2,5}\//g, ':<port>/')
+      .replace(/\/logs\/[^ ]*/, '/logs/<id>')
+      .replace(/\/tmp\/ap-0675-[^/ ]+/g, '<scratch>')).join('\n');
+  check('⛔ and every other line of the startup banner is identical',
+    banner(a.out) === banner(b.out), JSON.stringify([banner(a.out), banner(b.out)]));
+
+  check('...while the ROOM line differs, which is the only thing this phase adds',
+    /room: probe \(env\)/.test(a.out) && /PRESENTER_ROOM unset/.test(b.out),
+    JSON.stringify([(a.out.match(/^ +room:.*$/m) || [])[0], (b.out.match(/^ +room:.*$/m) || [])[0]]));
 });
