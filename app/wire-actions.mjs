@@ -47,7 +47,7 @@ export function createWireActions(ctx) {
     log, parseRollCommand, peekTo, presence, pushPresence,
     pushResult, pvsConsumerKey, pvsSubscribers, redisplayFor, renderDisplay,
     renderStationTo, resolveIdentity, resyncOrSnapshot, revokedNonces, rosterVisibleToAttendees,
-    seatStation, send, sendComponentTo, shimAnswer, situationCursors,
+    seatStation, send, sendComponentTo, shimAnswer, cursors,
     spotlight, spotlightLast, stationPlaceholder, stationRegistry, stationsActive,
     surfaceRegistry, surfacesActive, targets, telem, unbindUser,
     unpeekTo, updateChatListeners, verifyCapability, voiceAllowedFor, voiceSegFinalize,
@@ -62,12 +62,33 @@ export function createWireActions(ctx) {
       const key = pvsConsumerKey(m.consumer || 'argusmon');
       const cc = conns.get(ws); if (cc && cc.userId) unbindUser(cc.userId, ws);
       conns.delete(ws); updateChatListeners(); emit('presence', presence()); evaluateFloor();
-      if (!situationCursors.has(key)) situationCursors.set(key, ctx.inboxSeq);
-      const from = situationCursors.get(key);
+      // ⛔ Plan 0687 R2 (G5) — REPLAY IS FROM `acked`, NOT FROM `sent`. A previous attach may have
+      // been handed turns whose response was truncated mid-flight; those advanced `sent` and nothing
+      // else, so on re-attach they are REDELIVERED. Only an explicit ack retires a turn.
+      if (!cursors.hasDelivery(key)) cursors.baselineDelivery(key, ctx.inboxSeq);
+      const rec = cursors.delivery(key);
       pvsSubscribers.set(ws, { consumer: key });
-      send(ws, { t: 'pvs_subscribed', consumer: key, resumeCursor: from, mode: ctx.commsMode });
-      for (const it of inbox.filter((i) => i.seq > from)) deliverTurnToSub(ws, pvsSubscribers.get(ws), it);   // replay
-      log.info('pvs', 'subscribe', { consumer: key, resumeFrom: from });
+      send(ws, { t: 'pvs_subscribed', consumer: key, resumeCursor: rec.acked, sentCursor: rec.sent, mode: ctx.commsMode });
+      // R4: read through the ring's eviction boundary when a durable spill exists.
+      for (const it of ctx.entriesAfter(rec.acked).entries) deliverTurnToSub(ws, pvsSubscribers.get(ws), it, { replay: true });
+      log.info('pvs', 'subscribe', { consumer: key, resumeFrom: rec.acked, sent: rec.sent });
+      return;
+  });
+
+  wireActions.set("pvs_ack", ({ m, c, ws, req }) => {
+      // ⛔ Plan 0687 R2 (G5) — THE ACK, over the same socket that carried the turns. This is the
+      // ONLY wire frame that may move an `acked` position, and it moves ONLY the sender's own
+      // delivery record: the key comes from the subscriber table, never from the frame, so one
+      // watcher can never ack another's turns. A socket that is not a subscriber is refused by
+      // name — silently ignoring it would look exactly like a successful ack.
+      const sub = pvsSubscribers.get(ws);
+      if (!sub) { send(ws, { t: 'pvs_acked', ok: false, reason: 'not-a-subscriber' }); return; }
+      const live = ctx.inboxSeq;
+      const asked = (typeof m.seq === 'number' && Number.isFinite(m.seq)) ? m.seq : cursors.delivery(sub.consumer).sent;
+      const rec = cursors.ackDelivery(sub.consumer, Math.max(0, Math.min(asked, live)));
+      ctx.compactSpill();
+      send(ws, { t: 'pvs_acked', ok: true, consumer: sub.consumer, acked: rec.acked, sent: rec.sent, liveCursor: live });
+      log.info('pvs', 'ack-ws', { consumer: sub.consumer, acked: rec.acked, sent: rec.sent });
       return;
   });
 

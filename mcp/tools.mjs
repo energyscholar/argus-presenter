@@ -311,6 +311,24 @@ export const coreTools = [
     handler: async () => need().pvsStop()
   },
   {
+    name: 'presenter_pvs_ack',
+    description: 'Plan 0687 R2: CONFIRM you have actually read the turns you were handed. ⛔ Nothing else in the system may do this. Reading a turn (presenter_situation, presenter_inbox, a ws turn frame) advances only the TRANSPORT position `sent`; this advances `acked`, the AGENT position, and only what you have acked is ever retired. If a response is truncated mid-flight, or your process dies between reading and thinking, the unacked turns are REDELIVERED on your next attach instead of being lost. Call it after you have taken the turns in, not when the bytes arrive. Omit `seq` to mean "everything you have handed me".',
+    input: { type: 'object', properties: {
+      seq: { type: 'number', description: 'Ack through this seq. Omit for everything sent so far.' },
+      consumer: { type: 'string', description: 'Cursor id (default: the open PVS consumer).' }
+    } },
+    handler: async ({ seq, consumer } = {}) => need().pvsAck({ seq, consumer })
+  },
+  {
+    name: 'presenter_pvs_backlog',
+    description: 'Plan 0687 R2: READ WITHOUT ACKING — the turns you have not yet confirmed, served from your `acked` position and reading through the in-memory ring\'s eviction boundary when the room keeps a durable spill. Calling it twice returns the same turns twice; that is deliberate. `missed` is non-zero only when turns aged out with nowhere durable to keep them, and it is stated rather than hidden. Retire the turns with presenter_pvs_ack.',
+    input: { type: 'object', properties: {
+      consumer: { type: 'string', description: 'Cursor id (default: the open PVS consumer).' },
+      limit: { type: 'number', description: 'Max items to return (default 200, cap 1000).' }
+    } },
+    handler: async ({ consumer, limit } = {}) => need().pvsBacklog({ consumer, limit })
+  },
+  {
     name: 'push_component',
     description: 'Assemble a component (or a scene) and push it to a target (userId | "all" | role). ⏹ To wipe the stage back to the default branding image: presenter_default_branding.',
     input: {

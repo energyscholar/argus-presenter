@@ -84,6 +84,7 @@ export const CONSTRUCTOR_COVERAGE = {
   // mechanism: checked at startup, reported in the log line, and consumed by NO ROUTE. It is now
   // redeemed at POST /auth/break-glass — loopback-only, single-use, TTL, 0600 file.
   breakGlass:                { declined: 'DEPLOYMENT CONFIG / SECURITY (Plan 0543 P3, made real by 0650) — the loopback-only recovery credential redeemed at POST /auth/break-glass when the IdP is unreachable. Single-use, TTL-bounded, read from a 0600 file on the box. It grants the CONTROL PAGE and never trust:self. Never an agent knob: an agent that could set it could mint its own way past the OAuth gate.', deploymentOnly: true },
+  cursorDir:                 { declined: 'DEPLOYMENT CONFIG (Plan 0687 R3) — the per-room directory holding the delivery cursor file and the eviction spill, so an ack position survives a restart in a room that records NOTHING (RT-6). ⚠ deploymentOnly:false is the HONEST answer today: nothing reads it from presenter-config.json yet, only $PRESENTER_CURSOR_DIR and the direct createServer option, so the 0551 C7 pairing does not apply. When a room section declares it, add it to DEPLOYMENT_ROUTED_OPTIONS and flip this flag. Never an agent knob: an agent that could move the cursor file could make its own dropped turns unprovable.', deploymentOnly: false },
   revokedNonceFile:          { declined: 'DEPLOYMENT CONFIG (Plan 0543 P4) — the durable store path for revoked guest-link nonces (so a revocation survives a restart, 0489\'s flagged bug). Resolved by the CLI / presenter_start from the state dir; not a per-call knob.', deploymentOnly: true },
 };
 
@@ -199,6 +200,10 @@ export const API_COVERAGE = {
   pvsStart:            { tool: 'presenter_pvs_start' },
   pvsStop:             { tool: 'presenter_pvs_stop' },
   pvsState:            { tool: 'presenter_status' },
+  // Plan 0687 R2 — the ack is an AGENT act (G5), so it needs an agent-reachable surface of its own.
+  pvsAck:              { tool: 'presenter_pvs_ack' },
+  pvsBacklog:          { tool: 'presenter_pvs_backlog' },
+  deliveryStats:       { tool: 'presenter_debug' },
   commsMode:           { tool: 'presenter_mode' },
   getPvsSubscriberCount: { declined: 'test-only observability — live ws subscriber count (leak/teardown assertions)' },
   _emitInboxForTest:   { declined: 'test-only ingress seam — injects an inbox item through the real emit path without a socket' },

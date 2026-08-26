@@ -181,7 +181,10 @@ export function createApiSurface(M) {
       },
     getInboxWaiters: () => M.inboxWaiters.size,
     situation: ({ consumerId = 'default', waitMs = 0, recentN = M.RECENT_TURNS_N } = {}) => {
-        const last = M.situationCursors.get(consumerId) || 0;
+        // Plan 0687 R1 — the wait test asks the TRANSPORT question ("is there anything I have not
+        // been handed?"), so it reads the same position buildSituation serves from, per namespace.
+        const last = M.cursors.hasDelivery(consumerId) || String(consumerId).startsWith('pvs:')
+          ? M.cursors.delivery(consumerId).sent : M.cursors.readPosition(consumerId);
         if (M.inboxSeq > last || !waitMs) return M.buildSituation(consumerId, recentN);
         return new Promise((resolve) => {
           const w = { settled: false };
@@ -207,24 +210,80 @@ export function createApiSurface(M) {
         const reopening = !!(M.pvs && M.pvs.open);
         if (mode != null && M.PVS_MODES.has(mode)) M.commsMode = mode;   // an explicit mode wins; else keep the standing mode
         // R1: baseline the delivery cursor ONLY when this consumer has none yet (fresh open). Re-arm keeps it.
-        if (!M.situationCursors.has(key)) M.situationCursors.set(key, M.inboxSeq);
-        const resumeCursor = M.situationCursors.get(key);
+        // R1: baseline the delivery record ONLY when this consumer has none yet (fresh open).
+        // Re-arm keeps it — and resumes from `acked`, not from `sent`: turns handed to a dead
+        // watcher were SENT, never CONFIRMED, and must replay (G5).
+        M.cursors.baselineDelivery(key, M.inboxSeq);
+        const rec = M.cursors.delivery(key);
+        const resumeCursor = rec.acked;
         M.pvs = { open: true, consumer: key, openedAt: (M.pvs && M.pvs.openedAt) || Date.now(), session: session != null ? session : (M.pvs && M.pvs.session) || null };
-        log.info('pvs', 'start', { consumer: key, mode: M.commsMode, resumeCursor, liveCursor: M.inboxSeq, reopening });
-        return { open: true, mode: M.commsMode, consumer: key, resumeCursor, liveCursor: M.inboxSeq, sessionId: M.SESSION_ID, session: M.pvs.session, reopened: reopening };
+        log.info('pvs', 'start', { consumer: key, mode: M.commsMode, resumeCursor, sentCursor: rec.sent, liveCursor: M.inboxSeq, reopening });
+        return { open: true, mode: M.commsMode, consumer: key, resumeCursor, sentCursor: rec.sent, liveCursor: M.inboxSeq, sessionId: M.SESSION_ID, session: M.pvs.session, reopened: reopening, durable: M.cursorStore.configured };
       },
     pvsStop: () => {
         const wasOpen = !!(M.pvs && M.pvs.open);
         const key = M.pvs && M.pvs.consumer;
-        if (key) M.situationCursors.delete(key);
+        if (key) M.cursors.dropDelivery(key);
         if (wasOpen) log.info('pvs', 'stop', { consumer: key });
         M.pvs = null;
         return { stopped: true, wasOpen };
       },
     pvsState: () => (M.pvs && M.pvs.open)
         ? { open: true, mode: M.commsMode, consumer: M.pvs.consumer, openedAt: M.pvs.openedAt, session: M.pvs.session,
-            deliveredCursor: M.situationCursors.get(M.pvs.consumer) || 0, liveCursor: M.inboxSeq }
+            deliveredCursor: M.cursors.delivery(M.pvs.consumer).sent, ackedCursor: M.cursors.delivery(M.pvs.consumer).acked,
+            liveCursor: M.inboxSeq, durable: M.cursorStore.configured }
         : { open: false, mode: M.commsMode },
+    /*
+     * ⛔ Plan 0687 R2 (G5) — THE ACK. This is the ONLY thing in the whole system that may move an
+     * `acked` position, and it exists because a consumer must be able to READ WITHOUT ACKING.
+     * `situation()` / `presenter_inbox` / the ws `turn` frame all hand turns over; none of them
+     * confirms anything. The agent calls this once it has actually taken the turns in. A response
+     * truncated mid-flight therefore leaves `acked` where it was, and the turns come back.
+     * `seq` defaults to the live head: "I have everything you have handed me."
+     */
+    pvsAck: ({ consumer = null, seq = null } = {}) => {
+        const key = consumer ? M.pvsConsumerKey(consumer) : (M.pvs && M.pvs.consumer);
+        if (!key) return { ok: false, reason: 'no-pvs-consumer' };
+        const rec0 = M.cursors.delivery(key);
+        const through = (seq == null) ? rec0.sent : Math.min(Number(seq) || 0, M.inboxSeq);
+        const rec = M.cursors.ackDelivery(key, through);
+        M.compactSpill();   // R4: an entry every consumer has acked is nobody's backlog any more
+        log.info('pvs', 'ack', { consumer: key, acked: rec.acked, sent: rec.sent, live: M.inboxSeq });
+        return { ok: true, consumer: key, acked: rec.acked, sent: rec.sent, liveCursor: M.inboxSeq, unacked: M.inboxSeq - rec.acked };
+      },
+    /*
+     * ⛔ Plan 0687 R2 — READ WITHOUT ACKING, and without advancing ANY cursor. This is the honest
+     * answer to "what have I not confirmed?", served from the ACKED position and reading through
+     * the ring's eviction boundary when a durable spill exists (R4). Calling it twice returns the
+     * same turns twice; that is the point.
+     */
+    pvsBacklog: ({ consumer = null, limit = 200 } = {}) => {
+        const key = consumer ? M.pvsConsumerKey(consumer) : (M.pvs && M.pvs.consumer);
+        if (!key) return { ok: false, reason: 'no-pvs-consumer' };
+        const rec = M.cursors.delivery(key);
+        const { entries, recovered } = M.entriesAfter(rec.acked);
+        const n = Math.max(1, Math.min(1000, Number(limit) || 200));
+        const shown = entries.slice(0, n);
+        // ⭐ This read IS a handover, so it advances `sent` — to the highest seq it ACTUALLY
+        // returned, never past the limit it truncated at. ⛔ It still does not touch `acked`: that
+        // is the whole rule. Without this a backlog-only consumer would leave `sent` at zero, and a
+        // bare pvsAck() ("everything you handed me") would silently ack NOTHING — a no-op wearing
+        // the shape of a confirmation, which is the failure mode this phase is about.
+        const oldestRing = M.inbox.length ? M.inbox[0].seq : null;
+        // A gap the spill could NOT cover is stated, not hidden: these turns are gone.
+        const firstAvailable = shown.length ? shown[0].seq : (oldestRing || rec.acked + 1);
+        const missed = Math.max(0, firstAvailable - rec.acked - 1);
+        if (shown.length) M.cursors.markSent(key, shown[shown.length - 1].seq);
+        const after = M.cursors.delivery(key);
+        return {
+          ok: true, consumer: key, acked: after.acked, sent: after.sent, liveCursor: M.inboxSeq,
+          count: shown.length, truncated: entries.length > shown.length, recoveredFromSpill: recovered,
+          missed, missedMarker: missed > 0 ? ('\u26a0 ' + missed + ' turns missed (aged out with nowhere durable to spill)') : null,
+          items: shown.map((i) => annotateTrust(i, i.trust)),
+        };
+      },
+    /** ⛔ G6 — the discard ledger. Every eviction is counted; the unrecoverable ones separately. */
+    deliveryStats: () => M.deliveryStats(),
     commsMode: (set) => {
         if (set != null) {
           if (!M.PVS_MODES.has(set)) return { ok: false, reason: 'unknown-mode', mode: M.commsMode, modes: [...M.PVS_MODES] };
@@ -578,7 +637,7 @@ export function createApiSurface(M) {
       },
     store: M.store,
     sessionLog: M.sessionLog,
-    close: () => new Promise((res) => { try { M.sessionLog.close(); } catch { /* a log must never block a shutdown either */ } clearInterval(M.heartbeat); /* Plan 0468 (INV-7) */ if (M.ephTimer) clearTimeout(M.ephTimer); for (const t of M.hotTimers.values()) clearTimeout(t); M.hotTimers.clear(); for (const w of [...M.inboxWaiters]) w.wake(); /* Plan 0472: drain pending long-poll waiters (resolve, no dangling) */ if (M.openTurn && M.openTurn.timer) { clearTimeout(M.openTurn.timer); M.openTurn.timer = null; } /* Plan 0473 P2: clear a pending turn-settling timer */ for (const [, c] of M.conns) { if (c.voice && c.voice.timer) clearTimeout(c.voice.timer); } if (M.asr) { try { M.asr.close(); } catch (e) {} M.asr = null; } M.watcher && M.watcher.close(); M.wss.clients.forEach((c) => c.close()); for (const e of M.extraServers) { try { e.close(); } catch {} } M.extraServers.length = 0; /* Plan 0650 — the opt-in extra binds go down with the primary */ M.httpServer.close(() => res()); }),
+    close: () => new Promise((res) => { try { M.saveCursors(); } catch { /* Plan 0687 R3: flush the delivery cursors; a failed write must never block a shutdown */ } try { M.sessionLog.close(); } catch { /* a log must never block a shutdown either */ } clearInterval(M.heartbeat); /* Plan 0468 (INV-7) */ if (M.ephTimer) clearTimeout(M.ephTimer); for (const t of M.hotTimers.values()) clearTimeout(t); M.hotTimers.clear(); for (const w of [...M.inboxWaiters]) w.wake(); /* Plan 0472: drain pending long-poll waiters (resolve, no dangling) */ if (M.openTurn && M.openTurn.timer) { clearTimeout(M.openTurn.timer); M.openTurn.timer = null; } /* Plan 0473 P2: clear a pending turn-settling timer */ for (const [, c] of M.conns) { if (c.voice && c.voice.timer) clearTimeout(c.voice.timer); } if (M.asr) { try { M.asr.close(); } catch (e) {} M.asr = null; } M.watcher && M.watcher.close(); M.wss.clients.forEach((c) => c.close()); for (const e of M.extraServers) { try { e.close(); } catch {} } M.extraServers.length = 0; /* Plan 0650 — the opt-in extra binds go down with the primary */ M.httpServer.close(() => res()); }),
     _http: M.httpServer,
     _acks: M.acks,
     _lastResults: M.lastResults,
