@@ -398,7 +398,17 @@
   var UID_KEY = NS + ':uid', NAME_KEY = NS + ':name';
   function lsGet(k){ try { return localStorage.getItem(k); } catch(e){ return null; } }
   function lsSet(k, v){ try { localStorage.setItem(k, v); return true; } catch(e){ return false; } }
-  function mintUid(){ return 'u-' + (Math.random().toString(36).slice(2,6) + Math.random().toString(36).slice(2,6)).slice(0,8); }
+  /* ⛔ EXACTLY EIGHT CHARACTERS, ALWAYS. `Math.random().toString(36).slice(2,N)` is the obvious
+     one-liner and it is a flake generator: a draw with few significant base-36 digits (0.5 ⇒ "0.i",
+     0 ⇒ "0") yields a SHORTER string, so one page load in a while would mint `u-abc` and any format
+     assertion — or any downstream slice(-4) — would be wrong on that load only. The alphabet is 32
+     characters so the 5-bit mask is unbiased. */
+  function mintUid(){
+    var A = 'abcdefghijklmnopqrstuvwxyz012345', s = '', i, r = null;
+    try { if (window.crypto && window.crypto.getRandomValues) r = window.crypto.getRandomValues(new Uint8Array(8)); } catch(e){}
+    for (i = 0; i < 8; i++) s += A.charAt((r ? r[i] : Math.floor(Math.random() * 256)) & 31);
+    return 'u-' + s;
+  }
   var savedRole = lsGet(ROLE_KEY);
   // Plan 0514 §5 / §5.1 — SEAT PROVISIONING, BY UID.
   //   ?stationUID=4   the SELECTOR. An integer looked up in the registry server-side.

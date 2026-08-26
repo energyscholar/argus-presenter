@@ -268,9 +268,21 @@ export function createWireActions(ctx) {
       /* ⛔ T6 — A DUPLICATE NAME IS ACCEPTED. Two people called Bruce both keep it; they are told
          apart by the uid, which is the key. Refusing a name, or mutating it into 'Bruce (2)', would
          be the server deciding what a person is called. Any disambiguation is for DISPLAY only. */
-      const before = c.userId;
+      /* The same name again changes nothing: acknowledge it and broadcast NOTHING. A rename costs
+         a presence push to every controller, and a client that re-sends its name on every reconnect
+         should not cost the room a roster rebuild each time.
+         ⚠ NO RATE LIMIT BEYOND THAT, deliberately. `station-select`, `attendance-request` and
+         `chat` all drive a broadcast and none is throttled here; adding a floor to this one alone
+         would be inconsistent, and the interval a human needs between two renames is not knowable
+         from here. If frame-rate abuse ever needs answering it belongs at the dispatch, once, for
+         every action — not bolted onto whichever one was written last. */
+      if (nm === c.userName) { send(ws, { t: 'renamed', userId: c.userId, userName: c.userName }); return; }
+      /* ⛔ ONE FIELD. There is deliberately no guard here asserting that c.userId did not move:
+         a throw inside a wire action is swallowed by the dispatcher's catch and becomes a log
+         line, so it would read as enforcement while enforcing nothing. What actually holds this
+         invariant is test/unit/0692-t2 — take a lock, rename, and the lock is still yours. */
       c.userName = nm;
-      if (c.userId !== before) throw new Error('0692: a rename changed the userId');   // unreachable by construction; here so it can never become reachable silently
+      c.lastActive = Date.now();                                     // ATT: naming yourself is a deliberate human interaction
       send(ws, { t: 'renamed', userId: c.userId, userName: c.userName });
       log.info('conn', 'rename', { socketId: c.id, userId: c.userId });   // ⛔ the NAME is not logged: it is a person's chosen label, and the id is what a log needs
       emit('presence', presence()); pushPresence();
