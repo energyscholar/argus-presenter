@@ -13,6 +13,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { presenterPort, authPolicy, identityConfig, identityServerOptions, identityStartupLine, bindHostsConfig } from '../lib/deployment-config.mjs';
 import { resolveSessionLogDir, defaultSessionLogDir } from '../lib/session-log.mjs';
+import { srvRoot, currentRelease, enumerateReleases, unitStatus, staleUnit, roomTable, probe, tailnetAddress, REAL_PAGE_MARKERS } from '../lib/ops-status.mjs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -392,6 +393,95 @@ export const coreTools = [
     description: 'Health check: status (green/degraded), per-connection liveness (stale detection), op throughput, error rate, state/op-log size, AND (Plan 0525 P2) whether THIS SESSION IS BEING RECORDED — `sessionLog: {enabled, sessionLogId, sessionLogDir, sessionLogDirSource, sessionLogDirError, stats}`. Check it once after presenter_start and again before you rely on the record: `enabled:false` means nothing is being written and sessionLogDirError says why, and a rising stats.dropped / stats.failures means the log is degrading mid-session while the session itself is fine. STATE ONLY — the directory and the counters, NEVER the content: the log is participants\' own words and reading it back is role-gated at GET /api/session-log (control credential required).',
     input: { type: 'object', properties: { staleMs: { type: 'number', default: 10000, description: 'A connection idle longer than this is stale' } } },
     handler: async ({ staleMs = 10000 } = {}) => need().health({ staleMs })
+  },
+  /* ── Plan 0689 R1 + R2 — THE OPS SURFACE ─────────────────────────────────────────────────────
+   * ⛔⛔ THESE TWO TOOLS DO NOT NEED A RUNNING PRESENTER, and deliberately do not call need().
+   * They answer questions about the BOX and the DEPLOYMENT, and the moment you most need them is
+   * the moment the presenter is down. A tool that refused with "presenter not started" during an
+   * outage would be useless in the only situation it exists for.
+   *
+   * ⛔ READ-ONLY. presenter_deploy / presenter_rollback are plan 0689 R3 and are NOT built: an
+   * agent-callable deploy is a different power from an agent-callable status read, and it is a
+   * decision for Bruce to record rather than for an agent to infer.
+   */
+  {
+    name: 'presenter_release_status',
+    description: '⭐ WHAT IS DEPLOYED, AND IS THE RUNNING PROCESS ACTUALLY ON IT (Plan 0689 R1). Returns the CURRENT release (its path, sha, contentHash, builtAt), every unit\'s ActiveState/SubState/MainPID/ExecMainStartTimestamp, and the enumerable releases with the reason each rejected directory was rejected. ⛔⛔ REPORT THE PID AND THE START TIMESTAMP, NEVER JUST THE SYMLINK — in the 0686 rollback failure `current` pointed at a release the running process was not executing, and only the start timestamp could show it: `staleUnit.stale:true` means the unit started BEFORE the current release was built, i.e. the symlink moved and nothing restarted onto it. Release identity is a property of the TREE (a layer.json naming a sha + contentHash), not of the directory NAME — one stray `PHANTOM-TEST-…` directory once made a name-matching enumerator count 0 releases out of 11 and left the presenter down. `rollbackReady` is false with a stated reason when fewer than two usable releases exist. ⛔ This tool is READ-ONLY: it deploys nothing and rolls back nothing.',
+    input: { type: 'object', properties: {
+      root: { type: 'string', description: 'Deployment root (default $ARGUS_SRV_ROOT, else /srv/argus).' },
+      unit: { type: 'string', description: 'Inspect ONLY this systemd unit. Omit to inspect the unit of every room the deployment config declares.' },
+    } },
+    handler: async ({ root = null, unit = null } = {}) => {
+      const R = root || srvRoot();
+      const current = currentRelease({ root: R });
+      const rel = enumerateReleases({ root: R });
+      let rooms = null, roomsError = null;
+      try { rooms = roomTable(); } catch (e) { roomsError = String((e && e.message) || e); }
+      const wanted = unit ? [{ name: '(explicit)', unit }] : ((rooms && rooms.rooms) || []);
+      const units = [];
+      for (const r of wanted) {
+        const u = await unitStatus(r.unit);
+        units.push({ room: r.name, ...u, staleUnit: staleUnit(current, u) });
+      }
+      return {
+        root: R,
+        current,
+        units,
+        rooms: rooms ? { configPath: rooms.configPath, configSource: rooms.configSource, legacy: rooms.legacy } : null,
+        roomsError,
+        releases: {
+          ok: rel.ok, dir: rel.dir, error: rel.error,
+          count: rel.releases.length,
+          // OLDEST FIRST, exactly as the enumerator orders them, so `previous` is the last-but-one.
+          usable: rel.releases.map(({ sortKey, ...keep }) => keep),
+          rejected: rel.rejected,
+        },
+        // ⛔ "could not" and "did" must never look alike (plan 0688 R2). A refusal states WHY.
+        rollbackReady: rel.ok && rel.releases.length >= 2,
+        rollbackReadyReason: !rel.ok
+          ? rel.error
+          : (rel.releases.length >= 2
+            ? `${rel.releases.length} usable releases`
+            : `only ${rel.releases.length} usable release(s) in ${rel.dir}${rel.rejected.length ? ` — ${rel.rejected.length} entr(ies) were rejected and are named in releases.rejected` : ''}`),
+      };
+    }
+  },
+  {
+    name: 'presenter_health_deep',
+    description: '⭐⭐ IS EVERY ROOM ACTUALLY SERVING, ON BOTH INTERFACES (Plan 0689 R2). For each room the deployment config declares: does the port answer on LOOPBACK and on the TAILNET, and does it serve a REAL PAGE — the display `id="stage"` AND the settings dialog `id="ap-config"` — rather than merely 200? ⛔⛔ A PORT ANSWERING IS NOT HEALTH: the phantom presenters answered 200 on everything for 26 hours while serving a page with no stage in it, so a 200 with `realPage:false` is the exact failure shape this tool exists to name. These are the SAME two markers pipeline/smoke.sh asserts, on purpose, so the tool and the pipeline cannot disagree about what healthy means. ⚠ An UNCHECKABLE tailnet is not a passed tailnet: with no address resolvable the verdict is `partial`, never `green`. Needs no running presenter — it probes the deployment, and the moment you need it is the moment the presenter is down. ⛔ READ-ONLY: it restarts nothing.',
+    input: { type: 'object', properties: {
+      timeoutMs: { type: 'number', description: 'Per-probe timeout in ms (default 8000).' },
+      skipTailnet: { type: 'boolean', description: 'Probe loopback only. ⚠ The verdict can then be `partial` at best — never green.' },
+    } },
+    handler: async ({ timeoutMs = 8000, skipTailnet = false } = {}) => {
+      let rooms;
+      try { rooms = roomTable(); }
+      catch (e) {
+        // ⛔ A room map we cannot read is NOT "no rooms". Probing nothing is not a pass.
+        return { verdict: 'refused', error: `cannot enumerate rooms — ${String((e && e.message) || e)}`, rooms: [] };
+      }
+      const tn = skipTailnet ? { address: null, source: null, error: 'skipped by request' } : await tailnetAddress();
+      const out = [];
+      let bad = 0;
+      for (const r of rooms.rooms) {
+        const probes = { loopback: await probe(`http://127.0.0.1:${r.port}/`, { timeoutMs }) };
+        if (tn.address) probes.tailnet = await probe(`http://${tn.address}:${r.port}/`, { timeoutMs });
+        const healthy = probes.loopback.ok && (!tn.address || probes.tailnet.ok);
+        if (!healthy) bad++;
+        out.push({ ...r, probes, healthy });
+      }
+      const verdict = bad ? 'red' : (tn.address ? 'green' : 'partial');
+      return {
+        verdict,
+        note: verdict === 'partial'
+          ? 'every room answered a REAL PAGE on loopback, but the tailnet leg was not checked — unverifiable is not healthy, so this run cannot be green'
+          : (verdict === 'red' ? `${bad} of ${out.length} room(s) are not serving a real page on every interface` : `${out.length} room(s), loopback + tailnet, real page on each`),
+        configPath: rooms.configPath, configSource: rooms.configSource, legacy: rooms.legacy,
+        tailnet: tn,
+        realPageMarkers: REAL_PAGE_MARKERS,
+        rooms: out,
+      };
+    }
   },
   {
     // ⏹ THE PANIC BUTTON. Bruce, 2026-07-27: there must be an obvious "return to default

@@ -256,3 +256,32 @@ export const API_COVERAGE = {
   getInboxWaiters:     { declined: INTERNAL },
   debugAllWorkItems:   { declined: 'test-only introspection' },
 };
+
+/* --- the THIRD direction: every TOOL is accounted for ------------------------------------------
+ *
+ * ⭐⭐ Plan 0689. The two maps above are keyed by what the SERVER can do, and they answer
+ * "is this capability reachable?". Neither of them can answer the opposite question — "what is
+ * this tool, and who decided it should exist?" — because a tool that wraps no `api` method and no
+ * constructor option appears in neither map. Seven of them did, silently, and one of the seven was
+ * the ops surface added by this very plan.
+ *
+ * That is the same hole in a different orientation: a capability nothing explains. So every tool
+ * name must appear EITHER as the `tool:` of an entry above (⇒ it is that capability's surface) OR
+ * here, WITH a reason. test/unit/0488-surface-coverage.test.mjs diffs it in both directions, so a
+ * new unexplained tool fails the build and a stale entry fails it too.
+ *
+ * ⛔ A tool listed here as well as above is an error, not a belt-and-braces: two places to change
+ * is how one of them goes stale.
+ */
+export const TOOL_COVERAGE = {
+  presenter_tunnel:           'PUBLIC INGRESS control (S220). Wraps mcp/tunnel.mjs, not `api` — the ingress is a separate process on the box, so there is no server method for it to cover. Exposed because a local 200 proves nothing about reachability and the tunnel has died mid-session.',
+  presenter_default_branding: '⏹ THE PANIC BUTTON (2026-07-27). Drives api.clear (covered above as `clear`) but is listed here too because its NAME is the capability: 33 tools could put things on screen and none read as "take it off". Findable on reboot without reading source.',
+  presenter_modules:          'Reads the deployment\'s modules DIRECTORY from disk (mcp/tools.mjs readModuleById\'s sibling), not any server method. The server never enumerates the catalogue; the agent needs to know what it may load.',
+  presenter_verify_watching:  'A COMPOSITE of api.chime + the ack path (both covered above) with one meaning: "is a human actually looking?". The eyesOn signal is only ever set by a CONFIRM through this tool — never by polling, voting or receiving content — so the composite is the capability.',
+  presenter_transcript:       'The VOICE-ONLY VIEW of api.getTranscripts (covered above, mapped to presenter_inbox, which is its text+voice superset). Kept as its own tool because it is voice-CONDITIONAL: it disappears from the surface when the deployment has no mic.',
+  /* ── Plan 0689 R1/R2 — the ops surface. Neither wraps `api`: they answer questions about the BOX
+   * and the DEPLOYMENT, and the moment you need them is the moment the presenter is down. ⛔ Both
+   * READ-ONLY; presenter_deploy / presenter_rollback are R3 and need Bruce's recorded decision. */
+  presenter_release_status:   'Plan 0689 R1. READ-ONLY deployment inspection — the current release, its sha/builtAt, each unit\'s MainPID AND ExecMainStartTimestamp, and the enumerable releases with every rejection\'s reason. Not an `api` method: it reads the filesystem and systemd, deliberately WITHOUT a running presenter, because ssh-and-a-pipe lost an exit code twice on 2026-08-25/26 and text through a pipe is not a measurement.',
+  presenter_health_deep:      'Plan 0689 R2. READ-ONLY per-room reachability — loopback AND tailnet, each answering a REAL PAGE (id="stage" + id="ap-config") rather than merely 200. Distinct from presenter_health, which reports the IN-PROCESS server this MCP owns: this one probes the DEPLOYMENT, including rooms in other processes, which is where the 26-hour phantom hid.',
+};
