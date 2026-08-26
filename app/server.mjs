@@ -37,6 +37,8 @@ import { makeAllowlist, makeOidcAdapter, makeTailscaleAdapter, defaultOidcDeps, 
 const IDENTITY_GATE_MS = 1600;
 const IDENTITY_GATE_MAX_FRAMES = 64;
 import { createSessionLog, resolveSessionLogDir, defaultSessionLogDir } from '../lib/session-log.mjs';
+import { CursorBook, isDeliveryKey } from '../lib/delivery-cursors.mjs';
+import { createCursorStore } from '../lib/cursor-store.mjs';
 import { selectProfile, DEFAULT_PROFILE } from './profiles.mjs';
 import { createHeuristicSummarizer } from './summarizer.mjs';
 import { buildDigest } from './digests.mjs';
@@ -178,7 +180,7 @@ function sendStatic(res, req, absPath, contentType) {
   } catch (e) { res.writeHead(404); res.end('not found'); }
 }
 
-export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null, profile = DEFAULT_PROFILE, settlingMs = null, queueMaxPending = null, queueTtlMs = null, perTurnBudgetMs = null, perTurnWrapMs = null, floorThresholds = null, sessionLogDir = null, enforceOAuth = undefined, allowPasswordCommandOnLAN = undefined, allowlist = null, oidc = null, oidcDeps = null, oidcSessionTtlMs = null, tailscale = null, tailscaleResolve = null, tailscaleWhois = null, breakGlass = null, breakGlassDeps = null, revokedNonceFile = null, bindHosts = null } = {}) {
+export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null, profile = DEFAULT_PROFILE, settlingMs = null, queueMaxPending = null, queueTtlMs = null, perTurnBudgetMs = null, perTurnWrapMs = null, floorThresholds = null, sessionLogDir = null, enforceOAuth = undefined, allowPasswordCommandOnLAN = undefined, allowlist = null, oidc = null, oidcDeps = null, oidcSessionTtlMs = null, tailscale = null, tailscaleResolve = null, tailscaleWhois = null, breakGlass = null, breakGlassDeps = null, revokedNonceFile = null, bindHosts = null, cursorDir = null } = {}) {
   // Plan 0543 P1 — the AUTH POLICY dial. Validated HERE (the single startup path shared by the CLI
   // self-run and presenter_start): an unknown enforceOAuth value THROWS rather than falling through
   // to a policy the deployer never chose. This slice is plumbing only — P3 makes the policy govern.
@@ -2430,10 +2432,16 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   function pvsDeliverable(entry) { return !!(entry && entry.final !== false && entry.text && entry.own !== true); }
   // Send ONE turn event to a subscriber and advance the shared delivery cursor. Echo-suppressed turns
   // (Phase E) are advanced-past but NOT sent — the cursor still moves so they never re-deliver.
-  function deliverTurnToSub(ws, sub, entry) {
+  // ⛔ Plan 0687 R2 (G5) — THIS ADVANCES `sent`, NEVER `acked`. Handing bytes to a socket is a
+  // TRANSPORT fact. Whether the agent on the other end read them is an AGENT fact, and only an
+  // explicit ack (api.pvsAck) may record it. Acking here is the forbidden implementation: it makes
+  // the whole harness at-most-once with ceremony, which is exactly the live defect of 2026-08-25 —
+  // a response truncated mid-JSON acked turns nobody read.
+  // `replay:true` re-sends from the ACKED position on a re-attach, so the `sent` guard is skipped.
+  function deliverTurnToSub(ws, sub, entry, { replay = false } = {}) {
     const key = sub.consumer;
-    if (situationCursors.get(key) >= entry.seq) return;   // already delivered through this cursor
-    situationCursors.set(key, entry.seq);                 // advance regardless of send (no re-delivery)
+    if (!replay && cursors.delivery(key).sent >= entry.seq) return;   // already sent through this cursor
+    cursors.markSent(key, entry.seq);                     // transport fact only (never `acked`)
     if (!pvsDeliverable(entry)) return;
     if (entry.echo === true) return;                       // Phase E: a TTS-loopback echo is not a Bruce turn
     send(ws, { t: 'turn', mode: commsMode, ...annotateTrust(entry, entry.trust) });
@@ -2727,6 +2735,56 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // speaker's turn is over. `turnComplete` (set when the turn settles) is the DISTINCT turn-end signal.
   // Plan 0473 P13: `own` marks the AGENT's OWN outbound reply (role:'ai', trust:'self') so it joins the
   // conversation object but never barges in on itself and is never queued as a judgment item.
+  // ---- Plan 0687 R4 (G6/G10) — EVICTION IS COUNTED, AND DURABILITY COMES FIRST ----------------
+  // The ring holds TRANSCRIPT_RING entries. An entry aging out is normal; an entry aging out while
+  // a delivery consumer has not acked it is a POTENTIAL LOST TURN, so it is spilled to disk first
+  // and only then forgotten. Nothing is ever dropped silently: every eviction is counted, every
+  // unacked one is logged, and one with nowhere durable to go is counted SEPARATELY and warned.
+  let evictedCount = 0;              // entries aged out of the ring, in total
+  let evictedUnackedCount = 0;       // ... of those, ones a delivery consumer had not acked
+  let spilledCount = 0;              // ... of those, ones written to the durable spill
+  let unrecoverableDiscards = 0;     // ... of those, ones with NOWHERE durable to go (the real loss)
+  function evictOldestInboxEntry() {
+    const gone = inbox.shift();
+    if (!gone) return;
+    evictedCount++;
+    const floorAck = cursors.minAcked();                  // null ⇒ no delivery consumer exists at all
+    const unacked = floorAck !== null && gone.seq > floorAck;
+    if (!unacked) {
+      // Counted always; logged as a roll-up so a 500-turn flood does not write 500 lines.
+      if (evictedCount % 100 === 0) log.info('cursor', 'evicted', { evictedCount, evictedUnackedCount, spilledCount, unrecoverableDiscards });
+      return;
+    }
+    evictedUnackedCount++;
+    if (cursorStore.spill(gone)) { spilledCount++; log.info('cursor', 'spilled-unacked', { seq: gone.seq, spilledCount }); return; }
+    unrecoverableDiscards++;
+    log.warn('cursor', 'discarded-unacked', { seq: gone.seq, unrecoverableDiscards, durable: cursorStore.configured });
+  }
+  // Everything after `fromSeq`, reading THROUGH the eviction boundary when a durable spill exists
+  // (R4). Without a spill the ring is all there is, and the gap surfaces as the loud `missed`
+  // marker in buildSituation — a visible hole, never a quiet truncation.
+  function entriesAfter(fromSeq) {
+    const ring = inbox.filter((i) => i.seq > fromSeq);
+    const oldestRing = inbox.length ? inbox[0].seq : Infinity;
+    if (!cursorStore.configured || fromSeq + 1 >= oldestRing) return { entries: ring, recovered: 0 };
+    const recovered = cursorStore.readSpill(fromSeq).entries.filter((e) => e.seq < oldestRing);
+    return { entries: [...recovered, ...ring], recovered: recovered.length };
+  }
+  // Once every delivery consumer has acked past a spilled entry, it is nobody's backlog any more.
+  function compactSpill() {
+    const floorAck = cursors.minAcked();
+    if (floorAck === null || !cursorStore.configured) return;
+    cursorStore.compactSpill(floorAck);
+  }
+  function deliveryStats() {
+    return {
+      ring: { size: inbox.length, cap: TRANSCRIPT_RING, oldestSeq: inbox.length ? inbox[0].seq : null, liveSeq: inboxSeq },
+      evictedCount, evictedUnackedCount, spilledCount, unrecoverableDiscards,
+      durable: cursorStore.configured, dir: cursorStore.dir,
+      consumers: cursors.deliveryKeys().map((k) => ({ consumer: k, ...cursors.delivery(k) })),
+    };
+  }
+
   function emitInbox({ kind, userId, userName, role, text, conf = null, final = true, sessionId, isGuest = false, own = false, voiceId = null, voiceIdConf = null, speakerLabel = null, trust = null }) {
     const entry = {
       seq: ++inboxSeq, kind, userId, userName, role: role || null,
@@ -2752,7 +2810,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       if (isEcho(text)) entry.echo = true;
       if (isBoilerplate(text) && (entry.conf == null || entry.conf < 0.6)) entry.suspectHallucination = true;
     }
-    inbox.push(entry); if (inbox.length > TRANSCRIPT_RING) inbox.shift();
+    inbox.push(entry); if (inbox.length > TRANSCRIPT_RING) evictOldestInboxEntry();   // R4: counted, never silent
     assignTurn(entry);   // Plan 0473 P2: attach turnId + turnComplete (may settle the prior turn) BEFORE emit
     persistInboxItem(entry);   // RT-26: no-op unless PRESENTER_TRANSCRIPT_PERSIST is ON (voice AND text)
     // Back-compat: voice items still surface to control roles as {t:'transcript'} (presenter voice host).
@@ -2869,7 +2927,38 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // Server-held per-consumer cursor: consumerId -> last inboxSeq that consumer has been shown. The
   // CONSUMER never passes a cursor — the server tracks each consumer's last-read position, keyed by
   // its connection/session identity (the MCP tool keys by the stdio connection; tests key explicitly).
-  const situationCursors = new Map();
+  // ⛔ Plan 0687 R1 (G9) — TWO RECORDS, TWO MEANINGS. `cursors` replaces the old single
+  // `situationCursors: Map<key, number>`, which carried a digest READ position and a PVS DELIVERY
+  // position in one number — so one /api/situation read zeroed the PVS backlog for that key. Read
+  // positions and delivery records now live in separate maps chosen by NAMESPACE, and a delivery
+  // record is the PAIR {sent, acked}: `sent` is a transport fact this layer may advance, `acked` is
+  // an AGENT fact only a consumer-originated ack may move (G5). See lib/delivery-cursors.mjs.
+  // ⛔ Plan 0687 R3 (G10/RT-6) — durability is independent of RECORDING. The store is a small
+  // per-room file; a room with record:"none" still recovers its ack positions. Not configured ⇒
+  // inert, and said so at startup (below) — a stated default, never a silent skip.
+  const cursorStore = createCursorStore({ dir: cursorDir || process.env.PRESENTER_CURSOR_DIR || null, log });
+  let cursorSaveScheduled = false;
+  const saveCursors = () => { if (cursorStore.configured) cursorStore.save({ cursors: cursors.toJSON(), inboxSeq }); };
+  // Durable changes (an ack, a baseline, a drop) are coalesced onto the next tick so a burst of
+  // acks is one write; `close()` flushes synchronously so nothing is owed at exit.
+  const onDurableChange = () => {
+    if (!cursorStore.configured || cursorSaveScheduled) return;
+    cursorSaveScheduled = true;
+    const t = setTimeout(() => { cursorSaveScheduled = false; saveCursors(); }, 0);
+    t.unref?.();
+  };
+  const __restored = cursorStore.load();
+  const cursors = __restored.book
+    ? CursorBook.fromJSON(__restored.book, { onDurableChange })
+    : new CursorBook({ onDurableChange });
+  // Resume the seq counter above the persisted high-water: the ring is in-memory and would restart
+  // at 1, which would make every persisted ack position swallow new turns instead of naming old ones.
+  if (__restored.inboxSeq > inboxSeq) inboxSeq = __restored.inboxSeq;
+  if (cursorStore.configured) {
+    log.info('cursor', 'durable', { dir: cursorStore.dir, restored: __restored.present, resumedSeq: inboxSeq, consumers: cursors.deliveryKeys().length });
+  } else {
+    log.info('cursor', 'ephemeral', { reason: 'no cursorDir configured — delivery cursors do NOT survive a restart' });
+  }
   // Group the (bounded) inbox ring into coalesced TURNS (consecutive items sharing a turnId), newest
   // last, verbatim; return the last `n`. Per-turn text is length-capped (bounded-in-the-large).
   function coalesceTurns(items, n = RECENT_TURNS_N) {
@@ -2923,14 +3012,22 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   }
   // Assemble the BOUNDED working set for `consumerId`, advancing that consumer's server-held cursor.
   function buildSituation(consumerId, recentN = RECENT_TURNS_N) {
-    const last = situationCursors.get(consumerId) || 0;
-    const since = inbox.filter((i) => i.seq > last);   // bounded: the ring is capped at TRANSCRIPT_RING
+    // ⛔ Plan 0687 R1 (G9) — namespace decides the SEMANTICS. A digest read jumps to the head; a
+    // delivery consumer is fed entry by entry from its own record. They no longer share a number.
+    const isDelivery = isDeliveryKey(consumerId);
+    const last = isDelivery ? cursors.delivery(consumerId).sent : cursors.readPosition(consumerId);
+    // R4: a delivery consumer reads PAST the ring's eviction boundary when a durable spill exists.
+    const since = isDelivery ? entriesAfter(last).entries
+      : inbox.filter((i) => i.seq > last);   // bounded: the ring is capped at TRANSCRIPT_RING
     // Plan 0493 R3 — a lost turn must be LOUD. If the oldest undelivered item's seq skips past last+1,
     // the items last+1..firstSeq-1 aged out of the ring before THIS consumer ever saw them (or the
     // consumer was armed past them). Surface a visible "⚠ N turns missed" marker — never a silent gap.
     let missed = 0;
     if (since.length && since[0].seq > last + 1) missed = since[0].seq - last - 1;
-    situationCursors.set(consumerId, inboxSeq);         // advance the cursor to everything now shown
+    // ⛔ G5/R2: SERVING IS NOT ACKING. A delivery consumer's `sent` moves; its `acked` does not,
+    // so an unacked turn replays on the next attach instead of vanishing with the response.
+    if (isDelivery) cursors.markSent(consumerId, inboxSeq);
+    else cursors.setReadPosition(consumerId, inboxSeq);
     evaluateFloor();   // Plan 0473 P6: this read caught the consumer up (backlog reduced) — reassess the floor
     const att = api.attendance({ viewerRole: 'ai' });
     const openPolls = [...polls.entries()].filter(([, p]) => p.open)
@@ -3226,7 +3323,11 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // Live LOAD signals, measured from existing server state (NO new bookkeeping).
   function pendingCount() { let n = 0; for (const it of workItemsMap.values()) if (it.status === 'pending') n++; return n; }
   // How far the furthest-behind consumer has fallen behind (unread inbox items). 0 when nobody has read.
-  function consumerBacklog() { let max = 0; for (const last of situationCursors.values()) { const b = inboxSeq - last; if (b > max) max = b; } return max; }
+  // ⛔ G9: the FLOOR asks "how far behind is what we have handed over?" — a TRANSPORT question, so
+  // it reads `sent`. It deliberately does NOT read `acked`: an agent that never acks is a
+  // durability problem, not a reason to throttle the people speaking in the room. The unacked
+  // distance is a separate aggregate (cursors.maxUnackedBacklog), used for redelivery, not floor.
+  function consumerBacklog() { return cursors.maxTransportBacklog(inboxSeq); }
   // The floor level ONE signal implies, given its {wrap,hold} thresholds (absent thresholds ⇒ ignored).
   function levelFor(value, th) {
     if (!th) return 'go';
@@ -3346,7 +3447,12 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       get setModerationFloor() { return setModerationFloor; },
       get setSpeaking() { return setSpeaking; },
       get sheddedCount() { return sheddedCount; },
-      get situationCursors() { return situationCursors; },
+      get cursors() { return cursors; },
+      get cursorStore() { return cursorStore; },
+      get compactSpill() { return compactSpill; },
+      get deliveryStats() { return deliveryStats; },
+      get entriesAfter() { return entriesAfter; },
+      get saveCursors() { return saveCursors; },
       get socketsFor() { return socketsFor; },
       get speaking() { return speaking; },
       get spotlight() { return spotlight; },
@@ -3423,7 +3529,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     send,
     sendComponentTo,
     shimAnswer,
-    situationCursors,
+    cursors,
     spotlight,
     spotlightLast,
     stationPlaceholder,
@@ -3440,6 +3546,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     voiceAllowedFor,
     voiceSegFinalize,
     voiceSegStart,
+    entriesAfter,
     get seatResolver() { return seatResolver; },
     get commsMode() { return commsMode; },
     get inboxSeq() { return inboxSeq; },

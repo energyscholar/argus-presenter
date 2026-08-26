@@ -47,7 +47,7 @@ export function createWireActions(ctx) {
     log, parseRollCommand, peekTo, presence, pushPresence,
     pushResult, pvsConsumerKey, pvsSubscribers, redisplayFor, renderDisplay,
     renderStationTo, resolveIdentity, resyncOrSnapshot, revokedNonces, rosterVisibleToAttendees,
-    seatStation, send, sendComponentTo, shimAnswer, situationCursors,
+    seatStation, send, sendComponentTo, shimAnswer, cursors,
     spotlight, spotlightLast, stationPlaceholder, stationRegistry, stationsActive,
     surfaceRegistry, surfacesActive, targets, telem, unbindUser,
     unpeekTo, updateChatListeners, verifyCapability, voiceAllowedFor, voiceSegFinalize,
@@ -62,12 +62,16 @@ export function createWireActions(ctx) {
       const key = pvsConsumerKey(m.consumer || 'argusmon');
       const cc = conns.get(ws); if (cc && cc.userId) unbindUser(cc.userId, ws);
       conns.delete(ws); updateChatListeners(); emit('presence', presence()); evaluateFloor();
-      if (!situationCursors.has(key)) situationCursors.set(key, ctx.inboxSeq);
-      const from = situationCursors.get(key);
+      // ⛔ Plan 0687 R2 (G5) — REPLAY IS FROM `acked`, NOT FROM `sent`. A previous attach may have
+      // been handed turns whose response was truncated mid-flight; those advanced `sent` and nothing
+      // else, so on re-attach they are REDELIVERED. Only an explicit ack retires a turn.
+      if (!cursors.hasDelivery(key)) cursors.baselineDelivery(key, ctx.inboxSeq);
+      const rec = cursors.delivery(key);
       pvsSubscribers.set(ws, { consumer: key });
-      send(ws, { t: 'pvs_subscribed', consumer: key, resumeCursor: from, mode: ctx.commsMode });
-      for (const it of inbox.filter((i) => i.seq > from)) deliverTurnToSub(ws, pvsSubscribers.get(ws), it);   // replay
-      log.info('pvs', 'subscribe', { consumer: key, resumeFrom: from });
+      send(ws, { t: 'pvs_subscribed', consumer: key, resumeCursor: rec.acked, sentCursor: rec.sent, mode: ctx.commsMode });
+      // R4: read through the ring's eviction boundary when a durable spill exists.
+      for (const it of ctx.entriesAfter(rec.acked).entries) deliverTurnToSub(ws, pvsSubscribers.get(ws), it, { replay: true });
+      log.info('pvs', 'subscribe', { consumer: key, resumeFrom: rec.acked, sent: rec.sent });
       return;
   });
 
