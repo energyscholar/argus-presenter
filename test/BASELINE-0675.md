@@ -92,13 +92,46 @@ t0532-01   →  exactly ONE file: mcp/server.mjs
 
 A hit list that GROWS is a regression even though the test's pass/fail state did not move.
 
+### ⚠ AMENDMENT, measured at the end of phase 0 — `t0531-02` GROWS BY ONE PER COMMIT
+
+`t0531-02` walks COMMIT TREES, not the working tree. The one offending file is carried in the tree
+of every commit descended from the one that introduced it — so **each new commit adds one line to
+that guard's hit list, naming the same pre-existing file.** Phase 0's six commits took it from
+**1 → 7**, and every later link will push it higher until the offending file is dealt with.
+
+⇒ **Refine the rule, do not relax it.** For `t0531-02`, compare the set of **FILES** named, not the
+number of commits:
+
+- a NEW FILENAME in the list ⇒ **a regression, and it is yours.**
+- more commits, all naming a file already on the list ⇒ **the pre-existing offence propagating**,
+  and the fix is to deal with that file, not to touch the guard.
+
+The other three keep their original rule: `t0531-01`, `t0514-28` and `t0532-01` read the working
+tree, so their hit lists do not move on their own. All three were **unchanged** across phase 0.
+
 ## 4. HOW TO JUDGE A LATER RUN GREEN
 
 1. The summary line still reads **`708 passed / 9 failed`** or better — and better means a
    pre-existing failure was fixed deliberately, never that one vanished.
 2. The nine failures in §2 are **unchanged in number AND identity**.
-3. The four scan hit-lists in §3 are **unchanged in content**, not merely still-red.
+3. The four scan hit-lists in §3 are **unchanged in content**, not merely still-red — with
+   `t0531-02` judged by the set of FILES it names, per the amendment in §3.
 4. Any test added by a later phase passes.
+
+## 4b. WHAT PHASE 0 ACTUALLY MEASURED AGAINST THIS RECORD
+
+Re-run of the full suite at `b95837e`, the end of phase 0:
+
+```
+725 passed / 9 failed   [component:103/106  live:210/211  unit:412/417]
+```
+
+- **+17 passed, +17 total, all in `unit`** — exactly the 17 tests phase 0 adds. `component` and
+  `live` did not move at all.
+- **The fail set is IDENTICAL**, name for name, to §2.
+- **Nothing moved pass→fail**: the set difference of the two PASS lists is empty in that direction.
+- `t0531-01`, `t0514-28`, `t0532-01` hit lists **unchanged**. `t0531-02` went 1 → 7 commits, all
+  seven naming the same one pre-existing file — see the amendment in §3.
 
 ## 5. THE PASS SET
 
