@@ -2442,8 +2442,11 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   function fanOutToSubscribers(entry) { for (const [ws, sub] of pvsSubscribers) deliverTurnToSub(ws, sub, entry); }
   // ---- Plan 0493 Phase E — echo & hallucination hygiene (§10) ----
   // E1 (TTS loopback): S212 — Argus's own presenter_speak output was picked up by the mic and
-  // re-transcribed as three verbatim "Bruce" turns. echoCancellation in the capture graph is necessary
-  // but proven insufficient, so we dedupe at the DELIVERY layer: a voice turn that closely matches a
+  // re-transcribed as three verbatim "Bruce" turns. ⚠ 2026-08-25 (Plan 0685): the browser echo
+  // canceller is no longer in the capture graph at all — it forced an in-call audio route on Android
+  // — so the FIRST line of defence is now capture-side ducking during playback (duckWhilePlaying,
+  // lib/voice-capture.mjs), and this delivery-layer dedupe is the LAST. It was always necessary:
+  // echo cancellation was proven insufficient on its own. A voice turn that closely matches a
   // recent spoken payload (within a short window) is flagged echo:true and NOT delivered as a Bruce turn.
   const ECHO_WINDOW_MS = 12000;                 // a loopback is re-heard within a few seconds of speaking
   const recentSpeak = [];                       // { norm, ts } — bounded ring of recently-spoken payloads
