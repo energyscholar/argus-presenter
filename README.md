@@ -44,6 +44,12 @@ Environment variables (all optional):
   (default `python3 voice/asr-whisper.py`, a warm faster-whisper worker). See below.
 - `PRESENTER_TRANSCRIPT_PERSIST` — opt-in (default OFF). When ON, recognized transcript text is
   appended as JSONL under `PRESENTER_TRANSCRIPT_DIR` (default `.transcripts/`, gitignored).
+  ⛔ **That default resolves INSIDE the release tree.** A deployment that keeps N releases and
+  prunes the rest will record there successfully — visibly, at every moment you might check — and
+  then lose everything to a later prune. Always set `PRESENTER_TRANSCRIPT_DIR` to an absolute path
+  outside the tree. A ROOM that declares `record` other than `"none"` and names no `transcriptDir`
+  (and has no `PRESENTER_TRANSCRIPT_DIR`) is refused at startup — see `presenter-config.example.json`
+  under `//rooms-transcriptDir`.
 
 ## Inbound voice (optional, off by default)
 A participant can speak into their browser mic; the client CPU pre-processes the audio and streams
