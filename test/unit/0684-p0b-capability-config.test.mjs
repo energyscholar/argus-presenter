@@ -311,3 +311,181 @@ test('t0684-10 — a transcriptDir inside the release tree, or a relative one, i
   check('pluginsDir inside the tree is ACCEPTED — the asymmetry is deliberate, not an oversight',
     normalizeRoomConfig({ pluginsDir: join(REPO_ROOT, 'plugins') }, '/x', 'a').pluginsDir === join(REPO_ROOT, 'plugins'));
 });
+
+/* ══ R5 — THE MCP CONTROL PORT IS A PROPERTY OF THE ROOM ══════════════════════════════════════ */
+
+/* ── 11 ────────────────────────────────────────────────────────────────────────────────────────
+ * ⛔⛔ TWO ROOMS ON ONE MCP PORT IS A NAMED STARTUP ERROR, NEVER LAST-WRITER-WINS. A racing bind
+ * does not produce a wrong VALUE a human can read back — it produces a nondeterministic outcome:
+ * one unit dead in a way that looks like a crash, or an operator's tools quietly attached to the
+ * other room. Only a config-time check can see it, because at bind time the answer depends on
+ * which process happened to start first. */
+test('t0684-11 — two rooms claiming ONE mcpPort is a named startup error, not last-writer-wins', () => {
+  const e = threw(() => normalizeRoomsConfig({
+    a: { port: 3000, mcpPort: 3100 },
+    b: { port: 3001, mcpPort: 3100 },
+  }, '/test/config.json'));
+  check('it throws', e instanceof RoomConfigError, String(e));
+  check('...and names BOTH claimants, so the fix does not need a bisect',
+    e && e.message.includes('"a"') && e.message.includes('"b"'), e && e.message);
+  check('...and the port', e && e.message.includes('3100'), e && e.message);
+  check('...and refuses in those words, so nobody reads it as a merge rule',
+    e && /last one written win/i.test(e.message), e && e.message);
+
+  check('distinct MCP ports are fine',
+    threw(() => normalizeRoomsConfig({ a: { port: 3000, mcpPort: 3100 }, b: { port: 3001, mcpPort: 3101 } }, '/x')) === null);
+  check('...and rooms that declare NO mcpPort do not collide with each other on "null"',
+    threw(() => normalizeRoomsConfig({ a: { port: 3000 }, b: { port: 3001 }, c: {} }, '/x')) === null);
+
+  /* ⛔ One process cannot bind one port twice either. */
+  const self = threw(() => normalizeRoomConfig({ port: 3001, mcpPort: 3001 }, '/test/config.json', 'a'));
+  check('a room whose mcpPort IS its own http port is refused', self instanceof RoomConfigError, String(self));
+  check('...naming the room and the number', self && self.message.includes('"a"') && self.message.includes('3001'), self && self.message);
+
+  // …and through the real loader, so this is a STARTUP error.
+  const home = scratch(), repo = scratch();
+  writeConfig(repo, { presenterPort: 0, rooms: { a: { port: 3000, mcpPort: 3100 }, b: { port: 3001, mcpPort: 3100 } } });
+  const live = threw(() => roomConfig({ env: { HOME: home, [ROOM_ENV]: 'a' }, repoDir: repo }));
+  check('the real loader refuses to start', live instanceof RoomConfigError, String(live));
+});
+
+/* ── 12 ────────────────────────────────────────────────────────────────────────────────────────
+ * The env fallback keeps `PRESENTER_MCP_HTTP`'s EXISTING meaning (0/unset ⇒ no HTTP MCP) rather
+ * than inventing a second interpretation of a variable already set on the live box — but it stops
+ * coercing. Today `Number('31OO')` is NaN, `NaN > 0` is false, and the control port simply never
+ * opens with nothing anywhere saying why. */
+test('t0684-12 — mcpPort resolves config > env > unset, and a typo THROWS instead of silently not binding', () => {
+  check('a real port from the environment', parseCapabilityEnv('mcpPort', '3100') === 3100);
+  check('0 keeps its existing meaning — "no HTTP MCP" — and is NOT an error',
+    parseCapabilityEnv('mcpPort', '0') === undefined);
+  check('unset likewise', parseCapabilityEnv('mcpPort', undefined) === undefined);
+  for (const bad of ['31OO', 'yes', '70000', '-1', '3100.5']) {
+    const e = threw(() => parseCapabilityEnv('mcpPort', bad));
+    check(`${JSON.stringify(bad)} throws rather than quietly not binding`, e instanceof RoomConfigError, String(e));
+    check('...and names the variable', e && e.message.includes('PRESENTER_MCP_HTTP'), e && e.message);
+  }
+  const coercing = (v) => Number(v || 0);
+  check('the pre-existing coercing reader answers NaN to the typo, and NaN > 0 is false — the port just never opens',
+    Number.isNaN(coercing('31OO')) && !(coercing('31OO') > 0));
+
+  const cfg = { rooms: { a: { port: 3001, mcpPort: 3101 } }, configPath: '/test/config.json' };
+  const a = resolveRoom({ [ROOM_ENV]: 'a', PRESENTER_MCP_HTTP: '3100' }, cfg);
+  check('⛔ the ROOM wins over the process-global variable — that is the whole point of R5',
+    a.capabilities.mcpPort === 3101, JSON.stringify(a.capabilities.mcpPort));
+  check('...and says (config)', a.capabilitySources.mcpPort === 'config', a.capabilitySources.mcpPort);
+
+  const b = resolveRoom({ [ROOM_ENV]: 'a', PRESENTER_MCP_HTTP: '3100' }, { rooms: { a: { port: 3001 } }, configPath: '/x' });
+  check('a room that states none falls back to the variable, reported as (env)',
+    b.capabilities.mcpPort === 3100 && b.capabilitySources.mcpPort === 'env', JSON.stringify(b.capabilitySources));
+  check('the startup line carries it', /mcpPort 3100\(env\)/.test(roomStartupLine(b)), roomStartupLine(b));
+});
+
+/* ══ THE INERTNESS PROOF ═══════════════════════════════════════════════════════════════════════
+ * ⛔⛔ AS STRONG AS `t0675-15`, AND FOR THE SAME REASON. This phase's whole claim is that it moves
+ * where values come from without changing what happens, and the ordinary green check cannot see
+ * the difference. So: run the REAL CLI twice — once against a config declaring a room that states
+ * every capability this run adds, once against a config with no room model at all — and require
+ * the entire startup banner to be identical apart from the room line itself.
+ *
+ * ⚠ THE PROBE ROOM MUST STATE EVERY CAPABILITY THIS TEST CLAIMS TO CHECK. 0675 recorded catching
+ * exactly this: its first probe room's `record` was already "none", so the recording half of the
+ * assertion could not have failed. This one states a profile, a plugins dir, a transcript dir, an
+ * MCP port, a plugin, a retention and voice — all different from the defaults.
+ * ══════════════════════════════════════════════════════════════════════════════════════════════ */
+test('t0684-13 — INERTNESS: a room stating EVERY new capability changes no port, no plugin set, no recording', async () => {
+  const home = scratch();
+  const withRooms = scratch(), without = scratch();
+  const logDir = scratch(), stateDir = scratch();
+  const base = { presenterPort: 0, sessionLogDir: join(logDir, 'logs') };
+  const PROBE = {
+    probe: {
+      port: 3001, bindHosts: ['127.0.0.1'], plugins: ['ops-console'], record: '30d', voice: true, label: 'probe',
+      profile: 'profile-a', pluginsDir: '/srv/deploy/other-plugins',
+      transcriptDir: join(stateDir, 'transcripts'), mcpPort: 3101,
+    },
+  };
+  writeConfig(withRooms, { ...base, rooms: PROBE, defaultRoom: { plugins: [], record: 'none', voice: false } });
+  writeConfig(without, base);
+
+  const envA = { HOME: home, [ROOM_ENV]: 'probe' };
+  const envB = { HOME: home };
+
+  /* ── (a) every option the launch paths actually route into createServer ────────────────────── */
+  const optsA = identityServerOptions(identityConfig({ env: envA, repoDir: withRooms }));
+  const optsB = identityServerOptions(identityConfig({ env: envB, repoDir: without }));
+  check('the routed identity options are identical', JSON.stringify(optsA) === JSON.stringify(optsB), JSON.stringify([optsA, optsB]));
+  check('⛔ and not one capability this run adds rode in with them',
+    !('profile' in optsA) && !('pluginsDir' in optsA) && !('transcriptDir' in optsA) && !('mcpPort' in optsA)
+      && !('rooms' in optsA) && !('plugins' in optsA) && !('record' in optsA) && !('voice' in optsA),
+    JSON.stringify(Object.keys(optsA)));
+  check('⛔ nor did any of them become a deployment-routed option',
+    ['profile', 'pluginsDir', 'transcriptDir', 'mcpPort', 'rooms', 'defaultRoom'].every((k) => !DEPLOYMENT_ROUTED_OPTIONS.includes(k)),
+    JSON.stringify(DEPLOYMENT_ROUTED_OPTIONS));
+  check('the resolved PORT is identical',
+    presenterPort({ env: envA, repoDir: withRooms }) === presenterPort({ env: envB, repoDir: without }));
+  check('the resolved BIND HOSTS are identical',
+    JSON.stringify(bindHostsConfig({ env: envA, repoDir: withRooms })) === JSON.stringify(bindHostsConfig({ env: envB, repoDir: without })));
+  check('the resolved AUTH POLICY is identical',
+    JSON.stringify(authPolicy({ env: envA, repoDir: withRooms })) === JSON.stringify(authPolicy({ env: envB, repoDir: without })));
+  check('the resolved SESSION LOG target is identical',
+    resolveSessionLogDir({ env: envA, repoDir: withRooms }).sessionLogDir === resolveSessionLogDir({ env: envB, repoDir: without }).sessionLogDir);
+
+  /* ⚠ …and this is only meaningful because the room WAS read. A schema nobody parses is trivially
+   * inert and proves nothing. */
+  const resolved = roomConfig({ env: envA, repoDir: withRooms });
+  check('the room really resolved, and it states EVERY capability this test claims to check',
+    resolved.name === 'probe' && resolved.capabilities.profile === 'profile-a'
+      && resolved.capabilities.pluginsDir === '/srv/deploy/other-plugins'
+      && resolved.capabilities.mcpPort === 3101 && resolved.capabilities.record === '30d'
+      && resolved.capabilities.voice === true && !!resolved.capabilities.transcriptDir,
+    JSON.stringify(resolved.capabilities));
+
+  /* ── (b) the CLI self-run's own observable startup, end to end ─────────────────────────────── */
+  const runCli = (env) => new Promise((res) => {
+    const child = spawn(process.execPath, ['app/server.mjs'], {
+      cwd: REPO_ROOT,
+      env: { PATH: process.env.PATH, HOME: env.HOME, ...(env[ROOM_ENV] ? { [ROOM_ENV]: env[ROOM_ENV] } : {}),
+             PRESENTER_CONFIG_FILE: join(env._dir, CONFIG_BASENAME) },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let out = '';
+    const done = (why) => { try { child.kill('SIGKILL'); } catch {} res({ out, why }); };
+    const timer = setTimeout(() => done('timeout'), 20_000);
+    child.stdout.on('data', (d) => { out += d; if (/^ +session log:/m.test(out)) { clearTimeout(timer); done('up'); } });
+    child.stderr.on('data', (d) => { out += d; });
+    child.on('error', () => { clearTimeout(timer); done('spawn-error'); });
+  });
+
+  const a = await runCli({ ...envA, _dir: withRooms });
+  const b = await runCli({ ...envB, _dir: without });
+  check('both CLI runs came up', a.why === 'up' && b.why === 'up', JSON.stringify([a.why, b.why, a.out.slice(-400)]));
+
+  const portOf = (o) => (o.match(/display : http:\/\/127\.0\.0\.1:(\d+)\//) || [])[1];
+  check('⛔ the room declares port 3001 and mcpPort 3101, and the process bound NEITHER',
+    portOf(a.out) !== '3001' && portOf(a.out) !== '3101' && !/3101/.test(a.out.replace(/^ +room:.*$/m, '')),
+    portOf(a.out));
+  check('both bound an OS-assigned port, exactly as the shared presenterPort:0 asks',
+    !!portOf(a.out) && !!portOf(b.out), JSON.stringify([portOf(a.out), portOf(b.out)]));
+
+  const logLine = (o) => (o.match(/^ +session log:.*$/m) || [''])[0].replace(/[^ ]*\/logs\/[^ ]*/, '<id>');
+  check('⛔ the recording state is identical, though one config declares record "30d" AND a transcript dir',
+    logLine(a.out).replace(/\d+/g, '#') === logLine(b.out).replace(/\d+/g, '#'),
+    JSON.stringify([logLine(a.out), logLine(b.out)]));
+
+  const banner = (o) => o.split('\n').filter((l) => !/^ +room:/.test(l))
+    .map((l) => l
+      .replace(/:\d{2,5}\//g, ':<port>/')
+      .replace(/\/logs\/[^ ]*/, '/logs/<id>')
+      .replace(/\/tmp\/ap-0684-[^/ ]+/g, '<scratch>')).join('\n');
+  check('⛔ and every other line of the startup banner is identical',
+    banner(a.out) === banner(b.out), JSON.stringify([banner(a.out), banner(b.out)]));
+
+  check('...while the ROOM line differs, and names every new capability WITH its source',
+    /room: probe \(env\)/.test(a.out) && /profile profile-a\(config\)/.test(a.out)
+      && /pluginsDir \/srv\/deploy\/other-plugins\(config\)/.test(a.out) && /mcpPort 3101\(config\)/.test(a.out)
+      && /PRESENTER_ROOM unset/.test(b.out),
+    JSON.stringify([(a.out.match(/^ +room:.*$/m) || [])[0], (b.out.match(/^ +room:.*$/m) || [])[0]]));
+
+  check('⛔ and the line still says it is REPORTING, not describing what loaded',
+    /PHASE 0: REPORTED ONLY/.test(a.out), (a.out.match(/^ +room:.*$/m) || [])[0]);
+});
