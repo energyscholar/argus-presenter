@@ -476,6 +476,11 @@ export function createApiSurface(M) {
             eyesOn: !!c.eyesOn,                                    // explicit attendance (verify_watching CONFIRM)
             eyesOnAgoSec: c.eyesOn ? Math.floor((now - c.eyesOn) / 1000) : null,
             display: M.displayIdFor(c),
+            /* Plan 0693 T5 — WHETHER this connection holds command authority. ⛔ A boolean, never
+             * an identifier: the verified principal that earned it is not in this payload and must
+             * never be. CONTROL-ONLY, like ip/socketId — a participant roster that named the room's
+             * admins would be a different disclosure than the one this row is for. */
+            self: c.trust === 'self',
             ip: c.ip, socketId: c.id,                             // CONTROL-ONLY (stripped below for participants)
           };
         });

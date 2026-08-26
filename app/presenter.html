@@ -420,9 +420,12 @@
     if (acts) acts.style.display = active ? '' : 'none';
     if (!active) return;
     var signedIn = !!(st && st.signedIn);
-    // ⛔ st.name is the ONLY identifier the endpoint hands over, and only to its own holder. There
-    // is no email and no `sub` in this payload to render even by accident.
-    var label = (st && st.name) ? st.name : 'signed in';
+    /* ⛔ Plan 0693 T4 — THE PAYLOAD NO LONGER CARRIES AN IDENTIFIER AT ALL. `name` (the IdP's own
+       name claim) was removed from /api/auth-state on Bruce's ruling, 2026-08-26: "Dont reveal
+       actual OAuth login info - privacy violation." The principal authorises; it does not label.
+       What is left is STATE — signed in, and whether this connection is `self`. The name a human
+       eventually sees is the CHOSEN name (plan 0692), which this server does not hold yet. */
+    var isSelf = !!(st && (st.self === true || st.trust === 'self'));
     if (pill) pill.classList.toggle('in', signedIn);
     if (link) link.style.display = signedIn ? 'none' : '';
     /* ⭐ SIGNED IN, THE PILL IS A READOUT — NOT A CONTROL. 2026-08-18, ruled by Bruce.
@@ -434,25 +437,29 @@
        ⇒ initials only, and the full name moves to the tooltip. `sign out` goes to the config panel,
        which this file already calls "the canonical home of the sign-in control" and which already
        carries both links, wired by this same function. Nothing is lost; a duplicate is dropped. */
-    var mark = (st && st.trust === 'self') ? '✓' : '◌';
-    var initials = String(label).split(/\s+/).filter(Boolean).slice(0, 2)
-      .map(function (w) { return w[0]; }).join('').toUpperCase() || '?';
-    if (who) { who.style.display = signedIn ? '' : 'none'; who.textContent = mark + ' ' + initials; }
+    /* ⛔ THE INITIALS WERE BUILT FROM THE ACCOUNT NAME, so they went with it — a two-letter
+       reduction of a real name is still the name for anyone who knows the room. The pill keeps the
+       one thing it was actually for: ✓ authorized / ◌ signed in but fenced. */
+    var mark = isSelf ? '✓' : '◌';
+    if (who) { who.style.display = signedIn ? '' : 'none'; who.textContent = mark; }
     /* ⛔ The trailing link is the other half of the width, and it is REACHABLE ELSEWHERE. */
     if (out) out.style.display = 'none';
     if (cin) cin.style.display = signedIn ? 'none' : '';
     if (cout) cout.style.display = signedIn ? '' : 'none';
     if (cst) {
-      cst.textContent = !signedIn ? 'not signed in'
-        : (st.trust === 'self' ? (label + ' · authorized')
-          : (label + ' · signed in, NOT authorized' + (st.reauth ? ' (session expired — sign in again)' : '')));
-      cst.style.color = !signedIn ? '#8ab' : (st.trust === 'self' ? '#8fe6a8' : '#f97');
+      /* ⭐ Plan 0693 AC10 — a LAPSED session says so on BOTH sides of the signed-in test. An expired
+         session reports signedIn:false WITH reauth:true, and "not signed in" alone leaves a person
+         who was signed in a moment ago with no idea what changed. */
+      cst.textContent = !signedIn ? ('not signed in' + ((st && st.reauth) ? ' — your session expired, sign in again' : ''))
+        : (isSelf ? 'signed in · authorized'
+          : ('signed in, NOT authorized' + (st.reauth ? ' (session expired — sign in again)' : '')));
+      cst.style.color = !signedIn ? '#8ab' : (isSelf ? '#8fe6a8' : '#f97');
     }
     /* ⚠ THE TOOLTIP NOW CARRIES WHAT THE PILL STOPPED SHOWING — the full name, and where sign-out
        went. A control that shrinks without saying where its verb moved reads as a control that
        broke. */
     if (pill) pill.title = !signedIn ? 'Sign in with your account to speak as yourself'
-      : (label + (st.trust === 'self' ? ' — signed in and authorized' : ' — signed in, but not on this room\'s allowlist')
+      : ((isSelf ? 'Signed in and authorized' : 'Signed in, but not on this room\'s allowlist')
          + ' · sign out in ⚙ Settings');
   }
   function refreshAuthState(){

@@ -379,6 +379,15 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
    * session cookie, or a DIRECT tailnet peer) and whether a live OIDC session has expired. Read from
    * the request, never from a client claim.
    */
+  /**
+   * Plan 0693 T4 — a NON-REVERSIBLE stand-in for an allowlist key, for log lines only.
+   * 8 hex of sha256: enough for an operator to compare against `printf %s "…" | sha256sum`, far
+   * too little to be an identifier. ⛔ Never returned to a client; never the key itself.
+   */
+  function keyFingerprint(key) {
+    if (!key) return null;
+    return createHash('sha256').update(String(key)).digest('hex').slice(0, 8);
+  }
   function computeAuthCtx(req) {
     // ⚠ Read sessionExpired BEFORE principalForRequest — the latter DELETES an expired session, which
     // would otherwise hide the expiry from the re-auth prompt (the A-fix). Order is load-bearing.
@@ -467,19 +476,39 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       /* ⛔ A DENIAL FOR SOMEONE WHO IS SIGNED IN IS WORTH SAYING OUT LOUD. Silence here cost two
        *   round trips: the microphone simply did not appear and nothing anywhere said why. The key
        *   is logged because the failure mode is almost always that it is not the one on the list. */
-      if (!ok) log.info('voice', 'not-granted', { key: key || null, provider: ctx.verified.provider, allowed: !!(al && al.allowed), voiceFlag: al ? al.voice : null });
+      /* ⛔ Plan 0693 T4 — THE KEY ITSELF USED TO BE IN THIS LINE, AND THE KEY IS AN EMAIL. The log
+       *   ring is served by /api/debug, so that put a principal on a client-reachable surface —
+       *   exactly what T4 forbids. The DIAGNOSTIC value is kept without the identifier: a short
+       *   one-way fingerprint an operator can reproduce (`printf %s "$email" | sha256sum`) against
+       *   the entry they expected, plus the three booleans that say which half is wrong. */
+      if (!ok) log.info('voice', 'not-granted', { keyPresent: !!key, keyFingerprint: keyFingerprint(key), provider: ctx.verified.provider, allowed: !!(al && al.allowed), voiceFlag: al ? al.voice : null });
       return ok;
     } catch (e) { log.warn('voice', 'grant-check-threw', { err: String((e && e.message) || e).slice(0, 120) }); return false; }
   }
 
+  /*
+   * ── Plan 0693 T4/T5 — ⛔ THE PRINCIPAL LEFT THIS PAYLOAD, AND IT IS NOT COMING BACK ───────────
+   *
+   * 0551 P3 shipped `name` here — the IdP's `name` claim — reasoned as "the display name of the
+   * person holding it, for their own eyes, on their own request". Bruce, 2026-08-26:
+   * *"Dont reveal actual OAuth login info - privacy violation."* The principal is for
+   * AUTHORISATION ONLY. It is not a display surface, and "only its own holder can read it" is a
+   * property of the request, not of the field — the field is what ends up in a screenshot, a
+   * debug overlay, a bug report and a cache.
+   *
+   * ⇒ WHAT REPLACES IT IS A BOOLEAN. `self` says whether THIS connection carries command
+   * authority, which is the only thing a UI needed the identity for (show or hide an admin
+   * affordance). A boolean cannot be a name, an email or a `sub`, and it cannot become one later.
+   * What a human sees is the chosen name (plan 0692), which this server does not hold yet.
+   */
   function authState(req) {
     const ctx = computeAuthCtx(req);
     const verdict = deriveConnTrust(null, null, ctx);
-    const name = (ctx.verified && typeof ctx.verified.name === 'string' && ctx.verified.name.trim()) ? ctx.verified.name.trim() : null;
     return {
       oidcActive: oidcAdapter.active,
       signedIn: !!ctx.verified,
-      name,
+      // ⛔ A BOOLEAN, NEVER AN IDENTIFIER (T5). Whether, never who.
+      self: verdict.trust === TRUST.SELF,
       trust: verdict.trust,
       voice: voiceAllowedFor(req, ctx),     // ⚠ pass the ctx: computeAuthCtx() deletes expired sessions
       ...(verdict.reason ? { reason: verdict.reason } : {}),
@@ -1196,7 +1225,10 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // presenter_stations().seats and presenter_debug().presence are both built from it.
   const safeId = (s) => (typeof s === 'string' ? sanitizeUntrusted(s) : s);
   function presence() {
-    return byPerson((c) => ({ userId: safeId(c.userId), userName: safeId(c.userName), role: c.role, eyesOn: c.eyesOn || null, stationUid: seatStationUid(c.userId) }))
+    /* Plan 0693 T5 — `self` says whether that connection holds COMMAND AUTHORITY. ⛔ A boolean and
+     * nothing else: the principal that earned it never appears here, and presence is already a
+     * control/agent-facing payload (presenter_status, presenter_stations, presenter_debug). */
+    return byPerson((c) => ({ userId: safeId(c.userId), userName: safeId(c.userName), role: c.role, self: c.trust === TRUST.SELF, eyesOn: c.eyesOn || null, stationUid: seatStationUid(c.userId) }))
       .filter((r) => r.userId);
   }
   // Full presence (incl. IP + socketId + current display id) pushed to CONTROL roles only, for the GM user list.
@@ -1219,7 +1251,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       // Plan 0522 P14 — the spotlight grant rides the roster so the row's toggle shows the state
       // the server actually holds. A toggle that renders from its own last click is a toggle that
       // lies after any reconnect, and the grant already survives one (welcome.spotlightGranted).
-      return { userId: safeId(c.userId), userName: safeId(c.userName), role: c.role, ip: c.ip, socketId: c.id, lastSeen: c.lastSeen, display: displayIdFor(c), eyesOn: c.eyesOn || null,
+      return { userId: safeId(c.userId), userName: safeId(c.userName), role: c.role, self: c.trust === TRUST.SELF, ip: c.ip, socketId: c.id, lastSeen: c.lastSeen, display: displayIdFor(c), eyesOn: c.eyesOn || null,
         stationUid: uid, stationLabel: st ? st.stationLabel : null, spotlightGranted: spotlight.has(c.userId), socketIds: [c.id], ips: [c.ip || null] };
     });
     for (const [ws, c] of conns.entries()) if (c.role === 'presenter' || c.role === 'ai') send(ws, { t: 'presence', users });

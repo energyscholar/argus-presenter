@@ -1868,18 +1868,24 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     if(row) row.style.display=active?'':'none';
     if(!active) return;
     var signedIn=!!(st&&st.signedIn);
-    // ⛔ st.name is the only identifier in the payload: no email, no `sub`, no session id.
-    var label=(st&&st.name)?st.name:'signed in';
+    /* ⛔ Plan 0693 T4 — THERE IS NO IDENTIFIER IN THIS PAYLOAD ANY MORE. `name` (the IdP's own name
+       claim) was removed from /api/auth-state: the OIDC principal authorises, it does not label.
+       What is rendered is STATE — signed in, and whether this connection is `self`. The name a
+       human sees will be the chosen name (plan 0692), which this server does not hold yet. */
+    var isSelf=!!(st&&(st.self===true||st.trust==='self'));
     if(link) link.style.display=signedIn?'none':'';
-    if(who){ who.style.display=signedIn?'':'none'; who.textContent=(st&&st.trust==='self')?('✓ '+label):('◌ '+label); }
+    if(who){ who.style.display=signedIn?'':'none'; who.textContent=isSelf?'✓ authorized':'◌ signed in'; }
     if(out) out.style.display=signedIn?'':'none';
     if(cin) cin.style.display=signedIn?'none':'';
     if(cout) cout.style.display=signedIn?'':'none';
     if(cst){
-      cst.textContent=!signedIn?'not signed in — the password below opens this page, but only a signed-in, allowlisted account may command Argus'
-        :(st.trust==='self'?(label+' · authorized to command')
-          :(label+' · signed in, NOT authorized'+(st.reauth?' (session expired — sign in again)':'')));
-      cst.style.color=!signedIn?'var(--dim)':(st.trust==='self'?'var(--ok)':'var(--warn)');
+      /* ⭐ Plan 0693 AC10 — a LAPSED session says so on BOTH sides of the signed-in test. It is
+         reported as signed OUT (the session is gone) with reauth:true, and a fence nobody explains
+         is the thing this row exists to prevent. */
+      cst.textContent=!signedIn?('not signed in'+((st&&st.reauth)?' — your session expired, sign in again':'')+' — the password below opens this page, but only a signed-in, allowlisted account may command Argus')
+        :(isSelf?'signed in · authorized to command'
+          :('signed in, NOT authorized'+(st.reauth?' (session expired — sign in again)':'')));
+      cst.style.color=!signedIn?'var(--dim)':(isSelf?'var(--ok)':'var(--warn)');
     }
   }
   function refreshAuthState(){
