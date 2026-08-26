@@ -84,10 +84,10 @@ test('0687 R4 — an acked entry stops being retained: the spill COMPACTS', asyn
     const path = join(dir, SPILL_FILE);
     const before = readFileSync(path, 'utf8').split('\n').filter((l) => l.trim()).length;
     expect(before > 0, 'the spill holds the unacked overflow', String(before));
-    // The real agent flow: READ the backlog, then ack the highest seq it actually took in.
-    // (pvsBacklog is a pure query — it hands nothing over, so a bare ack would ack nothing.)
-    const took = s.pvsBacklog({ consumer: 'argusmon', limit: 1000 });
-    s.pvsAck({ consumer: 'argusmon', seq: took.liveCursor });
+    // The real agent flow: READ the backlog, then ack. A bare ack means "everything you handed
+    // me", and the read is what handed it over — so no seq is needed and none is guessed at.
+    s.pvsBacklog({ consumer: 'argusmon', limit: 1000 });
+    s.pvsAck({ consumer: 'argusmon' });
     const after = existsSync(path) ? readFileSync(path, 'utf8').split('\n').filter((l) => l.trim()).length : 0;
     expect(after === 0, '⛔ once everybody has acked past them, the spilled entries are dropped', before + ' -> ' + after);
     expect(s.pvsBacklog({ consumer: 'argusmon' }).count === 0, 'and the backlog is empty');

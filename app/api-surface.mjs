@@ -264,12 +264,19 @@ export function createApiSurface(M) {
         const { entries, recovered } = M.entriesAfter(rec.acked);
         const n = Math.max(1, Math.min(1000, Number(limit) || 200));
         const shown = entries.slice(0, n);
+        // ⭐ This read IS a handover, so it advances `sent` — to the highest seq it ACTUALLY
+        // returned, never past the limit it truncated at. ⛔ It still does not touch `acked`: that
+        // is the whole rule. Without this a backlog-only consumer would leave `sent` at zero, and a
+        // bare pvsAck() ("everything you handed me") would silently ack NOTHING — a no-op wearing
+        // the shape of a confirmation, which is the failure mode this phase is about.
         const oldestRing = M.inbox.length ? M.inbox[0].seq : null;
         // A gap the spill could NOT cover is stated, not hidden: these turns are gone.
         const firstAvailable = shown.length ? shown[0].seq : (oldestRing || rec.acked + 1);
         const missed = Math.max(0, firstAvailable - rec.acked - 1);
+        if (shown.length) M.cursors.markSent(key, shown[shown.length - 1].seq);
+        const after = M.cursors.delivery(key);
         return {
-          ok: true, consumer: key, acked: rec.acked, sent: rec.sent, liveCursor: M.inboxSeq,
+          ok: true, consumer: key, acked: after.acked, sent: after.sent, liveCursor: M.inboxSeq,
           count: shown.length, truncated: entries.length > shown.length, recoveredFromSpill: recovered,
           missed, missedMarker: missed > 0 ? ('\u26a0 ' + missed + ' turns missed (aged out with nowhere durable to spill)') : null,
           items: shown.map((i) => annotateTrust(i, i.trust)),

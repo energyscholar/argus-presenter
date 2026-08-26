@@ -75,7 +75,9 @@ test('0687 R2 — a consumer can READ the backlog repeatedly without acking anyt
     const second = s.pvsBacklog({ consumer: 'argusmon' });
     expect(first.count === 2 && second.count === 2, 'both reads returned BOTH turns', first.count + ' / ' + second.count);
     expect(texts(first.items) === texts(second.items), 'byte for byte the same turns', texts(second.items));
-    expect(second.acked === 0 && second.sent === first.sent, 'and NEITHER cursor moved on a read', JSON.stringify({ acked: second.acked, sent: second.sent }));
+    expect(second.acked === 0, '⛔ and `acked` did not move — which is the whole rule', String(second.acked));
+    expect(second.sent === first.sent && first.sent === first.liveCursor,
+      'the read DID hand the turns over, so `sent` sits at the head and stays there', JSON.stringify({ first: first.sent, second: second.sent }));
   } finally { await s.close(); }
 });
 
