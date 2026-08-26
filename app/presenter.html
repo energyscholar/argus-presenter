@@ -1322,13 +1322,17 @@
       /* ⛔ Plan 0692 F13 — THE NAME ROW IS NO LONGER OWNED BY THE STATION CODE. It used to be
          revealed here and hidden on a stationless deployment, which is why everyone who was not
          seated at a station had no name row at all. Its visibility and its text are now the name
-         editor's business alone, and it repaints from the welcome like everything else. */
+         editor's business alone, repainted by the `welcome` handler — which runs FIRST and then
+         calls this function, so there is nothing left for this path to do.
+         ⛔ AND NOTHING FROM 0692 MAY BE ADDED BACK HERE. Re-seating tears the content frame down
+         and builds a new one (harness/painted.mjs says so in as many words), and t0584-C3 reads
+         across that boundary with no settle. Work added on this path widens the window it reads
+         into. Repainting a name row is not about stations and does not belong in it. */
       var reg = m && m.stationRegistry;
       // P13: the ambient badge reads from the SAME relay as the selector, so the two can never
       // disagree about where this seat is, and both vanish together on a stationless deployment.
       seatReg = (Array.isArray(reg) && reg.length) ? reg : null;
       seatKey = (m && typeof m.stationSelectorLabel === 'string') ? m.stationSelectorLabel : '';
-      try { if (typeof window.__apPaintNameRow === 'function') window.__apPaintNameRow(); } catch(e){}
       if (!Array.isArray(reg) || !reg.length || !selEl) { if (row) row.style.display = 'none'; paintSeat(null); return; }
       if (row) row.style.display = '';
       var lab = document.getElementById('cfg-station-label');
@@ -1851,9 +1855,12 @@
         box.style.display = editing ? '' : 'none';
         if (why) {
           why.style.display = fixed ? '' : 'none';
-          why.textContent = seatLinked
+          /* ⚠ Written ONCE. This paint runs on every welcome and every reconnect; re-assigning an
+             unchanged paragraph each time is DOM work for no change on screen. */
+          var txt = seatLinked
             ? 'This is a seat link, and the link is your identity: the server works out who you are from the station and the name in the link, which is what lets a reload put you back in the same seat. Changing the name here would make you a different person and lose the seat, so it is fixed. Open a plain link to choose your own name.'
             : (identity.cap ? 'You joined through an invitation link, and the name on that invitation is the name the room sees. Open a plain link to choose your own name.' : '');
+          if (why.textContent !== txt) why.textContent = txt;
         }
       }
       window.__apPaintNameRow = paint;
