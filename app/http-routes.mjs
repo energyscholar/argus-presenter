@@ -193,6 +193,14 @@ export function createHttpHandler(ctx) {
         sendStatic(res, req, join(LIB, 'breakdown.js'), 'text/javascript; charset=utf-8');
   });
 
+  exactRoutes.set("/lib/viewport.js", ({ req, res, LIB, sendStatic }) => {
+        // Plan 0695 Part B — the ONE expandable viewport (maximise · restore · ESC), served to the
+        // browser so the Control preview and any later surface (screen sharing, Part C) share a
+        // single implementation instead of each growing its own `.fullscreen` toggler.
+        // ⛔ NOT under the voice fence: this is not voice, and that fence is deleted when voice is off.
+        sendStatic(res, req, join(LIB, 'viewport.js'), 'text/javascript; charset=utf-8');
+  });
+
   exactRoutes.set("/lib/voice-stub.js", ({ req, res, LIB, sendStatic }) => {
         // Plan 0470 Tier 0: the sub-1KB always-on voice stub (dynamic-imports Tier 1 on enable()).
         sendStatic(res, req, join(LIB, 'voice-stub.js'), 'text/javascript; charset=utf-8');

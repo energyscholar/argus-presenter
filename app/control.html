@@ -599,6 +599,10 @@
 
 <script type="module">
 import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch resolver (served by the server, not duplicated)
+// Plan 0695 Part B: the SINGLE expandable-viewport implementation (maximise · restore · ESC).
+// This page PROVED that behaviour in 0522 P7.2; it is now this module's first caller rather than
+// its private copy, so the screen-share viewport of Part C cannot grow a second, disagreeing one.
+import { mount as mountViewport, openCount as viewportsOpen } from '/lib/viewport.js';
 (function(){
   var NS='argus-presenter', TOKEN_KEY=NS+':token';
   var q = new URLSearchParams(location.search);
@@ -1570,33 +1574,39 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     }
   }
 
-  // ── Plan 0522 P7.2 — FULL SCREEN ───────────────────────────────────────────────────────────
-  // One flag, one function. Entering and leaving both route through here so the ESC key, the
-  // toggle button, the F shortcut (0695 A3) and any future caller cannot disagree about what
-  // "full screen" means.
-  function setFullscreen(on){
-    on=!!on;
-    if(on===fsOpen) return;
-    fsOpen=on;
-    $('preview').classList.toggle('fullscreen',on);
-    $('pvdock').classList.toggle('fullscreen',on);   // the dock owns the stacking context — see the CSS note
-    // 0695 A1: the glyph and the WORDS are separate nodes now, so flipping the glyph no longer
-    // eats the label. A button that is only a glyph is the defect Part A exists to fix.
-    var b=$('btn-pvfull');
-    if(b){
-      var g=b.querySelector('[data-vp-glyph]'), t=b.querySelector('[data-vp-text]');
-      if(g) g.textContent = on?'⤡':'⤢'; else b.textContent = on?'⤡':'⤢';
-      if(t) t.textContent = on?'Exit full screen':'Full screen';
-      b.setAttribute('aria-pressed', on?'true':'false');
-      b.title = on ? 'Exit full screen (ESC, or press F) — nothing can be sent from here; exit first, then press GO'
-                   : 'Full screen (or press F) — the preview at native size, interactive. ESC exits. Nothing can be sent from full screen.';
-      b.setAttribute('aria-label', b.title);
+  // ── Plan 0522 P7.2 — FULL SCREEN ── now Plan 0695 Part B — VIA THE ONE VIEWPORT ────────────
+  // The behaviour is UNCHANGED and t17–t22 still hold it: a `.fullscreen` class on #preview, the
+  // same class on #pvdock (which owns the stacking context — see the CSS note), the button's glyph
+  // and title flipping, and applyPreviewState() recomputed on every transition.
+  //
+  // What changed is WHERE it lives. Part C wants the identical gesture for a shared screen, and a
+  // second `.fullscreen` toggler is how two maximise implementations start disagreeing about what
+  // "maximised" means. So the toggle itself moved to lib/viewport.js and this page CALLS it. The
+  // button is ADOPTED, not rebuilt: #btn-pvfull is the element 0522 t17–t22 click, and ⛔ it must
+  // not be deleted, renamed or reimplemented.
+  //
+  // ⛔ Still a CLASS, never requestFullscreen(): that needs a user gesture (so __gm.setFullscreen
+  // could not drive it), is refused inside our `allow-scripts`-only sandbox, and differs on iOS.
+  //
+  // ⭐ NO onEnd IS PASSED, and that is deliberate. Bruce: "END SHARING doesn't apply" to the
+  // preview. Expressed as an absent callback, the End control is never CREATED — there is no
+  // hidden button and no flag anyone can set wrongly (0695 acceptance 6).
+  var pvView = mountViewport($('preview'), {
+    title: 'Live preview',
+    control: $('btn-pvfull'),          // ADOPT the existing button — see above
+    alsoToggle: [$('pvdock')],
+    restoreOn: ['esc','button'],
+    onChange: function(on){
+      fsOpen = on;
+      // Leaving re-applies the paused/degraded policy that full screen was suspending; entering
+      // clears a stale note. Either way the state is recomputed, never assumed. `fsOpen` is set
+      // FIRST because applyPreviewState() reads it.
+      applyPreviewState();
     }
-    // Leaving re-applies the paused/degraded policy that full screen was suspending; entering
-    // clears a stale note. Either way the state is recomputed, never assumed.
-    applyPreviewState();
-  }
-  $('btn-pvfull').onclick=function(e){ e.stopPropagation(); setFullscreen(!fsOpen); };
+  });
+  // One flag, one function, unchanged as a name: the ESC key, the toggle button, the F shortcut
+  // and the __gm test hook all still route through here.
+  function setFullscreen(on){ if(on) pvView.maximise(); else pvView.restore(); }
 
   // ── Plan 0522 P7.1 RED TEAM (R5) — REHEARSAL RESULTS ARE DROPPED, DELIBERATELY ─────────────
   // lib/bridge.js posts every component result to `parent`. From the preview iframe that parent
@@ -1747,6 +1757,11 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     // directions, and R9 is not weakened by it: F ships nothing.
     if(e.key==='f'||e.key==='F'){ setFullscreen(!fsOpen); e.preventDefault(); return; }
     if(fsOpen){
+      // ⚠ Escape no longer REACHES this branch: lib/viewport.js takes it in the CAPTURE phase so
+      // the topmost layer is the only one that closes (0695 acceptance 7) and this page's own
+      // Escape chain — attendance → config → STOP — is not fired underneath it. Kept as the
+      // documented fallback for any viewport that declines ESC, and because the swallow below
+      // must still swallow every OTHER key while full screen is open.
       if(e.key==='Escape'){ setFullscreen(false); e.preventDefault(); }
       return;
     }
@@ -2154,7 +2169,11 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
     queueModule:queueModule,   // P11 t31 hook: a series naming a module the lifecycle filter hides
     staged:function(){return staged;}, lastSent:function(){return lastSent;},   // P6 t14/t15/t16 hooks: the armed candidate + the last delivery receipt
     fullscreen:function(){return fsOpen;}, setFullscreen:setFullscreen,   // P7.2 t17/t18/t19 hooks
-    previewCued:function(){return pvCued;},   // 0695 A2 hook: has the one-time cue already fired?
+    // Plan 0695 Part B hooks. `viewportMount` is the SHARED implementation itself, handed to the
+    // tests so acceptance 6 ("no onEnd ⇒ no End control in the DOM") can be asserted against a
+    // real DOM on a real page rather than against a stub that could agree with a wrong module.
+    previewViewport:function(){return pvView;}, viewportMount:mountViewport,
+    viewportsOpen:viewportsOpen, previewCued:function(){return pvCued;},
     previewDrops:function(){return pvDrops.slice();},   // P7.1 t21 hook: results the preview posted and this page DROPPED
     degrade:function(b){ degraded=!!b; applyPreviewState(); } };   // MON-2 test hook: force the degraded state without real CPU load
 })();
