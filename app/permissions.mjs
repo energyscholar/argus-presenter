@@ -25,6 +25,23 @@ export const DEFAULT_POLICY = [
   { glob: 'crud/*/items', roles: ['participant'], verbs: ['add', 'remove'] },              // collection-level
   { glob: 'crud/*/items/*', roles: ['participant'], verbs: ['set', 'merge', 'lock', 'unlock'] }, // item-level
   { glob: 'chat', roles: ['participant'], verbs: ['add'] },
+  /*
+   * ⭐ Plan 0691 — THE SHARED SLICE. Every rule above grants a participant write to something
+   * the SERVER owns the shape of: their own vote, their own answer, a marker, a CRUD row. There
+   * was no path where an AUTHOR could put a shared value of their own devising, so an authored
+   * page could render a control and had nowhere legal to store what it controlled. A bound
+   * <select> was denied by default-deny and the page silently did nothing.
+   *
+   * `shared/**` is that space, and it is deliberately WIDE: participants may set/merge/add/
+   * remove/clear anything under it. That is the point — it is the collaborative surface.
+   *
+   * ⛔ WHAT KEEPS THIS SAFE IS THE PREFIX, NOT THE VERBS. Nothing the server relies on lives
+   * under `shared/`: not identity, not roles, not caps, not polls, not the module. A participant
+   * with a console can already send any op they like, so the boundary that matters is which
+   * PATHS are reachable — and this adds exactly one subtree that the server never reads back as
+   * authority. Do NOT move server-authoritative state under this prefix.
+   */
+  { glob: 'shared/**', roles: ['participant'], verbs: ['set', 'merge', 'add', 'remove', 'clear', 'lock', 'unlock'] },
 ];
 
 // Plan 0471 C3 — READ is now DEFAULT-DENY with a prefix/self ALLOW-LIST (was default-open,
@@ -45,6 +62,9 @@ export const DEFAULT_READ_POLICY = [
   // ⚠ WRITE is unchanged (add-only, below). The private aside is `/gm …`, which the server
   // diverts to the `gm` slice and therefore never lands here at all.
   { glob: 'chat', roles: ALL },
+  // Plan 0691 — the shared authoring slice is world-readable by design: it exists so several
+  // people can see the same control. A prefix rule, so every descendant is covered.
+  { glob: 'shared', roles: ALL },
   // Plan 0537 P3.2 — the roll log. READ by everyone: a roll nobody else can see is not a roll, it
   // is a claim. ⛔ There is deliberately NO participant WRITE rule below — the SERVER rolls and the
   // server is the only writer, so nothing in this slice was asserted by a client.
@@ -65,6 +85,22 @@ export const DEFAULT_READ_POLICY = [
 function matchGlob(glob, path, actor) {
   const gs = glob.split('/');
   const ps = path.split('/');
+  /*
+   * Plan 0691 — a trailing '**' matches THIS SEGMENT AND ANY DEPTH BELOW IT. Every other glob
+   * keeps the exact-segment-count rule, which is what makes a write rule name one precise op
+   * target. '**' is legal only as the LAST segment: a middle '**' would make the count check
+   * meaningless for the segments after it, and no rule needs it.
+   */
+  if (gs[gs.length - 1] === '**') {
+    if (ps.length < gs.length) return false;                    // must reach at least the prefix
+    for (let i = 0; i < gs.length - 1; i++) {
+      const g = gs[i];
+      if (g === '*') continue;
+      if (g === '{self}') { if (ps[i] !== (actor && actor.userId)) return false; continue; }
+      if (g !== ps[i]) return false;
+    }
+    return true;
+  }
   if (gs.length !== ps.length) return false;
   for (let i = 0; i < gs.length; i++) {
     const g = gs[i];

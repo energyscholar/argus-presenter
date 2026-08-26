@@ -12,7 +12,7 @@
  * path-addressed write can never pollute Object.prototype.
  */
 
-import { createPermissions } from './permissions.mjs';
+import { createPermissions, OVERRIDE_ROLES as OVERRIDE } from './permissions.mjs';
 
 // Reserved keys that could pollute the prototype chain (S4).
 const BAD_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
@@ -181,14 +181,39 @@ export function createStore({ permissions, onOp = null } = {}) {
         _delPath(p);
         return { [p]: null };                        // null = removed
       }
+      /*
+       * ⛔⛔ LOCKING A SCALAR USED TO DESTROY IT.
+       *
+       * The lock owner is written as a CHILD of the locked path — `<path>/lock`. That is fine for a
+       * record: `items/3` is an object, and it gains a `lock` key beside its other fields. Applied
+       * to a LEAF it is a catastrophe: `shared/rec/name` holding the string "Kestrel" became the
+       * object {lock:"ann"} and **the value was gone**. Worse, the next legitimate write by the
+       * holder replaced the object with a string again, silently dropping the lock — so the field
+       * ended up both corrupted AND unlocked, with no error at any point.
+       *
+       * That made per-field locking unusable, which is the case that actually matters: two crew
+       * editing different fields of one record is the normal situation, not the exotic one.
+       *
+       * ⇒ A lock on a leaf lives OUT of the value tree, in a sibling map `<parent>/_locks/<leaf>`.
+       *   A lock on a record keeps `<path>/lock` exactly as before, so every existing caller,
+       *   test and UI (crud reads `item.lock`) is byte-for-byte unaffected.
+       */
       case 'lock': {
         const owner = (value && value.by) || actorId || null;
-        _setPath(path + '/lock', owner);
-        return { [path + '/lock']: owner };
+        const cur = get(path);
+        const isRecord = cur === undefined || (cur && typeof cur === 'object' && !Array.isArray(cur));
+        if (isRecord) { _setPath(path + '/lock', owner); return { [path + '/lock']: owner }; }
+        const lp = leafLockPath(path);
+        _setPath(lp, owner);
+        return { [lp]: owner };
       }
       case 'unlock': {
-        _delPath(path + '/lock');
-        return { [path + '/lock']: null };
+        const cur = get(path);
+        const isRecord = cur === undefined || (cur && typeof cur === 'object' && !Array.isArray(cur));
+        if (isRecord && get(path + '/lock') !== undefined) { _delPath(path + '/lock'); return { [path + '/lock']: null }; }
+        const lp = leafLockPath(path);
+        _delPath(lp);
+        return { [lp]: null };
       }
       case 'clear': {
         _setPath(path, nobj());
@@ -212,6 +237,27 @@ export function createStore({ permissions, onOp = null } = {}) {
     if (!eph && op.opId != null && seenOps.has(op.opId)) return { duplicate: true, opId: op.opId }; // B6 dedup
     const who = actor || { role: 'participant', userId: null };
     if (!perms.can(who, op)) return null;                // S3 permission
+    /*
+     * ⭐⭐ Plan 0691 — THE LOCK IS NOW ENFORCED. It was not.
+     *
+     * `lock` has always written `<path>/lock = ownerId`, and NOTHING anywhere read it back. Every
+     * write verb ignored it completely, so two people editing the same field both succeeded and
+     * the later one silently won. The lock was a label on a door with no bolt behind it: an app
+     * could show a padlock, honestly believe it held, and lose a crew member's edit anyway.
+     *
+     * A write is refused if the target — or any ancestor of it — carries a lock held by SOMEONE
+     * ELSE. Refusal returns null, the same contract every other denial uses, so no caller changes.
+     *
+     * ⚠ `{ force: true }` breaks a lock deliberately, and is available only to override roles
+     *   (presenter/ai/system). A GM must be able to recover a field abandoned mid-edit by someone
+     *   who closed their laptop — but it has to be an ACT, not a silent side effect of being GM.
+     *   Without it a controller is bound by another user's lock exactly like anyone else.
+     */
+    const lockHolder = lockOwnerFor(op.path);
+    if (lockHolder && lockHolder !== who.userId) {
+      const forcing = op.value && op.value.force === true && OVERRIDE.has(who.role);
+      if (!forcing) return null;
+    }
     const diff = reduce(op, who.userId);
     if (!diff) return null;
     const by = who.userId || null;
@@ -228,6 +274,26 @@ export function createStore({ permissions, onOp = null } = {}) {
       if (seenOrder.length > SEEN_MAX) seenOps.delete(seenOrder.shift());
     }
     return { diff, by, path: op.path, verb: op.verb, version };
+  }
+
+  /**
+   * The lock owner governing `path`: the lock ON it, else the nearest ancestor's lock.
+   * An ancestor lock covers its whole subtree — locking a record protects all of its fields,
+   * which is what a caller locking `ship/systems/drive` means and expects.
+   * Returns an ownerId, or null when nothing on the chain is locked.
+   */
+  function lockOwnerFor(path) {
+    const parts = String(path).split('/').filter(Boolean);
+    for (let n = parts.length; n > 0; n--) {
+      const base = parts.slice(0, n).join('/');
+      if (base.endsWith('/lock') || base === 'lock') continue;   // the lock field itself is not locked
+      if (parts[n - 1] === '_locks' || parts.includes('_locks')) continue;   // the lock map is not lockable
+      const rec = get(base + '/lock');                            // record-style lock
+      if (typeof rec === 'string' && rec) return rec;
+      const leaf = get(leafLockPath(base));                       // leaf-style lock
+      if (typeof leaf === 'string' && leaf) return leaf;
+    }
+    return null;
   }
 
   // ---- op-log + snapshot (B5, Memento) ----
@@ -252,10 +318,17 @@ export function createStore({ permissions, onOp = null } = {}) {
   /** Memento: an actor-filtered plain-object snapshot + the current version. */
   function snapshot(actor) { return { version: _version, state: filterNode(state, '', actor) }; }
 
-  return { state, get, _setPath, _delPath, reduce, apply, perms, version, oplogSince, snapshot };
+  return { state, get, _setPath, _delPath, reduce, apply, perms, version, oplogSince, snapshot, lockOwnerFor };
 }
 
 // --- helpers ---
+/** Where a LEAF's lock lives: a sibling map, so the value itself is never overwritten. */
+function leafLockPath(path) {
+  const parts = String(path).split('/').filter(Boolean);
+  const leaf = parts.pop();
+  return (parts.length ? parts.join('/') + '/' : '') + '_locks/' + leaf;
+}
+
 const VERBS = new Set(['set', 'merge', 'add', 'remove', 'lock', 'unlock', 'clear']);
 export function isVerb(v) { return VERBS.has(v); }
 

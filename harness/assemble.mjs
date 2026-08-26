@@ -111,7 +111,22 @@ ${comp_css}
 </head>
 <body class="${composed ? 'ap-page-body' : 'ap-root-body'}">
 ${label}
-${bodyInner}
+<!--
+  ⛔⛔ THE LIBRARY LOADS BEFORE THE AUTHORED BODY, AND THAT ORDER IS LOAD-BEARING.
+
+  These six scripts used to sit AFTER ${bodyInner}. Scripts execute in document order, so an
+  authored page's own <script> ran with Argus UNDEFINED and threw on its first line - silently,
+  because an uncaught error in a sandboxed frame reaches no console anyone is reading. The page
+  rendered its static markup perfectly and did nothing, which reads as "composition is broken"
+  rather than "your script died before the bridge existed".
+
+  Worse, it FAILED PARTLY: a handler registered before the throwing line stayed registered, so a
+  page could come alive later on the first state event and look merely "slow to start".
+
+  All six are definition-only — they register globals and touch no DOM at load — so hoisting them
+  above the body is safe, and it means an author may use Argus.op / Argus.state / Argus.bind
+  inline, at parse time, the way anyone would expect to.
+-->
 <script>${bridge_js}</script>
 <script>${log_js}</script>
 <script>${a11y_js}</script>
@@ -119,8 +134,26 @@ ${bodyInner}
 <script>${breakdown_js}</script>
 <script>${comp_js}</script>
 <script>
+/* ⭐ An authored script that throws must SAY SO. Errors inside an opaque-origin sandboxed frame
+   surface nowhere by default, so the page just sits there looking finished. This collects them
+   and the bootstrap below renders them in the same banner unresolved mounts use. */
+window.__apErrors = [];
+window.addEventListener('error', function (e) {
+  window.__apErrors.push((e.message || 'script error') + (e.lineno ? ' (line ' + e.lineno + ')' : ''));
+});
+/* ⭐ IDENTITY BEFORE THE BODY, for the same reason the library loads before the body.
+   Argus.configure() used to run only in the bootstrap AFTER the authored markup, so an authored
+   script calling Argus.identity() at parse time got {userId:null} and cached it. A page that
+   seats people, or labels a control with who you are, then had every viewer believing it was the
+   same anonymous user — four browsers all claiming one seat. Configure is idempotent; the
+   bootstrap below still calls it, and this only makes the value available EARLIER. */
+window.__AP_OPTS = ${JSON.stringify(opts)};
+try { if (window.Argus) Argus.configure({ channel: __AP_OPTS.channel||null, contentId: __AP_OPTS.contentId||null, userId: __AP_OPTS.userId||null, userName: __AP_OPTS.userName||null }); } catch(e){}
+</script>
+${bodyInner}
+<script>
 (function(){
-  var OPTS = ${JSON.stringify(opts)};
+  var OPTS = window.__AP_OPTS || ${JSON.stringify(opts)};
   try { if (window.Argus) Argus.configure({ channel: OPTS.channel||null, contentId: OPTS.contentId||null, userId: OPTS.userId||null, userName: OPTS.userName||null }); } catch(e){}
 ${composed ? `
   /* ⭐ Plan 0689 R5 — MOUNT COMPONENTS INTO AN AUTHORED PAGE.
@@ -153,13 +186,22 @@ ${composed ? `
     if (raw) { try { o = JSON.parse(raw); } catch(e){ problems.push('data-ap-opts on <' + el.tagName.toLowerCase() + '> is not valid JSON'); } }
     mountInto(el, name, o, 'data-ap-component');
   });
+  if (window.__apErrors && window.__apErrors.length)
+    problems = problems.concat(window.__apErrors.map(function (m) { return 'page script error: ' + m; }));
   if (problems.length) {
     var box = document.createElement('div');
     box.className = 'ap-mount-error';
     box.textContent = 'Argus Presenter — ' + problems.length + ' component mount(s) did not resolve: ' + problems.join(' · ');
     page.insertBefore(box, page.firstChild);
   }
-  if (window.Argus) Argus.ready(OPTS.promptId||null, { page: true, mounted: MOUNTS.length, problems: problems.length });
+  /* ⭐ Plan 0691 — BIND AUTHORED FORM CONTROLS TO SHARED STATE.
+   *  \`<select data-ap-bind="shared/course">\` and it is shared: seeded from current state, an
+   *  edit writes an op, every other viewer's copy follows. No component, no script in the page.
+   *  Runs AFTER mounts so a bound control inside a mounted component is picked up too.
+   *  ⛔ The store seeds it only if the viewer may READ the path — reads are default-deny. */
+  var bound = 0;
+  try { if (window.Argus && Argus.bindAll) { Argus.bindAll(page); bound = page.querySelectorAll('[data-ap-bind]').length; } } catch(e){ problems.push('bindAll failed: ' + e.message); }
+  if (window.Argus) Argus.ready(OPTS.promptId||null, { page: true, mounted: MOUNTS.length, bound: bound, problems: problems.length });
 ` : `
   if (window.ApComponents && ApComponents.has(${JSON.stringify(component)})) {
     ApComponents.mount(${JSON.stringify(component)}, document.getElementById('ap-mount'), OPTS);

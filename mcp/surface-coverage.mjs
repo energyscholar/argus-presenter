@@ -137,6 +137,20 @@ export const API_COVERAGE = {
    * shapes back, `op` still through the permission layer. The correct mitigation is VISIBILITY,
    * not prohibition — the same reasoning the microphone shipped under. */
   pushContent:         { tool: 'presenter_push_content' },
+  /*
+   * Plan 0691 — the shared state machine's WRITE half. Deliberately NOT exposed as tools yet.
+   *
+   * An agent that could set any store path at will could write another user's vote,
+   * a seat, a cap, or a plugin's authority slice — every one of which the permission table exists
+   * to gate, and all of which `apply` bypasses by acting as `system`. The safe surface is a tool
+   * scoped to the `shared/**` slice with a participant actor, which is a design decision, not a
+   * rename; until that exists, saying no here is the honest answer.
+   *
+   * ⚠ Not deploymentOnly: these are live session capabilities, reachable in-process by the
+   *   server, plugins and tests. Only the AGENT-facing exposure is declined.
+   */
+  apply:               { declined: 'STORE WRITE + BROADCAST, acting as `system`, which OVERRIDES the whole permission table (app/permissions.mjs). An agent-settable arbitrary path could write another user\'s vote, a seat, a capability or a plugin\'s authority slice. Expose later as a tool scoped to `shared/**` with a participant actor — that is a new tool, not a wrapper.', deploymentOnly: false },
+  set:                 { declined: 'Convenience wrapper over `apply` (one path, verb set). Declined for exactly the same reason and on the same terms.', deploymentOnly: false },
   /* Plan 0689 R5 — the COMPOSITION half, and the reason the decline mattered so much: it stranded
    * sixteen components that exist to be combined with authored HTML rather than to replace it.
    * Assembles the component bundle around the author's markup and stamps it PER VIEWER, so a

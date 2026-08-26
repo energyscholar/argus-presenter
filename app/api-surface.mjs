@@ -48,6 +48,28 @@ export function createApiSurface(M) {
     profile: () => M.ACTIVE_PROFILE,
     presence: M.presence,
     on: (ev, cb) => { if (M.listeners[ev]) M.listeners[ev].push(cb); },
+    /*
+     * ⭐⭐ Plan 0691 — WRITE TO THE SHARED STATE MACHINE, AND TELL EVERYONE.
+     *
+     * The surface had 94 members and not one of them did this. `store.apply` writes silently —
+     * no diff is broadcast, so no connected client ever hears, and a value set that way is
+     * invisible until the next full snapshot. `serverApply` (apply + broadcastDiff) existed but
+     * stayed internal, reachable only as a side effect of openPoll/setModule. So the server
+     * could not move a shared value on purpose, only as a by-product of doing something else.
+     *
+     * Acts as `system` by default, which OVERRIDES the permission table (app/permissions.mjs) —
+     * correct for the server's own writes, and the reason `actor` is a parameter: pass a real
+     * {userId, role} to have a write CHECKED as that participant.
+     *
+     * Returns the store's result ({ diff, version, ... }) or { denied:true } if a supplied actor
+     * was refused — never throws on a denial, so a caller can drive a permission test.
+     */
+    apply(op, actor) {
+      const res = M.serverApply(op, actor || { userId: 'server', role: 'system' });
+      return res || { denied: true };
+    },
+    /** Convenience for the overwhelmingly common case: set one path, broadcast, done. */
+    set(path, value, actor) { return M.serverApply({ path, verb: 'set', value }, actor || { userId: 'server', role: 'system' }); },
     pushContent(target, html, contentId) {
         M.setDisplay(target, { kind: 'content', html, contentId });
         let n = 0;   // deliveries, not address-book entries — see send()
