@@ -35,21 +35,38 @@ try {
   });
   const snap = () => readAll(F, probe);
   await wait(600);
-
-  /* Seating is DERIVED from per-user claims — see the note in page.html. Derive it here with the
-     same rule; if these two ever disagree, THAT is the bug worth finding. */
-  const claims = server.store.get('shared/ttt/claims') || {};
-  const order = Object.keys(claims).filter((k) => claims[k])
-    .map((k) => ({ id: k, ts: claims[k].ts || 0 }))
-    .sort((a, b) => a.ts - b.ts || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-  const seats = { X: order[0] && order[0].id, O: order[1] && order[1].id };
-  const observers = Object.keys(P).filter((k) => k !== seats.X && k !== seats.O);
-  console.log(`seats ${JSON.stringify(seats)}  observers ${observers.join(',')}`);
-
   const seated = await snap();
-  ok('exactly two seats are taken', !!seats.X && !!seats.O && seats.X !== seats.O, JSON.stringify(seats));
-  ok('an observer has no enabled cell', seated[observers[0]].enabled === 0, 'enabled=' + seated[observers[0]].enabled);
-  ok('X may move, O may not', seated[seats.X].enabled === 9 && seated[seats.O].enabled === 0);
+
+  /*
+   * ⭐ A SEAT IS A SINGLE-OCCUPANCY STATION AND THE LOCK OWNER *IS* THE OCCUPANT.
+   * Nobody is auto-seated: an observer presses Play X / Play O to take one, and the SERVER
+   * refuses a second claimant rather than the UI merely hiding the button.
+   */
+  const seatOwner = (m) => server.store.lockOwnerFor('shared/ttt/seats/' + m);
+  ok('nobody is auto-seated', !seatOwner('X') && !seatOwner('O'));
+  ok('an observer has no enabled cell', seated.ann.enabled === 0, 'enabled=' + seated.ann.enabled);
+
+  await P.ann.bringToFront();
+  await act(F.ann, '#join-X', (el) => el.click());
+  await wait(700);
+  ok('Ann took X', seatOwner('X') === 'ann', JSON.stringify(seatOwner('X')));
+
+  /* The decisive check: force a second claim past the disabled attribute. */
+  await P.ben.bringToFront();
+  await act(F.ben, '#join-X', (el) => { el.disabled = false; el.click(); });
+  await wait(700);
+  ok('the SERVER refused the second claimant', seatOwner('X') === 'ann', JSON.stringify(seatOwner('X')));
+
+  await act(F.ben, '#join-O', (el) => el.click());
+  await wait(700);
+  ok('Ben took O', seatOwner('O') === 'ben', JSON.stringify(seatOwner('O')));
+
+  const seats = { X: seatOwner('X'), O: seatOwner('O') };
+  const observers = Object.keys(P).filter((k) => k !== seats.X && k !== seats.O);
+  const now = await snap();
+  ok('X may move once both seats are taken', now[seats.X].enabled === 9, 'enabled=' + now[seats.X].enabled);
+  ok('O may not, it is not their turn', now[seats.O].enabled === 0);
+  ok('observers still cannot move', observers.every((k) => now[k].enabled === 0));
   for (const k of Object.keys(P)) await shot(P[k], `ttt-1-seated-${k}.png`);
 
   for (const [who, i] of [[seats.X, 0], [seats.O, 4], [seats.X, 1], [seats.O, 5], [seats.X, 2]]) {
@@ -79,7 +96,17 @@ try {
   ok('an observer cannot write a cell even with the control forced open',
      ((server.store.get('shared/ttt/cells') || {})[8]) == null);
 
-  await act(F[seats.X], '#reset', (el) => el.click());
+  /* Leaving frees the station for whoever is watching. */
+  await P[seats.X].bringToFront();
+  await act(F[seats.X], '#join-X', (el) => el.click());
+  await wait(700);
+  ok('leaving released the seat', seatOwner('X') == null, JSON.stringify(seatOwner('X')));
+  await P[observers[0]].bringToFront();
+  await act(F[observers[0]], '#join-X', (el) => el.click());
+  await wait(700);
+  ok('an observer could then join', seatOwner('X') === observers[0], JSON.stringify(seatOwner('X')));
+
+  await act(F[observers[0]], '#reset', (el) => el.click());
   await wait(800);
   const post = await snap();
   ok('reset clears the board for everyone',

@@ -2,6 +2,19 @@
   <h1>Tic&nbsp;Tac&nbsp;Toe</h1>
   <p class="who" id="who">…</p>
 
+  <div class="stations">
+    <div class="stn" id="stn-X">
+      <span class="mk mX">X</span>
+      <span class="occ" id="occ-X">free</span>
+      <button class="join" id="join-X" type="button">Play X</button>
+    </div>
+    <div class="stn" id="stn-O">
+      <span class="mk mO">O</span>
+      <span class="occ" id="occ-O">free</span>
+      <button class="join" id="join-O" type="button">Play O</button>
+    </div>
+  </div>
+
   <div class="board" id="board">
     <button class="cell" data-i="0"></button><button class="cell" data-i="1"></button><button class="cell" data-i="2"></button>
     <button class="cell" data-i="3"></button><button class="cell" data-i="4"></button><button class="cell" data-i="5"></button>
@@ -15,17 +28,15 @@
 
 <script>
 /*
- * TicTacToe — entirely scripted, standalone, ZERO LLM at runtime (Bruce's spec).
+ * TicTacToe — entirely scripted, standalone, ZERO LLM at runtime.
  * The board IS the shared state machine: shared/ttt/{cells,turn,seats,winner}.
  * Every client runs this identical logic; the server is the single source of truth.
- *
- * ⛔ First two seats to arrive PLAY; everyone else OBSERVES. A seat is claimed by writing
- *   your own userId — last-write-wins is fine because a claim is idempotent per user.
  */
 (function () {
   var ME = (Argus.identity() || {}).userId || 'anon';
   var MYNAME = (Argus.identity() || {}).userName || ME;
   var WINS = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
+  var MARKS = ['X', 'O'];
 
   var boardEl = document.getElementById('board');
   var cells = [].slice.call(boardEl.querySelectorAll('.cell'));
@@ -34,33 +45,32 @@
   function cellsOf(s) { return s.cells || {}; }
 
   /*
-   * ⛔⛔ SEATING IS DERIVED, NEVER WRITTEN TO A CONTENDED KEY.
+   * A SEAT IS A SINGLE-OCCUPANCY STATION, AND THE LOCK OWNER *IS* THE OCCUPANT.
    *
-   * The first version had each client read shared/ttt/seats and write itself into the first free
-   * one. That is a read-modify-write on a key several clients touch at once, and it raced exactly
-   * as you would expect once four browsers started together: everyone reads {} at the same instant,
-   * everyone writes X, last-write-wins picks one — and the losers, still holding the pre-write
-   * snapshot, then see X taken by someone else and write themselves into O. One run produced
-   * {X:"ann", O:"ann"}: a single player holding both seats, and no error anywhere.
+   * There is no seat VALUE to write and therefore no claim to race. Joining is taking the store
+   * lock on shared/ttt/seats/<mark>; Argus.lockOwner of that path answers "who is sitting here".
+   * Two people pressing Play X in the same instant cannot both win -- the server applies the first
+   * lock and REFUSES the second (app/state.mjs), so single occupancy is enforced where it is
+   * decided rather than merely displayed. Leaving is unlock, which only the holder may do.
    *
-   * It also passed the first time I ran it. A race that resolves favourably is not a pass.
-   *
-   * ⇒ Each client writes ONLY ITS OWN key — shared/ttt/claims/<userId> — which nobody else ever
-   *   touches, so there is nothing to contend. Seating is then COMPUTED from the claim set by a
-   *   rule every client evaluates identically (earliest claim wins; userId breaks a tie). Same
-   *   input, same function, same answer on every screen, with no coordination at all.
+   * This replaces auto-seating, which took the first two arrivals whether they wanted to play or
+   * not and gave an observer no way in.
    */
-  function claimsOf(s) { return s.claims || {}; }
-  function seatsOf(s) {
-    var c = claimsOf(s), ids = [];
-    for (var k in c) if (c[k]) ids.push({ id: k, ts: c[k].ts || 0 });
-    ids.sort(function (a, b) { return a.ts - b.ts || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0); });
-    var out = {};
-    if (ids[0]) out.X = ids[0].id;
-    if (ids[1]) out.O = ids[1].id;
-    return out;
+  function seatPath(m) { return 'shared/ttt/seats/' + m; }
+  function occupant(m) { return Argus.lockOwner(seatPath(m)); }
+  function nameOf(id) { return id ? (Argus.state('shared/ttt/names/' + id) || id) : null; }
+  function mark() { return occupant('X') === ME ? 'X' : occupant('O') === ME ? 'O' : null; }
+
+  /* Publish my display name under MY OWN key -- uncontended, so it can never race. */
+  function publishName() {
+    if (Argus.state('shared/ttt/names/' + ME) !== MYNAME) Argus.op('shared/ttt/names/' + ME, 'set', MYNAME);
   }
-  function mark(s) { var st = seatsOf(s); if (st.X === ME) return 'X'; if (st.O === ME) return 'O'; return null; }
+  function join(m) {
+    if (occupant(m) || mark()) return;          // taken, or I am already seated
+    publishName();
+    Argus.op(seatPath(m), 'lock', {});          // the SERVER decides who actually gets it
+  }
+  function leave(m) { if (occupant(m) === ME) Argus.op(seatPath(m), 'unlock', null); }
 
   function winner(c) {
     for (var i = 0; i < WINS.length; i++) {
@@ -71,41 +81,44 @@
     return n === 9 ? { mark: 'draw', line: [] } : null;
   }
 
-  /* Register interest, once. Writing only my own key means this can never contend with anyone. */
-  var claimed = false;
-  function claimSeat() {
-    if (claimed) return;
-    claimed = true;
-    Argus.op('shared/ttt/claims/' + ME, 'set', { ts: Date.now(), name: MYNAME });
-  }
-
   function render() {
-    var s = S(), c = cellsOf(s), st = seatsOf(s), my = mark(s);
+    var s = S(), c = cellsOf(s), my = mark();
     var w = s.winner || null;
     var turn = s.turn || 'X';
+    var bothSeated = !!occupant('X') && !!occupant('O');
 
     for (var i = 0; i < 9; i++) {
       var v = c[i] || '';
       cells[i].textContent = v;
       cells[i].className = 'cell' + (v ? ' taken m' + v : '') +
         (w && w.line && w.line.indexOf(i) >= 0 ? ' win' : '');
-      cells[i].disabled = !!v || !!w || !my || turn !== my;
+      cells[i].disabled = !!v || !!w || !my || !bothSeated || turn !== my;
     }
 
     document.getElementById('who').textContent = my
-      ? 'You are ' + MYNAME + ' — you are ' + my
-      : 'You are ' + MYNAME + ' — observing';
+      ? 'You are ' + MYNAME + ' \u2014 ' + my
+      : 'You are ' + MYNAME + ' \u2014 observing';
     document.getElementById('who').className = 'who' + (my ? ' seated' : ' observer');
+
+    /* The station strip: who is sitting, and the one control that changes it. */
+    for (var si = 0; si < MARKS.length; si++) {
+      var m = MARKS[si], o = occupant(m), mine = o === ME;
+      var occEl = document.getElementById('occ-' + m);
+      occEl.textContent = o ? nameOf(o) : 'free';
+      occEl.className = 'occ' + (o ? (mine ? ' mine' : ' taken') : '');
+      var b = document.getElementById('join-' + m);
+      b.textContent = mine ? 'Leave' : 'Play ' + m;
+      b.disabled = (!!o && !mine) || (!o && !!my);   // held by someone else, or I sit elsewhere
+      document.getElementById('stn-' + m).className = 'stn' + (mine ? ' mine' : (o ? ' taken' : ''));
+    }
 
     var status;
     if (w) status = w.mark === 'draw' ? 'Draw.' : (w.mark + ' wins.');
-    else if (!st.X || !st.O) status = 'Waiting for a second participant…';
+    else if (!bothSeated) status = 'Waiting for both seats to be taken\u2026';
     else status = (turn === my ? 'Your move (' + turn + ')' : turn + ' to move');
     document.getElementById('status').textContent = status;
     document.getElementById('status').className = 'status' + (w ? ' done' : '');
-
-    document.getElementById('seats').textContent =
-      'X: ' + (st.X || '—') + '   ·   O: ' + (st.O || '—');
+    document.getElementById('seats').textContent = '';
     document.body.setAttribute('data-turn', w ? 'done' : turn);
   }
 
@@ -113,29 +126,34 @@
     var b = e.target.closest ? e.target.closest('.cell') : null;
     if (!b || b.disabled) return;
     var i = b.getAttribute('data-i');
-    var s = S(), my = mark(s);
+    var s = S(), my = mark();
     if (!my || (s.turn || 'X') !== my || (cellsOf(s)[i]) || s.winner) return;
 
-    /* Optimistic-free: write and let the server's diff paint. One op per move. */
     Argus.op('shared/ttt/cells/' + i, 'set', my);
     Argus.op('shared/ttt/turn', 'set', my === 'X' ? 'O' : 'X');
 
-    /* Win check runs on every client off the same state; whoever gets there first writes it.
-       Idempotent: they all compute the identical result from the identical board. */
     var next = {}; for (var k in cellsOf(s)) next[k] = cellsOf(s)[k]; next[i] = my;
     var w = winner(next);
     if (w) Argus.op('shared/ttt/winner', 'set', w);
   });
 
+  for (var mi = 0; mi < MARKS.length; mi++) {
+    (function (m) {
+      document.getElementById('join-' + m).addEventListener('click', function () {
+        if (occupant(m) === ME) leave(m); else join(m);
+      });
+    })(MARKS[mi]);
+  }
+
   document.getElementById('reset').addEventListener('click', function () {
     Argus.op('shared/ttt/cells', 'clear');
     Argus.op('shared/ttt/winner', 'set', null);
     Argus.op('shared/ttt/turn', 'set', 'X');
-    /* ⚠ claims are NOT cleared — a new game keeps the same two players at the table. */
+    /* seats are NOT released -- a new game keeps the same two people at the table. */
   });
 
-  window.addEventListener('argus-presenter:state', function () { claimSeat(); render(); });
-  claimSeat(); render();
+  window.addEventListener('argus-presenter:state', render);
+  render();
 })();
 </script>
 
@@ -158,6 +176,20 @@
   .cell:disabled { cursor:default; }
   .cell.mX { color:#6fb2ff; } .cell.mO { color:#ffb36f; }
   .cell.win { background:#1c3328; border-color:#2f6b4d; }
+  .stations { display:flex; gap:8px; justify-content:center; margin:0 0 16px; }
+  .stn { display:flex; align-items:center; gap:8px; padding:7px 10px; border:1px solid #262a33;
+         border-radius:8px; background:#141821; min-width:150px; }
+  .stn.mine { border-color:#2f6b4d; background:#14211b; }
+  .stn.taken { opacity:.72; }
+  .mk { font:700 17px/1 ui-monospace,monospace; width:16px; text-align:center; }
+  .mk.mX { color:#6fb2ff; } .mk.mO { color:#ffb36f; }
+  .occ { flex:1; text-align:left; font-size:12px; color:#6b7280; overflow:hidden;
+         text-overflow:ellipsis; white-space:nowrap; }
+  .occ.mine { color:#7fd1a6; } .occ.taken { color:#b6bcc7; }
+  .join { background:#1b2029; color:#dfe2e8; border:1px solid #333a45; border-radius:6px;
+          padding:4px 10px; font:12px inherit; cursor:pointer; }
+  .join:hover:not(:disabled) { border-color:#4a5260; }
+  .join:disabled { opacity:.35; cursor:not-allowed; }
   .status { margin:16px 0 4px; font-size:15px; min-height:22px; }
   .status.done { color:#7fd1a6; font-weight:600; }
   .seats { font: 12px/1.4 ui-monospace, monospace; color:#666b76; margin-bottom:14px; }
