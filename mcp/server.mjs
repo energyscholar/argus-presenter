@@ -49,8 +49,8 @@ for (const t of activeTools()) {
  *   2026-08-19: a second client answered "presenter not started" while a presenter was demonstrably
  *   serving. That made remote participation impossible — the agent had to be on the box.
  *
- * ⭐ v0 ALREADY SOLVED THIS and we regressed. `starship-operations/mcp-vtt-control` holds
- *   `activeBase = process.env.VTT_URL` and an `attach` tool taking a URL — the MCP there is a thin
+ * ⭐ THE EARLIER GENERATION ALREADY SOLVED THIS and we regressed. It held
+ *   `activeBase = process.env.VTT_URL` and an `attach` tool taking a URL — the MCP there was a thin
  *   HTTP CLIENT of a running server, never its owner. This restores that property from the other
  *   side: the server that OWNS the presenter becomes reachable, so any client can drive it.
  *
