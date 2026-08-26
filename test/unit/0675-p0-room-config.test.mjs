@@ -30,6 +30,7 @@ import { test, check } from '../../harness/test.mjs';
 import {
   RoomConfigError, ROOM_KEYS, ROOM_ENV, roomDefaults,
   normalizeRoomConfig, normalizeRoomsConfig, roomValueSources,
+  resolveRoom, roomConfig,
   loadDeploymentConfig, CONFIG_BASENAME,
 } from '../../lib/deployment-config.mjs';
 import { mkdtempSync, writeFileSync } from 'node:fs';
@@ -215,4 +216,74 @@ test('t0675-07b — roomValueSources says config vs default for every key', () =
   check('an absent room answers "default" for all of them',
     ROOM_KEYS.every((k) => roomValueSources(undefined)[k] === 'default'));
   check('ROOM_ENV is the documented name', ROOM_ENV === 'PRESENTER_ROOM');
+});
+
+/* ── 8 ─────────────────────────────────────────────────────────────────────────────────────────
+ * ⛔⛔ THE FALL-THROUGH IS THE FAILURE. A room name that does not resolve must stop the process,
+ * not quietly hand it the default room's capabilities. Everything about a mis-selected room looks
+ * healthy from outside: it binds, it answers, it logs nothing — it is simply enforcing a policy
+ * nobody chose for it. */
+test('t0675-08 — an UNKNOWN PRESENTER_ROOM is a named startup error, NEVER a fall-through', () => {
+  const cfg = { rooms: TWO_ROOMS, defaultRoom: { plugins: [], record: 'none', voice: false }, configPath: '/test/config.json' };
+
+  const e = threw(() => resolveRoom({ [ROOM_ENV]: 'nosuchroom' }, cfg));
+  check('it throws', e !== null);
+  check('...and it is NAMED', e instanceof RoomConfigError && e.name === 'RoomConfigError', e && e.name);
+  check('...quoting the name that failed', e && e.message.includes('"nosuchroom"'), e && e.message);
+  check('...listing the rooms that DO exist, so the fix is in the error',
+    e && e.message.includes('voicelink') && e.message.includes('table'), e && e.message);
+  check('...and saying out loud that it refused to fall through',
+    e && /REFUSING to fall through/.test(e.message), e && e.message);
+
+  const e2 = threw(() => resolveRoom({ [ROOM_ENV]: 'table' }, { configPath: '/test/config.json' }));
+  check('naming a room when there is NO rooms block at all also throws — not "close enough to default"',
+    e2 instanceof RoomConfigError, e2 && e2.message);
+  check('...and says there is no rooms block, rather than listing an empty set',
+    e2 && /no "rooms" block/.test(e2.message), e2 && e2.message);
+
+  const e3 = threw(() => resolveRoom({ [ROOM_ENV]: 'Table' }, cfg));
+  check('room names are NOT case-folded — a near-miss is still a miss, and silently serving "table" would be the same bug',
+    e3 instanceof RoomConfigError, e3 && e3.message);
+
+  const ok = resolveRoom({ [ROOM_ENV]: '  table  ' }, cfg);
+  check('surrounding whitespace IS trimmed — a unit file with a stray space is a typo with no policy meaning',
+    ok.name === 'table' && ok.room.port === 3001, JSON.stringify(ok.name));
+  check('the selected room is the one that was asked for, whole',
+    ok.room.plugins.length === 1 && ok.room.record === 'none', JSON.stringify(ok.room));
+  check('and the SELECTION source is reported as env', ok.source === 'env');
+});
+
+/* ── 9 ───────────────────────────────────────────────────────────────────────────────────────── */
+test('t0675-09 — PRESENTER_ROOM unset ⇒ defaultRoom, fail-closed', () => {
+  const cfg = { rooms: TWO_ROOMS, defaultRoom: { plugins: [], record: 'none', voice: false }, configPath: '/test/config.json' };
+
+  const r = resolveRoom({}, cfg);
+  check('no room is named', r.name === null, JSON.stringify(r.name));
+  check('the selection source says so', r.source === 'default');
+  check('plugins []', r.room.plugins.length === 0, JSON.stringify(r.room.plugins));
+  check('record "none"', r.room.record === 'none');
+  check('voice false', r.room.voice === false);
+  check('⛔ and NOT the first declared room\'s capabilities — voicelink records for 30d and has voice',
+    r.room.record !== '30d' && r.room.voice !== true, JSON.stringify(r.room));
+
+  const empty = resolveRoom({}, { rooms: TWO_ROOMS, configPath: '/test/config.json' });
+  check('with NO defaultRoom stated at all, the fallback is still the fail-closed room',
+    empty.room.plugins.length === 0 && empty.room.record === 'none' && empty.room.voice === false,
+    JSON.stringify(empty.room));
+
+  const blank = resolveRoom({ [ROOM_ENV]: '   ' }, cfg);
+  check('an EMPTY PRESENTER_ROOM is treated as unset, not as a room named ""',
+    blank.name === null && blank.source === 'default');
+
+  // And end-to-end through the real loader, against a throwaway tree.
+  const home = scratch(), repo = scratch();
+  writeConfig(repo, { presenterPort: 0, rooms: TWO_ROOMS });
+  const live = roomConfig({ env: { HOME: home, [ROOM_ENV]: 'voicelink' }, repoDir: repo });
+  check('roomConfig() reads the file and resolves through the SAME path',
+    live.name === 'voicelink' && live.room.voice === true, JSON.stringify(live.name));
+  check('...and reports WHICH file won — the whole-file resolution trap is otherwise invisible',
+    live.configPath === join(repo, CONFIG_BASENAME), live.configPath);
+  const bad = threw(() => roomConfig({ env: { HOME: home, [ROOM_ENV]: 'ghost' }, repoDir: repo }));
+  check('...and a bad name through the real loader throws just the same',
+    bad instanceof RoomConfigError, bad && bad.message);
 });
