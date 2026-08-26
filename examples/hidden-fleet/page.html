@@ -1,0 +1,225 @@
+<div class="fh">
+  <h1>Hidden Fleet</h1>
+  <p class="who" id="who">…</p>
+
+  <div class="stations">
+    <div class="stn" id="stn-A"><span class="mk mA">A</span><span class="occ" id="occ-A">free</span>
+      <button class="join" id="join-A" type="button">Take A</button></div>
+    <div class="stn" id="stn-B"><span class="mk mB">B</span><span class="occ" id="occ-B">free</span>
+      <button class="join" id="join-B" type="button">Take B</button></div>
+  </div>
+
+  <p class="status" id="status">…</p>
+
+  <div class="grids">
+    <div class="pane"><h3>Your waters <em>private</em></h3><div class="grid" id="mine"></div></div>
+    <div class="pane"><h3>Their waters <em>public</em></h3><div class="grid" id="theirs"></div></div>
+  </div>
+
+  <div class="foot">
+    <button id="deploy" class="btn" type="button">Deploy 4 ships</button>
+    <button id="reset" class="btn ghost" type="button">New game</button>
+    <span class="hint" id="hint"></span>
+  </div>
+</div>
+<script>
+/*
+ * HIDDEN FLEET — the point of this demo is INFORMATION ASYMMETRY, not the game.
+ *
+ * Each player's fleet lives at private/<userId>/fleet, which the permission model makes readable
+ * ONLY by that user (app/permissions.mjs, plan 0692). The opponent's fleet is not merely hidden by
+ * the UI: it never enters their snapshot and never appears in a diff they receive. An observer with
+ * a console cannot find it because the server never sent it.
+ *
+ * Everything else -- shots, hits, whose turn -- is in shared/, world-readable, because a shot is a
+ * public act. That split is the whole design, and it is the same split a starship needs: the GM's
+ * sensor truth is private, the contact on the plot is shared.
+ *
+ * Seats are single-occupancy STATIONS: the store lock owner IS the occupant, so the server refuses
+ * a second claimant rather than the UI hiding a button.
+ */
+(function () {
+  var ME = (Argus.identity() || {}).userId || 'anon';
+  var MYNAME = (Argus.identity() || {}).userName || ME;
+  var N = 5, SHIPS = 4, SEATS = ['A', 'B'];
+
+  function seatPath(s) { return 'shared/fh/seats/' + s; }
+  function occupant(s) { return Argus.lockOwner(seatPath(s)); }
+  function nameOf(id) { return id ? (Argus.state('shared/fh/names/' + id) || id) : null; }
+  function mySeat() { return occupant('A') === ME ? 'A' : occupant('B') === ME ? 'B' : null; }
+  function foeSeat() { var m = mySeat(); return m === 'A' ? 'B' : m === 'B' ? 'A' : null; }
+
+  function myFleet() { return Argus.state('private/' + ME + '/fleet') || null; }
+  function shotsOn(seat) { return Argus.state('shared/fh/shots/' + seat) || {}; }   // cell -> 'hit'|'miss'
+  function turn() { return Argus.state('shared/fh/turn', 'A'); }
+  function overSeat() { return Argus.state('shared/fh/winner', null); }
+
+  function publishName() {
+    if (Argus.state('shared/fh/names/' + ME) !== MYNAME) Argus.op('shared/fh/names/' + ME, 'set', MYNAME);
+  }
+  function join(s) { if (occupant(s) || mySeat()) return; publishName(); Argus.op(seatPath(s), 'lock', {}); }
+  function leave(s) { if (occupant(s) === ME) Argus.op(seatPath(s), 'unlock', null); }
+
+  /* Deploy places SHIPS distinct cells. Written to my private branch; nobody else can read it. */
+  function deploy() {
+    if (!mySeat() || myFleet()) return;
+    var cells = [], used = {};
+    while (cells.length < SHIPS) {
+      var c = Math.floor(Math.random() * N * N);
+      if (!used[c]) { used[c] = 1; cells.push(c); }
+    }
+    Argus.op('private/' + ME + '/fleet', 'set', cells);
+    Argus.op('shared/fh/ready/' + mySeat(), 'set', true);   // readiness IS public; the fleet is not
+  }
+
+  /*
+   * ⛔ THE SHOT IS RESOLVED BY THE TARGET, not the shooter — the shooter cannot see the fleet, so
+   *   they cannot know the answer. The shooter writes the shot; the owner of those waters reads it,
+   *   compares against their own private fleet and publishes hit or miss. Adjudication sits with
+   *   the only client that holds the information, which is exactly how a GM screen works.
+   */
+  function fire(cell) {
+    var me = mySeat(); if (!me || overSeat()) return;
+    if (turn() !== me) return;
+    var foe = foeSeat(); if (!foe) return;
+    if (shotsOn(foe)[cell] !== undefined) return;             // already fired there
+    Argus.op('shared/fh/pending/' + foe, 'set', cell);
+    Argus.op('shared/fh/turn', 'set', foe);
+  }
+  function adjudicate() {
+    var me = mySeat(); if (!me) return;
+    var pend = Argus.state('shared/fh/pending/' + me, null);
+    if (pend === null || pend === undefined) return;
+    var fleet = myFleet(); if (!fleet) return;
+    var hit = fleet.indexOf(pend) >= 0;
+    Argus.op('shared/fh/shots/' + me + '/' + pend, 'set', hit ? 'hit' : 'miss');
+    Argus.op('shared/fh/pending/' + me, 'set', null);
+    if (hit) {
+      var s = shotsOn(me), n = hit ? 1 : 0;
+      for (var k in s) if (s[k] === 'hit') n++;
+      if (n >= SHIPS) Argus.op('shared/fh/winner', 'set', me === 'A' ? 'B' : 'A');
+    }
+  }
+
+  function cellEl(i, kind, mark, live) {
+    var b = document.createElement('button');
+    b.type = 'button'; b.className = 'c ' + kind + (mark ? ' ' + mark : '');
+    b.textContent = mark === 'hit' ? '✕' : mark === 'miss' ? '·' : mark === 'ship' ? '▪' : '';
+    b.setAttribute('data-i', i);
+    b.disabled = !live;
+    return b;
+  }
+
+  function render() {
+    adjudicate();
+    var me = mySeat(), foe = foeSeat(), won = overSeat();
+    var bothSeated = !!occupant('A') && !!occupant('B');
+    var fleet = myFleet();
+    var bothReady = !!Argus.state('shared/fh/ready/A') && !!Argus.state('shared/fh/ready/B');
+
+    document.getElementById('who').textContent = me
+      ? 'You are ' + MYNAME + ' — station ' + me
+      : 'You are ' + MYNAME + ' — observing';
+    document.getElementById('who').className = 'who' + (me ? ' seated' : ' observer');
+
+    for (var si = 0; si < SEATS.length; si++) {
+      var s = SEATS[si], o = occupant(s), mine = o === ME;
+      var oc = document.getElementById('occ-' + s);
+      oc.textContent = o ? nameOf(o) : 'free';
+      oc.className = 'occ' + (o ? (mine ? ' mine' : ' taken') : '');
+      var b = document.getElementById('join-' + s);
+      b.textContent = mine ? 'Leave' : 'Take ' + s;
+      b.disabled = (!!o && !mine) || (!o && !!me);
+      document.getElementById('stn-' + s).className = 'stn' + (mine ? ' mine' : (o ? ' taken' : ''));
+    }
+
+    /* MY waters: my own ships (private) plus the shots taken at me (public). */
+    var mineEl = document.getElementById('mine'); mineEl.innerHTML = '';
+    var myShots = me ? shotsOn(me) : {};
+    for (var i = 0; i < N * N; i++) {
+      var mk = myShots[i] || ((fleet && fleet.indexOf(i) >= 0) ? 'ship' : '');
+      mineEl.appendChild(cellEl(i, 'own', mk, false));
+    }
+
+    /* THEIR waters: only what has been publicly established by firing. */
+    var theirsEl = document.getElementById('theirs'); theirsEl.innerHTML = '';
+    var foeShots = foe ? shotsOn(foe) : {};
+    var canFire = !!me && bothSeated && bothReady && !won && turn() === me;
+    for (var j = 0; j < N * N; j++) {
+      var m2 = foeShots[j] || '';
+      theirsEl.appendChild(cellEl(j, 'foe', m2, canFire && !m2));
+    }
+
+    var st;
+    if (won) st = 'Station ' + won + ' wins.';
+    else if (!bothSeated) st = 'Waiting for both stations to be taken…';
+    else if (!bothReady) st = 'Waiting for both fleets to deploy…';
+    else st = (turn() === me ? 'Your shot' : 'Station ' + turn() + ' to fire');
+    document.getElementById('status').textContent = st;
+    document.getElementById('status').className = 'status' + (won ? ' done' : '');
+
+    var dep = document.getElementById('deploy');
+    dep.disabled = !me || !!fleet;
+    dep.textContent = fleet ? 'Fleet deployed' : 'Deploy 4 ships';
+    document.getElementById('hint').textContent = me
+      ? 'Your fleet is stored at private/' + ME + '/fleet — your opponent never receives it.'
+      : 'Observers see both public grids and neither fleet.';
+  }
+
+  document.getElementById('theirs').addEventListener('click', function (e) {
+    var b = e.target.closest ? e.target.closest('.c') : null;
+    if (b && !b.disabled) fire(parseInt(b.getAttribute('data-i'), 10));
+  });
+  for (var k = 0; k < SEATS.length; k++) (function (s) {
+    document.getElementById('join-' + s).addEventListener('click', function () {
+      if (occupant(s) === ME) leave(s); else join(s);
+    });
+  })(SEATS[k]);
+  document.getElementById('deploy').addEventListener('click', deploy);
+  document.getElementById('reset').addEventListener('click', function () {
+    Argus.op('shared/fh/shots', 'clear');
+    Argus.op('shared/fh/ready', 'clear');
+    Argus.op('shared/fh/pending', 'clear');
+    Argus.op('shared/fh/winner', 'set', null);
+    Argus.op('shared/fh/turn', 'set', 'A');
+    if (mySeat()) Argus.op('private/' + ME + '/fleet', 'set', null);
+  });
+
+  window.addEventListener('argus-presenter:state', render);
+  render();
+})();
+</script>
+<style>
+  body{font:14px/1.5 system-ui,-apple-system,sans-serif;background:#0d1015;color:#e3e6ec;margin:0;padding:18px}
+  .fh{max-width:560px;margin:0 auto;text-align:center}
+  h1{font-size:20px;margin:0 0 3px;letter-spacing:-.01em}
+  .who{font-size:12.5px;color:#7e8593;margin:0 0 14px}
+  .who.seated{color:#7fd1a6}
+  .stations{display:flex;gap:8px;justify-content:center;margin-bottom:12px}
+  .stn{display:flex;align-items:center;gap:8px;padding:7px 10px;border:1px solid #262b35;
+       border-radius:8px;background:#141922;min-width:150px}
+  .stn.mine{border-color:#2f6b4d;background:#14211b} .stn.taken{opacity:.72}
+  .mk{font:700 16px/1 ui-monospace,monospace;width:14px} .mk.mA{color:#6fb2ff} .mk.mB{color:#ffb36f}
+  .occ{flex:1;text-align:left;font-size:12px;color:#6b7280;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .occ.mine{color:#7fd1a6} .occ.taken{color:#b6bcc7}
+  .join,.btn{background:#1b2029;color:#dfe2e8;border:1px solid #333a45;border-radius:6px;
+             padding:5px 11px;font:12px inherit;cursor:pointer}
+  .join:disabled,.btn:disabled{opacity:.35;cursor:not-allowed}
+  .btn.ghost{background:transparent;color:#8b909b}
+  .status{font-size:14.5px;margin:0 0 12px;min-height:20px}
+  .status.done{color:#7fd1a6;font-weight:600}
+  .grids{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
+  .pane h3{font:600 10px/1 ui-monospace,monospace;letter-spacing:.14em;text-transform:uppercase;
+           color:#5b6270;margin:0 0 7px}
+  .pane h3 em{font-style:normal;color:#414855;margin-left:5px}
+  .grid{display:grid;grid-template-columns:repeat(5,1fr);gap:3px}
+  .c{aspect-ratio:1;background:#161b24;border:1px solid #232935;border-radius:4px;color:#e3e6ec;
+     font:600 15px/1 ui-monospace,monospace;cursor:default;padding:0}
+  .c.foe:not(:disabled){cursor:pointer;background:#19202b}
+  .c.foe:not(:disabled):hover{background:#222b39;border-color:#3c4655}
+  .c.ship{background:#1b2f26;border-color:#2f6b4d;color:#7fd1a6}
+  .c.hit{background:#3a1a1a;border-color:#8c2f2f;color:#ff9b9b}
+  .c.miss{color:#4a5260}
+  .foot{display:flex;align-items:center;gap:8px;justify-content:center;flex-wrap:wrap}
+  .hint{flex-basis:100%;font:11px ui-monospace,monospace;color:#4f5661;margin-top:8px;word-break:break-all}
+</style>

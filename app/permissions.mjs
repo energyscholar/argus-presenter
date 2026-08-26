@@ -42,6 +42,19 @@ export const DEFAULT_POLICY = [
    * authority. Do NOT move server-authoritative state under this prefix.
    */
   { glob: 'shared/**', roles: ['participant'], verbs: ['set', 'merge', 'add', 'remove', 'clear', 'lock', 'unlock'] },
+  /*
+   * ⭐ Plan 0692 — PRIVATE PER-USER STATE. The other half of a shared surface.
+   *
+   * `shared/**` is the collaborative space and is world-READABLE by design. There was no space for
+   * state a participant owns and nobody else may see: a player's own hand, a station's unsent
+   * orders, a fleet an opponent must not read. `answers/*` is self-writable but gm-read-only, so a
+   * participant cannot even read back what they wrote.
+   *
+   * ⛔ NOT a subtree of `shared/`. The read rule for `shared` is a PREFIX rule, so anything under
+   *   it is readable by everyone and a `shared/private/...` path would leak wholesale. The
+   *   separation has to be at the top level, and that is the entire security argument.
+   */
+  { glob: 'private/{self}/**', roles: ['participant'], verbs: ['set', 'merge', 'add', 'remove', 'clear'], self: true },
 ];
 
 // Plan 0471 C3 — READ is now DEFAULT-DENY with a prefix/self ALLOW-LIST (was default-open,
@@ -65,6 +78,11 @@ export const DEFAULT_READ_POLICY = [
   // Plan 0691 — the shared authoring slice is world-readable by design: it exists so several
   // people can see the same control. A prefix rule, so every descendant is covered.
   { glob: 'shared', roles: ALL },
+  // Plan 0692 — a participant reads ONLY THEIR OWN private subtree. No rule grants a participant
+  // `private` or `private/*`, so another user's branch is not merely hidden from the UI — it never
+  // enters their snapshot or their diffs. A referee needs the whole picture, so gm reads all of it.
+  { glob: 'private/{self}', roles: ['participant'], self: true },
+  { glob: 'private', roles: ['gm'] },
   // Plan 0537 P3.2 — the roll log. READ by everyone: a roll nobody else can see is not a roll, it
   // is a claim. ⛔ There is deliberately NO participant WRITE rule below — the SERVER rolls and the
   // server is the only writer, so nothing in this slice was asserted by a client.
