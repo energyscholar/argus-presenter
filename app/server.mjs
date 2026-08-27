@@ -51,6 +51,8 @@ import { renderMarkdown } from './markdown.mjs';
 import { createWireActions } from './wire-actions.mjs';
 import { createApiSurface } from './api-surface.mjs';
 import { createHttpHandler } from './http-routes.mjs';
+/* Plan 0719 T1 — the resource hook and its ONE router. Neutral: core learns no domain noun. */
+import { createResourceRegistry, createResourceRouter } from './resource-routes.mjs';
 
 // X6 resilience caps.
 const MAX_CONNS = 200;              // connection cap
@@ -612,6 +614,13 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // Plan 0514 §9 — tools contributed by a plugin's server module. Core keeps the list; it has no
   // idea what any of them do.
   const pluginTools = new Map();
+  /*
+   * Plan 0719 T1 — THE RESOURCE REGISTRY, beside the tool registry and for the same reason: core
+   * holds the list and dispatches; the vocabulary is the plugin's. ⛔ Per-server, never
+   * module-level — the suite stands up many servers in one process and a shared registry would
+   * make one deployment's declarations visible to another's router.
+   */
+  const resourceRegistry = createResourceRegistry({ logger: log });
   // ATT (Plan 0466, decision 1): presenter-gated "roster visible to attendees", DEFAULT OFF.
   // Presenter/ai always see the full roster; a participant attendance-request is answered
   // self-only until the presenter turns this ON. In-memory session state (v0.1).
@@ -906,6 +915,23 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       } catch (e) { try { log.warn('bind', 'extra-failed', { host: h, err: String((e && e.message) || e).slice(0, 120) }); } catch {} }
     }
   }
+  /*
+   * ── Plan 0719 T1/R4/R9 — THE RESOURCE ROUTER, AND ITS ONE GATE ────────────────────────────
+   *
+   * ⛔⛔ NO NEW CREDENTIAL, AND NO SECOND TRUST COMPUTATION. `deriveConnTrust` is the function the
+   *   socket already uses and `/api/auth-state` already reads; a bearer minted for whoever
+   *   connects would prove only that they connected, and a second computation here would be a
+   *   second policy that eventually disagrees with the first.
+   *
+   * ⛔ DEFAULT-DENY FROM THE FIRST COMMIT, INCLUDING ON AN UNGATED SERVER. `/api/situation` opens
+   *   when no credential is configured, and that is right for a surface whose worst case is a LAN
+   *   peer seeing the roster. It is wrong here: "no credential configured" is not "no gate to
+   *   apply", it is "nothing to verify against" — and the honest answer to an unverifiable
+   *   request is no. This is the posture /api/session-log and the catalogue already take.
+   *   ⇒ a deployment that wants to answer here configures an identity. Same rule as the socket's.
+   */
+  const resourceTrustFor = (req) => deriveConnTrust(null, null, computeAuthCtx(req));
+  const resourceRoutes = createResourceRouter({ registry: resourceRegistry, trustFor: resourceTrustFor, logger: log });
   // Every name below is a binding the handler used to capture from this closure, passed explicitly
   // because a function lifted out of a closure keeps none of it.
   const httpServer = http.createServer(createHttpHandler({
@@ -917,6 +943,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     oidcAuth: oidcAdapter,   // Plan 0543 P2 — the OIDC login/callback/logout routes read this
     breakGlassAuth: bgAdapter,   // Plan 0650 §2b — POST /auth/break-glass redeems the recovery credential
     authState,               // Plan 0551 P3 — GET /api/auth-state reads this (state only; no email/sub/sid)
+    resourceRoutes,          // Plan 0719 T1 — the /api/v2/ prefix route delegates to this
     // ⚠ A GETTER, NOT A VALUE. `const api` is declared ~2,400 lines below this call, so it is in
     // the temporal dead zone right now and reading it here would throw. The handler destructures
     // ctx per request, by which time this getter resolves.
@@ -2421,6 +2448,24 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         pluginTools.set(tool.name, { ...tool, plugin: name });
         log.info('plugin', 'tool-registered', { plugin: name, tool: tool.name });
       },
+      /*
+       * ⭐⭐ Plan 0719 T1 — A PLUGIN MAY CONTRIBUTE A RESOURCE, exactly as it may contribute a
+       * tool. The MECHANISM is core's (verb dispatch, the trust gate, the refusal→status
+       * mapping, one router); the NAME and the HANDLERS are the plugin's, because core must
+       * never learn what the thing IS.
+       *
+       *   registerResource(name, { list, get, sub: { … } }, { trust, layer })
+       *
+       * `layer` declares whether the data is this deployment's own (`campaign`) or published
+       * material it did not author (`system`). ⛔ THE LAYER SETS A FLOOR ON THE TRUST REQUIRED
+       * and can only raise it — a later decision to open reads to a wider audience is a decision
+       * about campaign data and must not silently reach material we may not redistribute.
+       *
+       * ⛔ Returns a stated refusal rather than throwing when a name is already claimed: two
+       * plugins under one name is never last-wins, and it must not take the rest of the losing
+       * plugin's registration down with it.
+       */
+      registerResource: (resourceName, handlers, opts = {}) => resourceRegistry.register(name, resourceName, handlers, opts),
       // The station rows this deployment declared, so the plugin can resolve uid → screen.
       stations: stationRegistry,
       // Plan 0526 P1 — the surface rows this deployment declared, read-only, same shape.
