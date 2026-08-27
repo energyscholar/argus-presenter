@@ -828,6 +828,16 @@
       renderWho();
       try { if (typeof window.__apPaintNameRow === 'function') window.__apPaintNameRow(); } catch(e){}
       try { window.__apRenamed = { userId: m.userId, userName: m.userName }; } catch(e){}   // test hook
+      /* ⛔⛔ THE CONTENT FRAME MUST BE TOLD, OR IT KEEPS THE NAME IT WAS PUSHED WITH.
+         Identity is stamped into the assembled page ONCE, at push time. Nothing here updated it,
+         so a rename moved the top-frame label and the roster while the stage carried on showing
+         the old name — and a page that publishes its own name into shared state then wrote the
+         STALE one, so the whole room saw it. Found live: renamed to Booga, still read ralph.
+         ⇒ Relay it the same way snapshots are relayed. Cheap, and every station needs it. */
+      try {
+        if (frame && frame.contentWindow) frame.contentWindow.postMessage(
+          { source:'argus-host', type:'identity', userId: m.userId, userName: m.userName }, '*');
+      } catch(e){}
       return;
     }
     if (m.t === 'chat_private') {
