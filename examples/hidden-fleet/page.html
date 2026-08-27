@@ -26,10 +26,9 @@
 /*
  * HIDDEN FLEET — the point of this demo is INFORMATION ASYMMETRY, not the game.
  *
- * Each player's fleet lives at private/<userId>/fleet, which the permission model makes readable
- * ONLY by that user (app/permissions.mjs, plan 0692). The opponent's fleet is not merely hidden by
- * the UI: it never enters their snapshot and never appears in a diff they receive. An observer with
- * a console cannot find it because the server never sent it.
+ * Each station's fleet lives at shared/fh/fleets/<seat> and is hidden BY THE UI. An earlier
+ * version put it in a per-user private branch the server never sent to anyone else — stronger, and
+ * wrong: it could not survive a handover (see the note on fleetOf below).
  *
  * Everything else -- shots, hits, whose turn -- is in shared/, world-readable, because a shot is a
  * public act. That split is the whole design, and it is the same split a starship needs: the GM's
@@ -40,7 +39,12 @@
  */
 (function () {
   var ME = (Argus.identity() || {}).userId || 'anon';
-  var MYNAME = (Argus.identity() || {}).userName || ME;
+  /* ⛔ THE NAME IS READ LIVE, NEVER SNAPSHOTTED AT MOUNT. An earlier version captured
+     `Argus.identity().userName` once, so a player who named themselves AFTER the page was pushed
+     stayed labelled with their raw uid forever — and `publishName()` then wrote that stale value
+     into shared state, so everyone else saw it too. The server was right all along: `rename`
+     calls pushPresence() immediately. It was this page that had stopped listening. */
+  function myName() { return (Argus.identity() || {}).userName || ME; }
   var N = 5, SHIPS = 4, SEATS = ['A', 'B'];
 
   function seatPath(s) { return 'shared/fh/seats/' + s; }
@@ -49,13 +53,28 @@
   function mySeat() { return occupant('A') === ME ? 'A' : occupant('B') === ME ? 'B' : null; }
   function foeSeat() { var m = mySeat(); return m === 'A' ? 'B' : m === 'B' ? 'A' : null; }
 
-  function myFleet() { return Argus.state('private/' + ME + '/fleet') || null; }
+  /*
+   * ⛔⛔ THE FLEET BELONGS TO THE STATION, NOT THE PERSON — and the first version had it backwards.
+   *
+   * It lived at `private/<userId>/fleet`, which is genuinely unreadable by anyone else. That
+   * demonstrated information asymmetry beautifully and broke the moment a player left: their fleet
+   * sat in a branch the newcomer could not read, so whoever took the vacated station saw an empty
+   * sea and no ships of their own, while still taking fire. Hidden state tied to a PERSON cannot
+   * survive a handover, and a station is a thing people hand over.
+   *
+   * ⇒ It lives at `shared/fh/fleets/<seat>` and is hidden by the UI, per Bruce's ruling
+   *   (2026-08-26): "users will only see info that the UI allows them to see... no harm in a user's
+   *   client knowing state the UI doesn't show them." Take the station, inherit the fleet.
+   */
+  function fleetOf(seat) { return seat ? (Argus.state('shared/fh/fleets/' + seat) || null) : null; }
+  function myFleet() { return fleetOf(mySeat()); }
   function shotsOn(seat) { return Argus.state('shared/fh/shots/' + seat) || {}; }   // cell -> 'hit'|'miss'
   function turn() { return Argus.state('shared/fh/turn', 'A'); }
   function overSeat() { return Argus.state('shared/fh/winner', null); }
 
   function publishName() {
-    if (Argus.state('shared/fh/names/' + ME) !== MYNAME) Argus.op('shared/fh/names/' + ME, 'set', MYNAME);
+    var n = myName();
+    if (n && n !== ME && Argus.state('shared/fh/names/' + ME) !== n) Argus.op('shared/fh/names/' + ME, 'set', n);
   }
   function join(s) { if (occupant(s) || mySeat()) return; publishName(); Argus.op(seatPath(s), 'lock', {}); }
   function leave(s) { if (occupant(s) === ME) Argus.op(seatPath(s), 'unlock', null); }
@@ -68,7 +87,7 @@
       var c = Math.floor(Math.random() * N * N);
       if (!used[c]) { used[c] = 1; cells.push(c); }
     }
-    Argus.op('private/' + ME + '/fleet', 'set', cells);
+    Argus.op('shared/fh/fleets/' + mySeat(), 'set', cells);
     Argus.op('shared/fh/ready/' + mySeat(), 'set', true);   // readiness IS public; the fleet is not
   }
 
@@ -118,8 +137,8 @@
     var bothReady = !!Argus.state('shared/fh/ready/A') && !!Argus.state('shared/fh/ready/B');
 
     document.getElementById('who').textContent = me
-      ? 'You are ' + MYNAME + ' — station ' + me
-      : 'You are ' + MYNAME + ' — observing';
+      ? 'You are ' + myName() + ' — station ' + me
+      : 'You are ' + myName() + ' — observing';
     document.getElementById('who').className = 'who' + (me ? ' seated' : ' observer');
 
     for (var si = 0; si < SEATS.length; si++) {
@@ -133,20 +152,33 @@
       document.getElementById('stn-' + s).className = 'stn' + (mine ? ' mine' : (o ? ' taken' : ''));
     }
 
-    /* MY waters: my own ships (private) plus the shots taken at me (public). */
+    /*
+     * ⛔ AN OBSERVER HAS NO "MY" AND NO "THEIR" — and the first version rendered nothing for them.
+     * Every grid was derived from mySeat(): with no seat, foeSeat() was null, shotsOn(null) was {},
+     * and BOTH grids came out empty. An observer watched an entirely blank game.
+     * ⇒ Seated: left = my waters (my ships + fire taken), right = theirs (public fire only).
+     *   Observing: left = station A's waters, right = station B's — both public, NEITHER fleet.
+     */
+    var leftSeat  = me || 'A';
+    var rightSeat = me ? foe : 'B';
+    document.querySelector('#mine').closest('.pane').querySelector('h3').innerHTML =
+      me ? 'Your waters <em>private</em>' : 'Station A <em>public</em>';
+    document.querySelector('#theirs').closest('.pane').querySelector('h3').innerHTML =
+      me ? 'Their waters <em>public</em>' : 'Station B <em>public</em>';
+
     var mineEl = document.getElementById('mine'); mineEl.innerHTML = '';
-    var myShots = me ? shotsOn(me) : {};
+    var leftShots = shotsOn(leftSeat);
     for (var i = 0; i < N * N; i++) {
-      var mk = myShots[i] || ((fleet && fleet.indexOf(i) >= 0) ? 'ship' : '');
+      /* ⛔ ships ONLY for the seated player's own waters — never for an observer. */
+      var mk = leftShots[i] || ((me && fleet && fleet.indexOf(i) >= 0) ? 'ship' : '');
       mineEl.appendChild(cellEl(i, 'own', mk, false));
     }
 
-    /* THEIR waters: only what has been publicly established by firing. */
     var theirsEl = document.getElementById('theirs'); theirsEl.innerHTML = '';
-    var foeShots = foe ? shotsOn(foe) : {};
+    var rightShots = rightSeat ? shotsOn(rightSeat) : {};
     var canFire = !!me && bothSeated && bothReady && !won && turn() === me;
     for (var j = 0; j < N * N; j++) {
-      var m2 = foeShots[j] || '';
+      var m2 = rightShots[j] || '';
       theirsEl.appendChild(cellEl(j, 'foe', m2, canFire && !m2));
     }
 
@@ -182,7 +214,7 @@
     Argus.op('shared/fh/pending', 'clear');
     Argus.op('shared/fh/winner', 'set', null);
     Argus.op('shared/fh/turn', 'set', 'A');
-    if (mySeat()) Argus.op('private/' + ME + '/fleet', 'set', null);
+    Argus.op('shared/fh/fleets', 'clear');
   });
 
   window.addEventListener('argus-presenter:state', render);

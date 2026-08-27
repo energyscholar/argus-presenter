@@ -34,6 +34,7 @@ try {
     myShips: document.querySelectorAll('#mine .c.ship').length,
     foeLive: [].slice.call(document.querySelectorAll('#theirs .c')).filter(c=>!c.disabled).length,
     hits: document.querySelectorAll('#theirs .c.hit').length,
+    cells: document.querySelectorAll('#mine .c').length + document.querySelectorAll('#theirs .c').length,
     misses: document.querySelectorAll('#theirs .c.miss').length,
   });
   const snap = () => readAll(F, probe);
@@ -50,37 +51,39 @@ try {
 
   await P.ann.bringToFront(); await act(F.ann, '#deploy', e => e.click()); await wait(700);
   await P.ben.bringToFront(); await act(F.ben, '#deploy', e => e.click()); await wait(900);
-  const annFleet = server.store.get('private/ann/fleet');
-  const benFleet = server.store.get('private/ben/fleet');
-  ok('both fleets exist on the server', Array.isArray(annFleet) && Array.isArray(benFleet),
-     JSON.stringify({ ann: annFleet, ben: benFleet }));
+  const fleetA = server.store.get('shared/fh/fleets/A');
+  const fleetB = server.store.get('shared/fh/fleets/B');
+  ok('both fleets exist, owned by the STATION not the person', Array.isArray(fleetA) && Array.isArray(fleetB),
+     JSON.stringify({ A: fleetA, B: fleetB }));
 
-  // ── THE POINT OF THE DEMO ────────────────────────────────────────────────────────────────
-  const snapOf = (id, role='participant') => server.store.snapshot({ userId: id, role }).state;
-  const annSees = snapOf('ann'), benSees = snapOf('ben'), calSees = snapOf('cal');
-  ok('Ann sees her OWN fleet', JSON.stringify(annSees.private?.ann?.fleet) === JSON.stringify(annFleet));
-  ok("Ann's snapshot has NO trace of Ben's fleet", annSees.private?.ben === undefined,
-     JSON.stringify(annSees.private));
-  ok("Ben's snapshot has NO trace of Ann's fleet", benSees.private?.ann === undefined,
-     JSON.stringify(benSees.private));
-  ok('an OBSERVER sees neither fleet', calSees.private === undefined || Object.keys(calSees.private).length === 0,
-     JSON.stringify(calSees.private));
-  // and the browser agrees: the opponent's ships are not in Ben's DOM
+  /*
+   * ⛔ THE ASYMMETRY IS NOW A UI PROPERTY, NOT A SNAPSHOT PROPERTY — deliberately, and this is the
+   * assertion that changed. An earlier version put each fleet in a per-user private branch the
+   * server never sent to anyone else. Stronger, and wrong: a fleet tied to a PERSON cannot survive
+   * a handover, so whoever took a vacated station saw an empty sea and no ships of their own while
+   * still taking fire. A station is a thing people hand over.
+   * ⇒ Assert what the SCREEN shows, which is what the rule is now about.
+   */
   s = await snap();
-  ok('Ann renders 4 of her own ships', s.ann.myShips === 4, 'ships=' + s.ann.myShips);
-  ok("Ben renders 4 of HIS own ships, not Ann's", s.ben.myShips === 4, 'ships=' + s.ben.myShips);
-  ok('an observer renders no ships at all', s.cal.myShips === 0, 'ships=' + s.cal.myShips);
+  ok('a seated player renders 4 of their OWN ships', s.ann.myShips === 4, 'ships=' + s.ann.myShips);
+  ok('the opponent renders 4 of THEIRS, not the same four', s.ben.myShips === 4, 'ships=' + s.ben.myShips);
+  ok('⭐ an OBSERVER renders NO ships at all', s.cal.myShips === 0, 'ships=' + s.cal.myShips);
+
+  // ⭐ THE BUG BRUCE FOUND: an observer saw an entirely blank game.
+  ok('⭐ an observer sees BOTH grids, not zero', s.cal.cells === 50, 'cells=' + s.cal.cells);
+
+  const seats = { X: 'A', O: 'B' };
   for (const k of Object.keys(P)) await shot(P[k], `fh-1-deployed-${k}.png`);
 
   // ── A shot is adjudicated by the TARGET, who is the only client that can know ──
-  const target = benFleet[0];
+  const target = fleetB[0];
   await P.ann.bringToFront();
   await act(F.ann, `#theirs .c[data-i="${target}"]`, e => e.click());
   await wait(1200);
   ok('a shot on a ship resolves as a HIT', server.store.get('shared/fh/shots/B/' + target) === 'hit',
      JSON.stringify(server.store.get('shared/fh/shots/B/' + target)));
 
-  const miss = [...Array(25).keys()].find(i => !benFleet.includes(i) && i !== target);
+  const miss = [...Array(25).keys()].find(i => !fleetB.includes(i) && i !== target);
   await act(F.ann, `#theirs .c[data-i="${miss}"]`, e => e.click()).catch(()=>{});
   await wait(400);
   ok('a shot out of turn is refused', server.store.get('shared/fh/shots/B/' + miss) === undefined,
