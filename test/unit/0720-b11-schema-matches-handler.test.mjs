@@ -85,8 +85,21 @@ function toolsIn(src) {
     let k;
     while ((k = keyRe.exec(clean))) declared.push(k[1]);
 
-    const h = /handler:\s*(?:async\s*)?\(\s*\{([^}]*)\}/.exec(region);
-    if (!h) { found.push({ name, skip: 'handler takes an opaque argument' }); continue; }
+    /* ⛔⛔ BRACE-MATCH THE HANDLER'S PATTERN. `\{([^}]*)\}` stops at the FIRST `}`, which in practice
+       is an object DEFAULT — `opts = {}`, `requires = []` — so every name AFTER it is invisible and
+       is reported as a declared-but-unread property. Run over the CORE surface (plan 0720 RUN B,
+       measured 2026-08-31) that expression produced EIGHT offenders and every one was a false
+       positive. ⭐ A lint that is mostly noise teaches people to skim it, and skimming is how the
+       one true positive gets missed — the very failure this file exists to prevent. */
+    const hStart = /handler:\s*(?:async\s*)?\(\s*\{/.exec(region);
+    if (!hStart) { found.push({ name, skip: 'handler takes an opaque argument' }); continue; }
+    let hd = 0, hEnd = -1, hOpen = hStart.index + hStart[0].length - 1;
+    for (let j = hOpen; j < region.length; j++) {
+      if (region[j] === '{') hd++;
+      else if (region[j] === '}') { hd--; if (hd === 0) { hEnd = j; break; } }
+    }
+    if (hEnd < 0) { found.push({ name, skip: 'unterminated handler pattern' }); continue; }
+    const h = [null, region.slice(hOpen + 1, hEnd)];
     /* ⛔⛔ A REST ELEMENT COLLECTS EVERY REMAINING KEY, so a declared property this handler never
        NAMES is still reachable through it. The lint can prove nothing about such a tool and must
        say so rather than accuse it — the first run flagged fourteen properties across four tools
@@ -94,7 +107,17 @@ function toolsIn(src) {
        it, and skimming is how the one true positive gets missed. */
     if (/\.\.\./.test(h[1])) { found.push({ name, skip: 'handler collects a rest element' }); continue; }
 
-    const read = h[1].split(',').map((p) => p.trim().split(/[:=]/)[0].trim())
+    /* Top-level commas only — a comma inside `{a:1, b:2}` or `[1, 2]` is part of a default value,
+       not a second parameter. */
+    const parts = []; let pd = 0, cur = '';
+    for (const ch of h[1]) {
+      if (ch === '{' || ch === '[' || ch === '(') pd++;
+      else if (ch === '}' || ch === ']' || ch === ')') pd--;
+      if (ch === ',' && pd === 0) { parts.push(cur); cur = ''; continue; }
+      cur += ch;
+    }
+    parts.push(cur);
+    const read = parts.map((p) => p.trim().split(/[:=]/)[0].trim())
       .filter((n) => /^[A-Za-z_$][\w$]*$/.test(n));
 
     found.push({ name, declared, read });

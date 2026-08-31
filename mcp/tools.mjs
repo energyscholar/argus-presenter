@@ -15,6 +15,11 @@ import { presenterPort, authPolicy, identityConfig, identityServerOptions, ident
 import { resolveSessionLogDir, defaultSessionLogDir } from '../lib/session-log.mjs';
 import { srvRoot, currentRelease, enumerateReleases, unitStatus, staleUnit, roomTable, probe, tailnetAddress, REAL_PAGE_MARKERS } from '../lib/ops-status.mjs';
 import { join, dirname } from 'node:path';
+import {
+  serialise as serialiseBoard, deserialise as deserialiseBoard, setTokenOp as setTokenOpFor,
+  removeTokenOp as removeTokenOpFor, setBoardPathOp as setBoardPathOpFor,
+  boardPath as currentBoardPath, normalisePath as normaliseBoardPath,
+} from '../app/board-document.mjs';
 import { fileURLToPath } from 'node:url';
 
 // S210 — present_module could ONLY take beats inlined in the tool call, so an art-heavy
@@ -34,6 +39,57 @@ function readModuleById(id) {
   const module = JSON.parse(readFileSync(file, 'utf8'));
   if (!module || !Array.isArray(module.beats)) throw new Error(`module ${id} has no beats[]`);
   return module;
+}
+
+
+/*
+ * ── ⭐ THE BOARD, AT THE AGENT SURFACE (plan 0720 RUN B) ─────────────────────────────────────────
+ * The conversion itself is `app/board-document.mjs`. These two are the only glue the tool layer
+ * needs, and they are here rather than there because `apply` is a SERVER, not a pure function.
+ */
+
+/** Which collection a board call means: what it was told, then the document's, then the store's. */
+function boardPathOf(store, explicit, document) {
+  return normaliseBoardPath(explicit)
+    || normaliseBoardPath(document && document.path)
+    || currentBoardPath(store);
+}
+
+/**
+ * ⛔ BREAK A LOCK WITH `unlock`, NEVER WITH `force` IN THE VALUE.
+ *
+ * `apply` will honour `{force:true}` on an op's value — and `set` CLONES THAT VALUE INTO THE TREE,
+ * so a forced write leaves `force:true` sitting in the token record for the rest of the session,
+ * and every client carries it forward through read, drag and re-read. `unlock` stores nothing.
+ * A lock on any ANCESTOR covers the whole subtree, so the chain is walked, not just the leaf.
+ */
+function breakLocksOn(server, path) {
+  const parts = String(path).split('/').filter(Boolean);
+  for (let n = parts.length; n > 0; n--) {
+    const base = parts.slice(0, n).join('/');
+    if (server.store.get(base + '/lock') !== undefined) {
+      server.apply({ path: base, verb: 'unlock', value: { force: true } });
+    }
+  }
+}
+
+/**
+ * Apply a board's ops and REPORT what happened to each — never a bare count.
+ * A denial here means a lock; with `force` the lock is broken and the op retried ONCE, and anything
+ * still refused comes back by id. ⛔ A restore that silently drops a piece is the failure mode this
+ * whole surface exists to avoid.
+ */
+function applyBoardOps(server, ops, { force = false } = {}) {
+  let written = 0, removed = 0;
+  const refused = [];
+  for (const op of ops) {
+    const id = op.verb === 'remove' ? String(op.value) : op.path.slice(op.path.lastIndexOf('/') + 1);
+    let res = server.apply(op);
+    if (res && res.denied && force) { breakLocksOn(server, op.verb === 'remove' ? op.path + '/' + id : op.path); res = server.apply(op); }
+    if (res && res.denied) { refused.push(id); continue; }
+    if (op.verb === 'remove') removed++; else written++;
+  }
+  return { written, removed, refused };
 }
 
 let server = null;
@@ -449,6 +505,94 @@ export const coreTools = [
     description: 'Close a poll (further votes ignored). Returns the final tally.',
     input: { type: 'object', required: ['promptId'], properties: { promptId: { type: 'string' } } },
     handler: async ({ promptId }) => need().closePoll(promptId)
+  },
+  /* ── ⭐⭐ THE BOARD, AS A DOCUMENT AND AS LIVE KEYS (plan 0720 RUN B) ────────────────────────
+   * `app/board-document.mjs` holds the whole conversion and the reasoning behind it. What matters
+   * at this surface is that the DESCRIPTION is the only documentation an agent ever reads, so the
+   * two facts that surprised their own author are stated in every one of them: the whole-board
+   * write is AUTHORITATIVE (omission DELETES), and it is for RESTORE, not for editing.
+   */
+  {
+    name: 'board_read',
+    description: 'CAPTURE the live board as one JSON document: {v, path, tokens:[{id, …}]}. Reads the LIVE store, so it holds the positions pieces are AT, never the positions they were authored at — that distinction is the whole point, because a capture of the authored layout replays the opening formation on restore and silently teleports every piece back mid-fight. Host bookkeeping (`_locks`, a record `lock`) is never returned as a piece. Use it to hand the board over, to inspect it, and to take a snapshot before a service restart — the store is IN MEMORY and a deploy or a restart destroys it.',
+    input: { type: 'object', properties: {
+      path: { type: 'string', description: 'Collection to read. Omit for the board this deployment is currently pointing at (board_path).' },
+    } },
+    handler: async ({ path = null } = {}) => ({ ok: true, document: serialiseBoard(need().store, { path: path || undefined }) })
+  },
+  {
+    name: 'board_write',
+    description: '⛔ RESTORE ONLY — ⭐ THE LIST IS AUTHORITATIVE AND OMISSION DELETES. Writes a whole board document ({tokens:[{id, …}]}) as one authoritative set: every piece in the list is written, and every piece currently on the board that the list does NOT name is REMOVED. That is what makes "sweep and rebuild" work — but it also means a document you assembled from a stale read will delete anything added since. ⛔ DO NOT USE IT TO ADD OR MOVE A PIECE DURING PLAY: it rewrites keys somebody may be dragging this instant, and their drag is reverted with no error anywhere. board_add and board_remove are the normal path; this one is for restoring a captured board when nobody is connected. Never issues a `clear` — a clear broadcasts an empty board as its own diff and every screen goes blank between the wipe and the re-writes. Returns {written, removed, refused[]}; a refusal means a lock is held on that piece — pass force:true to break it.',
+    input: { type: 'object', required: ['document'], properties: {
+      document: { type: 'object', description: 'A board document, as returned by board_read: {v, path, tokens:[{id, label, px, py, …}]}. Any field you publish is carried through untouched.' },
+      path: { type: 'string', description: "Write here instead of the document's own `path`. Omit to use the document's, then the deployment's current board." },
+      force: { type: 'boolean', description: 'Break a stale lock rather than skipping the piece it holds. Default false, so a refusal is reported rather than silently swallowed.' },
+    } },
+    handler: async ({ document = null, path = null, force = false } = {}) => {
+      const s = need();
+      const target = boardPathOf(s.store, path, document);
+      const ops = deserialiseBoard(document || {}, { path: target, current: s.store.get(target) });
+      const res = applyBoardOps(s, ops, { force: force === true });
+      /* ⛔ `ok` is FALSE when anything was refused. A restore that reports success while a piece is
+         missing is the exact failure this surface exists to prevent. */
+      return { ok: res.refused.length === 0, path: target, ...res };
+    }
+  },
+  {
+    name: 'board_add',
+    description: '⭐ THE NORMAL WAY TO PUT A PIECE ON THE BOARD, OR TO MOVE ONE: ONE write on that piece\'s OWN key. It cannot touch a piece it does not name, so it is safe while people are dragging — which a whole-board write is not. Writing an id that already exists REPLACES that record (its position included), so this is also how a facilitator repositions something. A token record is open: `id` is required and `label`/`side`/`kind`/`px`/`py`/`status`/`pin` are understood, but every other field you publish is carried through read, drag and re-read untouched. `pin:true` makes a piece undraggable — use it for a declared origin, because one stray finger otherwise decentres the board irreversibly and every range ring then measures from the wrong place.',
+    input: { type: 'object', required: ['token'], properties: {
+      token: { type: 'object', description: 'The piece: {id (required), label, side, kind, px (0..1), py (0..1), status, pin, …anything}. px/py are fractions of the board, not pixels.' },
+      path: { type: 'string', description: "Collection to write into. Omit for the deployment's current board." },
+    } },
+    handler: async ({ token = null, path = null } = {}) => {
+      const s = need();
+      const id = token && token.id != null ? String(token.id) : null;
+      if (!id) return { ok: false, reason: 'no-id', message: 'a piece needs an id — it is the key it lives at, and what a removal names' };
+      /* ⛔ ONE SEGMENT, AND THE TWO DOORS MUST AGREE. `deserialise` already refuses an id carrying a
+         slash or a leading `_`; without the same rule here, `board_add` would write a piece NESTED
+         under another key — reachable by no ordinary removal and invisible in the document, which is
+         precisely the "a piece nobody can take off the board" failure this surface exists to end. */
+      if (id !== normaliseBoardPath(id) || id.includes('/') || id.charAt(0) === '_') {
+        return { ok: false, reason: 'bad-id', id, message: 'an id is one path segment: no "/", no leading "_"' };
+      }
+      const target = boardPathOf(s.store, path, null);
+      const res = s.apply(setTokenOpFor(target, id, token));
+      return { ok: !(res && res.denied), path: target, id, refused: res && res.denied ? 'locked' : null };
+    }
+  },
+  {
+    name: 'board_remove',
+    description: '⭐ TAKE ONE PIECE OFF THE BOARD: one `remove`, and the key is genuinely DELETED, not tombstoned (the null a client sees is the wire diff). Removing is how a craft docks, a hull is destroyed, or a contact leaves; adding it back is how you undo, which is why no separate undo exists. Removes exactly the id named and nothing else, so it is safe while other people are dragging. ⛔ There is deliberately NO "clear the board" tool: a clear broadcasts an empty board to every client as its own diff, and a drop landing in that window resurrects a piece that was supposed to be gone. To empty a board, board_write an empty token list.',
+    input: { type: 'object', required: ['id'], properties: {
+      id: { type: 'string', description: 'The piece to remove, as it appears in board_read.' },
+      path: { type: 'string', description: "Collection to remove from. Omit for the deployment's current board." },
+    } },
+    handler: async ({ id = null, path = null } = {}) => {
+      const s = need();
+      if (!id) return { ok: false, reason: 'no-id' };
+      const target = boardPathOf(s.store, path, null);
+      const existed = s.store.get(target + '/' + id) !== undefined;
+      const res = s.apply(removeTokenOpFor(target, id));
+      return { ok: !(res && res.denied), path: target, id, existed, refused: res && res.denied ? 'locked' : null };
+    }
+  },
+  {
+    name: 'board_path',
+    description: '⭐⭐ READ OR RE-POINT THE BOARD, LIVE — the ONLY way to change what the mounted board is showing without a deploy, and during a session a deploy is not available: the store is in memory, so a push restarts the service and destroys token positions, round, turn, acted flags and ship damage together. Call with no argument to read the current path. Call with a path to re-point EVERY connected viewer at a different collection in one write — the escape hatch for a board authored at the wrong place, or one littered with keys from a rehearsal. ⚠ Re-pointing ABANDONS a collection, it does not delete one: the old keys are still there and board_read can still reach them by naming the path. It also overrides the path a mount was pushed with, deliberately, since a mount\'s options are frozen at push time.',
+    input: { type: 'object', properties: {
+      path: { type: 'string', description: 'Collection to point the board at, e.g. "shared/tactical/round2". Omit to READ the current one rather than change it.' },
+    } },
+    handler: async ({ path = null } = {}) => {
+      const s = need();
+      if (path == null) return { ok: true, path: boardPathOf(s.store, null, null), changed: false };
+      /* ⛔ REFUSE BY NAME rather than writing a path the store will silently reject later — a board
+         pointed at nothing renders blank and says nothing about why. */
+      const want = normaliseBoardPath(path);
+      if (!want) return { ok: false, reason: 'unusable-path', path: boardPathOf(s.store, null, null), changed: false };
+      const res = s.apply(setBoardPathOpFor(want));
+      return { ok: !(res && res.denied), path: want, changed: true };
+    }
   },
   {
     name: 'reload_clients',
