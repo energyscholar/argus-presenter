@@ -6,8 +6,13 @@
  * different tokens in the same instant cannot lose a write.
  *
  *   opts = <map opts> + { path?:      'shared/tactical/tokens',
- *                         tokens?:    [ { id, label, side, kind, px, py, status } ],
+ *                         tokens?:    [ { id, label, side, kind, px, py, status, ...anything } ],
  *                         draggable?: 'all' | 'off' }
+ *
+ * ⭐ A TOKEN RECORD IS OPEN, NOT A FIXED SEVEN FIELDS. `id/label/side/kind/px/py/status` are the
+ * only names this component understands, and it understands them only well enough to COERCE them;
+ * every other field the caller publishes is carried through read, drag, drop and re-read untouched.
+ * ⛔ Keys beginning `_` are the host's, not the token's, and are the one thing dropped on the floor.
  *
  * ⛔ DOMAIN-FREE (PSS t0531-01). `side` and `kind` are opaque strings the caller supplies; this
  * component never learns what any of them mean. `side` only ever picks a stable tint out of a hash,
@@ -130,17 +135,50 @@
     var subs = [];
 
     // ── the roster ────────────────────────────────────────────────────────────────────────────
+    /*
+     * ⛔⛔ THE FIELD WHITELIST WAS AN ERASER, AND IT ERASED ON *READ* (plan 0720 RUN A / F1).
+     *
+     * `normalise` used to BUILD a fresh object out of seven named fields, and three other places
+     * did the same enumeration by hand. Because `applyCollection` runs `normalise` over everything
+     * the store hands back, a field the caller published — a size, a description, a pin — was gone
+     * the instant it was read, not merely the first time somebody dragged the token. A feature
+     * carried in an eighth field could therefore never work AT ALL, in any client, and the failure
+     * was silent: the write succeeded, the store held it, and every board dropped it on arrival.
+     *
+     * ⇒ The rule is inverted. Whatever the caller published is CARRIED; the fields below are the
+     * only ones this component claims, and it claims them only to COERCE them (a position must be
+     * a number in 0..1 or the geometry is meaningless; a label must be a string or it cannot be
+     * drawn). Everything else is opaque payload, exactly as `side` and `kind` are opaque strings.
+     *
+     * ⛔ ONE EXCLUSION, AND IT IS DELIBERATE: keys beginning `_` are the HOST's bookkeeping
+     * (`_locks` and friends), never a token's own data. Carrying them would round-trip the store's
+     * internals back through a participant write, and a lock would start rendering as a piece.
+     */
+    var COERCED = { id: 1, label: 1, side: 1, kind: 1, px: 1, py: 1, status: 1 };
+
+    /** A shallow copy of a record — the ONE place a record is duplicated, so no copy can shrink it. */
+    function cloneRec(rec) {
+      var out = {};
+      for (var k in rec) if (Object.prototype.hasOwnProperty.call(rec, k)) out[k] = rec[k];
+      return out;
+    }
+
     function normalise(id, raw) {
       var r = raw && typeof raw === 'object' ? raw : {};
-      return {
-        id: id,
-        label: r.label == null ? id : String(r.label),
-        side: r.side == null ? null : String(r.side),
-        kind: r.kind == null ? null : String(r.kind),
-        px: clamp01(num(r.px, 0.5)),
-        py: clamp01(num(r.py, 0.5)),
-        status: r.status === undefined ? null : r.status
-      };
+      var out = {};
+      for (var k in r) {
+        if (!Object.prototype.hasOwnProperty.call(r, k)) continue;
+        if (k.charAt(0) === '_' || COERCED[k]) continue;   // host bookkeeping · coerced below
+        out[k] = r[k];
+      }
+      out.id = id;
+      out.label = r.label == null ? id : String(r.label);
+      out.side = r.side == null ? null : String(r.side);
+      out.kind = r.kind == null ? null : String(r.kind);
+      out.px = clamp01(num(r.px, 0.5));
+      out.py = clamp01(num(r.py, 0.5));
+      out.status = r.status === undefined ? null : r.status;
+      return out;
     }
     var roster = Array.isArray(opts.tokens) ? opts.tokens : [];
     for (var ai = 0; ai < roster.length; ai++) {
@@ -184,7 +222,10 @@
     function applyField(id, parts, value) {
       if (parts.length !== 1) return;                  // deeper leaves are not ours to guess at
       var base = stored[id] || authored[id] || normalise(id, {});
-      var raw = { label: base.label, side: base.side, kind: base.kind, px: base.px, py: base.py, status: base.status };
+      /* ⛔ COPY THE RECORD, DO NOT REBUILD IT. Naming the fields here made a single-leaf diff —
+         `…/<id>/status`, one field — silently AMPUTATE every other field the record was carrying,
+         because the rebuild only ever mentioned seven of them. */
+      var raw = cloneRec(base);
       raw[parts[0]] = value;
       stored[id] = normalise(id, raw);
     }
@@ -278,8 +319,11 @@
          the store has nothing for that token, so mutating it in place during a drag would rewrite
          the roster's own starting position — and the corruption would only show up the next time
          the store dropped that key and the token was expected to fall back to where it began. */
-      var r = model[id];
-      model[id] = { id: r.id, label: r.label, side: r.side, kind: r.kind, px: r.px, py: r.py, status: r.status };
+      /* ⛔ AND THIS WAS THE FOURTH SITE, NAMED BY NOBODY. The clone that protects the authored
+         record from being mutated in place was ITSELF a seven-field rebuild — so a token's extra
+         fields were gone at `pointerdown`, before `emit` ever ran. Fixing only the three sites the
+         audit listed would have left the drag path erasing them anyway. */
+      model[id] = cloneRec(model[id]);
       dragId = id;
       el.classList.add('is-dragging');
       try { el.setPointerCapture(ev.pointerId); } catch (e) { /* synthetic pointers have no capture */ }
@@ -313,11 +357,11 @@
       var rec = model[id];
       if (!rec || !Argus || !Argus.op || coalesced) return;
       /* `set` with the whole record, not `merge`: a token that has never been written must arrive
-         complete, and B3.2 measured `set` per key as the lossless form. */
-      Argus.op(path + '/' + id, 'set', {
-        id: rec.id, label: rec.label, side: rec.side, kind: rec.kind,
-        px: rec.px, py: rec.py, status: rec.status
-      });
+         complete, and B3.2 measured `set` per key as the lossless form.
+         ⛔ THE WHOLE record — the one this viewer is holding, field for field. Enumerating seven
+         names here turned every drop into a lossy write: the store kept whatever the caller had
+         published only until the first person touched the piece. */
+      Argus.op(path + '/' + id, 'set', cloneRec(rec));
     }
     window.addEventListener('pointermove', onMove, true);
     window.addEventListener('pointerup', onUp, true);
