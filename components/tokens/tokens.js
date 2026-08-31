@@ -222,11 +222,28 @@
      * a number in 0..1 or the geometry is meaningless; a label must be a string or it cannot be
      * drawn). Everything else is opaque payload, exactly as `side` and `kind` are opaque strings.
      *
-     * ⛔ ONE EXCLUSION, AND IT IS DELIBERATE: keys beginning `_` are the HOST's bookkeeping
-     * (`_locks` and friends), never a token's own data. Carrying them would round-trip the store's
-     * internals back through a participant write, and a lock would start rendering as a piece.
+     * ⛔ THE EXCLUSIONS, AND THEY ARE DELIBERATE: keys beginning `_` are the HOST's bookkeeping
+     * (`_locks` and friends), and so are `lock` and `force`. Carrying any of them round-trips the
+     * store's internals back through a participant write.
+     *
+     * ⛔⛔ `lock` AND `force` WERE THE COST OF OPENING THE RECORD, and nothing caught it because
+     * nothing in this estate locks a token yet. Any participant may `lock` anything under
+     * `shared/**`; a RECORD lock lands at `<board>/<id>/lock`, INSIDE the record — so once a record
+     * was open rather than seven fixed fields, `lock` became ordinary token data that every client
+     * mirrors and that `emit` writes back on the next drop. Two consequences, measured:
+     *   · after an `unlock`, the next drag writes `lock` back into the record as junk data that
+     *     every client then carries;
+     *   · a client that still holds the old owner in its model re-asserts the lock on its next
+     *     drop, so a GM's unlock can be undone by somebody moving a piece, silently.
+     * `force` is the same species: `apply` reads it off an op's VALUE and `set` clones that value
+     * into the tree, so it is an instruction that leaves a permanent mark if it is treated as data.
      */
     var COERCED = { id: 1, label: 1, side: 1, kind: 1, px: 1, py: 1, status: 1, pin: 1 };
+    /** Host bookkeeping that is not a `_` key. Neither is ever a token's own field. */
+    var HOST_FIELDS = { lock: 1, force: 1 };
+
+    /** True for a COLLECTION key that is not a token at all — see `applyCollection`. */
+    function notAToken(id) { return typeof id !== 'string' || id.charAt(0) === '_' || HOST_FIELDS[id] === 1; }
 
     /** A shallow copy of a record — the ONE place a record is duplicated, so no copy can shrink it. */
     function cloneRec(rec) {
@@ -240,7 +257,7 @@
       var out = {};
       for (var k in r) {
         if (!Object.prototype.hasOwnProperty.call(r, k)) continue;
-        if (k.charAt(0) === '_' || COERCED[k]) continue;   // host bookkeeping · coerced below
+        if (k.charAt(0) === '_' || HOST_FIELDS[k] || COERCED[k]) continue;   // host bookkeeping · coerced below
         out[k] = r[k];
       }
       out.id = id;
@@ -290,21 +307,31 @@
       applyCollection(Argus.state(path, null));
     }
 
+    /*
+     * ⛔⛔ NOT EVERY KEY IN THE COLLECTION IS A PIECE. A lock on the COLLECTION ITSELF lands at
+     * `<board>/lock` as a plain string, beside the tokens — and a loop over the collection's keys
+     * normalises that string into a token, so a piece labelled "lock" appears at dead centre of the
+     * board. Measured: an ordinary participant can do it with one op, and every viewer sees it.
+     * The same is true of any `_`-prefixed key the host parks there.
+     */
     function applyCollection(value) {
       stored = {};
       if (value && typeof value === 'object') {
         for (var id in value) {
           if (!Object.prototype.hasOwnProperty.call(value, id)) continue;
+          if (notAToken(id)) continue;                 // a lock is not a piece
           if (value[id] == null) continue;
           stored[id] = normalise(id, value[id]);
         }
       }
     }
     function applyToken(id, value) {
+      if (notAToken(id)) return;
       if (value == null) delete stored[id];            // ⇒ falls back to the authored record
       else stored[id] = normalise(id, value);
     }
     function applyField(id, parts, value) {
+      if (notAToken(id)) return;
       if (parts.length !== 1) return;                  // deeper leaves are not ours to guess at
       var base = stored[id] || authored[id] || normalise(id, {});
       /* ⛔ COPY THE RECORD, DO NOT REBUILD IT. Naming the fields here made a single-leaf diff —
