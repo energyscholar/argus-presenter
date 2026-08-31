@@ -17,6 +17,10 @@
  *
  * opts = { controllable?:bool, image?, svg?, preset?, label?, laser?:bool,
  *          cursors?:'all'|'off', x?,y?,scale? }
+ *
+ * ⛔ THE PEER PING IS NOT IN THAT LIST AND MUST NOT BE. Whether a viewer's own taps mark the board
+ * for everybody is THAT VIEWER's setting, defaulting OFF, driven by a control on the plot and by
+ * `window.ApMapPing` — never by an opt, because an opt would let the page decide for the reader.
  * Patterns: State (view), Observer (emit/receive), Command-ready (message types).
  *
  * ANCHORING (Plan 0457 T2): markers + cursors are CONTENT-anchored — wire px/py
@@ -28,6 +32,57 @@
   'use strict';
   var NS = 'http://www.w3.org/2000/svg';
   function svgEl(t, a) { var e = document.createElementNS(NS, t); if (a) for (var k in a) e.setAttribute(k, a[k]); return e; }
+
+  /*
+   * ── ⭐⭐ THE PING TOGGLE IS PER VIEWER, LOCAL, AND DEFAULTS OFF (plan 0720 RUN A / F4) ─────────
+   *
+   * A click on the map paints a named radar ping on EVERYONE's board, and until now it was
+   * unconditional: `opts.cursors:'off'` gated only the pointer trail, never the click. On a board
+   * five people are prodding at, that is five pings a second and nobody can see the pieces.
+   *
+   * ⛔ WHAT IT GATES, because a reader will guess wrong: it controls whether YOUR taps ping. It has
+   * NOTHING to do with whether you SEE other people's — someone who deliberately turns theirs on to
+   * point at something must be visible to everyone, or the feature is pointless. `showClick` is
+   * never consulted about it.
+   *
+   * ⭐ AND BECAUSE IT IS PER VIEWER IT NEEDS NO STORE KEY. No shared state, no permission rule,
+   * nothing to sync, nothing to race — five people's quiet is five separate defaults, and the one
+   * person who wants to point turns their own on without asking anybody. It is deliberately NOT a
+   * mount opt and NOT a presenter control: a mount opt would let whoever authored the page decide
+   * on the reader's behalf, which is the thing being fixed.
+   *
+   * ⚠ `localStorage` is wrapped in try/catch at every touch. A sandboxed iframe with an opaque
+   * origin THROWS on the mere property access, and the component must come up in that case with the
+   * default rather than not at all.
+   */
+  var PING_KEY = 'ap.map.ping';
+  var pingWatchers = [];
+  var pingCache = null;                            // null = not yet read from storage
+  function pingOn() {
+    if (pingCache === null) {
+      pingCache = false;                           // ⛔ THE DEFAULT IS OFF, and it is the default here
+      try { if (window.localStorage && window.localStorage.getItem(PING_KEY) === 'on') pingCache = true; } catch (e) {}
+    }
+    return pingCache;
+  }
+  function setPing(on) {
+    pingCache = !!on;
+    try { if (window.localStorage) window.localStorage.setItem(PING_KEY, pingCache ? 'on' : 'off'); } catch (e) {}
+    for (var i = 0; i < pingWatchers.length; i++) { try { pingWatchers[i](pingCache); } catch (e) {} }
+    return pingCache;
+  }
+  /* A named door, so the control on the board and a test asking for the deliberate case use the
+     same one thing. ⛔ Not a way for a page to decide FOR a viewer — a page that calls `set` is
+     doing what the viewer's own button does, and the viewer can undo it. */
+  var PING = (window.ApMapPing = window.ApMapPing || {
+    get: function () { return pingOn(); },
+    set: function (on) { return setPing(on); },
+    toggle: function () { return setPing(!pingOn()); },
+    watch: function (fn) {
+      pingWatchers.push(fn);
+      return function () { var i = pingWatchers.indexOf(fn); if (i >= 0) pingWatchers.splice(i, 1); };
+    }
+  });
 
   // Map preset registry (plugins register domain SVG providers here). Core owns
   // the registry but ships NO presets — domain art lives in plugins.
@@ -210,13 +265,49 @@
     }
     if (controllable ? (opts.laser !== false) : (cursorsMode !== 'off')) viewport.addEventListener('mousemove', emitPointer);
 
+    /* ⛔ THE PAN LISTENERS ARE ON `window`, SO THE DOM CANNOT COLLECT THEM. Everything else this
+       component binds hangs off elements that go away with `root.innerHTML = ''`; these two do not,
+       and they close over `view` and `apply`, so a leaked pair keeps driving a detached tree. Held
+       by name and removed by `destroy`. */
+    var onWinMove = null, onWinUp = null;
     if (controllable) {
       var drag = false, sx = 0, sy = 0, ox = 0, oy = 0;
       viewport.addEventListener('mousedown', function (e) { drag = true; viewTouched = true; sx = e.clientX; sy = e.clientY; ox = view.x; oy = view.y; e.preventDefault(); });
-      window.addEventListener('mousemove', function (e) { if (!drag) return; view.x = ox + (e.clientX - sx); view.y = oy + (e.clientY - sy); apply(); emitView(); });
-      window.addEventListener('mouseup', function () { if (drag) { drag = false; emitView(true); } });
+      onWinMove = function (e) { if (!drag) return; view.x = ox + (e.clientX - sx); view.y = oy + (e.clientY - sy); apply(); emitView(); };
+      onWinUp = function () { if (drag) { drag = false; emitView(true); } };
+      window.addEventListener('mousemove', onWinMove);
+      window.addEventListener('mouseup', onWinUp);
       viewport.addEventListener('wheel', function (e) { e.preventDefault(); viewTouched = true; view.scale = Math.max(0.3, Math.min(6, view.scale * (e.deltaY < 0 ? 1.1 : 0.9))); apply(); emitView(); }, { passive: false });
     }
+
+    /*
+     * ⭐ THE CONTROL, ON THE BOARD. Discreet by design: small and unobtrusive, but ON the surface
+     * rather than buried in a settings panel — someone who wants to point wants it now, not after
+     * a hunt. Discreet is not hidden; people find it.
+     * ⇒ DISCREET, NOT HIDDEN. Small, low-contrast, in the corner of the plot in the style of the
+     * rail tabs — and NOT buried in a settings panel, because someone who wants to point at a
+     * target wants it now, mid-fight, without hunting for it.
+     *
+     * It sits on `wrap`, OUTSIDE `.ap-map-viewport`: inside, its own click would fall through to
+     * the very handler it gates and fire a ping on the frame the viewer turned pinging on.
+     */
+    var pingBtn = document.createElement('button');
+    pingBtn.type = 'button';
+    pingBtn.className = 'ap-map-ping-toggle';
+    function paintPing(on) {
+      pingBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      pingBtn.classList.toggle('is-on', !!on);
+      /* The label states the CURRENT state, not the action — a button that reads "ping on" while
+         pinging is off is the oldest ambiguity in toggles, and this one is read at a glance. */
+      pingBtn.textContent = on ? '◉ ping on' : '○ ping off';
+      pingBtn.title = on ? 'Your taps mark the board for everyone. Click to stop.'
+        : 'Your taps mark nothing. Click to point things out to everyone.';
+    }
+    paintPing(PING.get());
+    pingBtn.addEventListener('click', function (e) { e.stopPropagation(); paintPing(PING.toggle()); });
+    /* Every map on the page shows the same state, because it IS the same state. */
+    var offPing = PING.watch(paintPing);
+    wrap.appendChild(pingBtn);
 
     // Clicks are PEER-TO-PEER (the core feature): ANY user clicks -> ALL users see
     // a marker + the clicker's NAME. Users signal each other, not just teacher->student.
@@ -224,6 +315,9 @@
     viewport.addEventListener('mousedown', function (e) { dnX = e.clientX; dnY = e.clientY; moved = false; });
     viewport.addEventListener('mousemove', function (e) { if (Math.abs(e.clientX - dnX) > 4 || Math.abs(e.clientY - dnY) > 4) moved = true; });
     viewport.addEventListener('click', function (e) {   // E2: peer click -> store marker op (perm: any)
+      /* ⛔ THE VIEWER'S OWN SETTING, AND NOTHING ELSE, DECIDES WHETHER THIS TAP PINGS. Not the
+         mount, not the presenter, not a store key. See the PING block at the top of this file. */
+      if (!PING.get()) return;
       if (moved || !Argus || !Argus.op) return;
       var f = contentFrac(e.clientX, e.clientY); if (!f) return;
       var mv = {
@@ -320,7 +414,27 @@
       }
     }) : null;
 
-    return { setView: function (v) { viewTouched = true; Object.assign(view, v); apply(); }, view: function () { return view; }, destroy: function () { if (off) off(); subs.forEach(function (u) { u(); }); if (root.classList) root.classList.remove('ap-fullbleed'); root.innerHTML = ''; } };
+    /*
+     * ⛔ TEARDOWN IS EXHAUSTIVE AND IT IS IDEMPOTENT. Exhaustive because three things this
+     * component owns outlive its DOM — the two `window` pan listeners, the per-user cursor timers,
+     * and the ping-toggle watcher — and `root.innerHTML = ''` collects none of them. Idempotent
+     * because the registry now destroys before re-mounting, so a caller that ALSO keeps its own
+     * handle (scene, stepper) would otherwise tear the same instance down twice.
+     * ⚠ Each unsubscribe is guarded: one that throws must not strand the ones after it.
+     */
+    var dead = false;
+    function destroy() {
+      if (dead) return; dead = true;
+      if (off) { try { off(); } catch (e) {} }
+      if (offPing) { try { offPing(); } catch (e) {} }
+      subs.forEach(function (u) { try { u(); } catch (e) {} });
+      if (onWinMove) window.removeEventListener('mousemove', onWinMove);
+      if (onWinUp) window.removeEventListener('mouseup', onWinUp);
+      for (var uid in cursorEls) removeCursor(uid);          // clears the idle/kill timers too
+      if (root.classList) root.classList.remove('ap-fullbleed');
+      root.innerHTML = '';
+    }
+    return { setView: function (v) { viewTouched = true; Object.assign(view, v); apply(); }, view: function () { return view; }, destroy: destroy };
   }
   if (window.ApComponents) window.ApComponents.register('map', render);
 })();

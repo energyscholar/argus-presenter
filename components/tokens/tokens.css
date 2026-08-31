@@ -13,6 +13,13 @@
 }
 .ap-token.is-static { cursor: default; }
 .ap-token.is-dragging { cursor: grabbing; }
+/* A PINNED token is fixed BY DECLARATION, not merely by a read-only mount — it is the one piece on
+   the board whose position means something to every other piece. Say so on the piece itself: a ring
+   that reads as "fastened down", so nobody spends the fight wondering why it will not move. */
+.ap-token.is-pinned > .ap-token-body {
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.85), 0 0 10px rgba(160, 200, 255, 0.55);
+  border-style: dashed;
+}
 .ap-token-body {
   position: relative; width: 20px; height: 20px; margin: 0 auto; border-radius: 50%;
   background: var(--ap-token-tint);
@@ -30,6 +37,16 @@
 .ap-token-label {
   margin-top: 3px; font-size: 0.7rem; letter-spacing: 0.06em; white-space: nowrap;
   color: var(--ap-token-tint); text-shadow: 0 0 4px #000, 0 0 2px #000;
+}
+/* An EMPTY board says so. A blank plot and a broken plot are indistinguishable to the person
+   looking at one mid-session, and this component now legitimately mounts before anything has been
+   written to it. Centred in the plot, quiet, and unmistakably a message rather than a piece. */
+.ap-tokens-empty {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 9;
+  pointer-events: none; white-space: nowrap;
+  padding: 4px 10px; border-radius: 4px; font-size: 0.78rem; letter-spacing: 0.04em;
+  color: rgba(200, 216, 244, 0.72);
+  background: rgba(8, 12, 28, 0.62); border: 1px dashed rgba(140, 170, 220, 0.35);
 }
 /* A path the host coalesces cannot carry a durable drop. Say so on the board, not in a console. */
 .ap-tokens-warning {

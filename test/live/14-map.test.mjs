@@ -15,6 +15,14 @@ test('rep 14 — map: peer-to-peer named click (user -> all)', async () => {
     await waitContentFrame(alice); await waitContentFrame(bob);
     await new Promise((r) => setTimeout(r, 400));
 
+    /* ⚠ SPEC CHANGE, plan 0720 RUN A / F4: a viewer's own taps no longer ping by default — the
+       toggle is per viewer and starts OFF, so five people prodding a shared board do not carpet it.
+       Alice turning HERS on is what a player does when they mean to point at something, and it is
+       the only line added here: every assertion below is unchanged and still fails if the
+       peer-to-peer mechanism breaks. Bob's toggle stays off throughout and he must still SEE it —
+       the setting gates your taps, never your eyes. */
+    await contentFrame(alice).evaluate(() => window.ApMapPing.set(true));
+
     await contentFrame(alice).$eval('.ap-map-viewport', (el) => {
       const r = el.getBoundingClientRect();
       const o = { clientX: r.left + 140, clientY: r.top + 100, bubbles: true };
