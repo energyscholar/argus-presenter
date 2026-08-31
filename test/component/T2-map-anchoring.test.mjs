@@ -9,6 +9,12 @@ test('T2 — click + pointer emit CONTENT-space fractions under pan+zoom', async
     component: 'map',
     opts: { controllable: false, userId: 'me', userName: 'Me', x: 40, y: -20, scale: 2 },
     probe: () => {
+      /* ⚠ SPEC CHANGE, plan 0720 RUN A / F4: a viewer's own taps no longer ping by default. This
+         test measures the CONTENT-SPACE ARITHMETIC of the emitted op under pan+zoom, which is
+         unaffected — but there is no op to measure unless this viewer has opted in, so it does what
+         a player does. ⛔ The pointer assertions below deliberately do NOT depend on it: the
+         pointer trail is gated by `cursors`, not by the ping toggle, and they are separate. */
+      window.ApMapPing.set(true);
       const vp = document.querySelector('.ap-map-viewport');
       const ct = document.querySelector('.ap-map-content');
       const cr = ct.getBoundingClientRect();

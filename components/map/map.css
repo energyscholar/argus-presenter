@@ -1,5 +1,24 @@
 /* MAP (interactive, shared). Extends theme tokens. */
-.ap-map { display: flex; flex-direction: column; gap: 0.6rem; height: 100%; min-height: 0; }
+/* `position: relative` so the ping toggle can hang in the plot's corner. The toggle is deliberately
+   NOT inside .ap-map-viewport: in there its own click falls through to the handler it gates. */
+.ap-map { display: flex; flex-direction: column; gap: 0.6rem; height: 100%; min-height: 0; position: relative; }
+/* ⭐ DISCREET, NOT HIDDEN (plan 0720 RUN A / F4). Small and low-contrast in the corner of the plot,
+   in the style of the rail tabs — findable at a glance mid-fight, invisible when nobody is looking
+   for it. ⛔ Never a settings panel: someone who wants to point at a target wants it NOW. */
+.ap-map-ping-toggle {
+  position: absolute; right: 10px; bottom: 10px; z-index: 10;
+  font: inherit; font-size: 0.68rem; letter-spacing: 0.05em; line-height: 1;
+  padding: 4px 8px; border-radius: 999px; cursor: pointer;
+  color: rgba(190, 208, 238, 0.62);
+  background: rgba(8, 12, 28, 0.55);
+  border: 1px solid rgba(140, 170, 220, 0.28);
+  opacity: 0.55; transition: opacity 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.ap-map-ping-toggle:hover, .ap-map-ping-toggle:focus-visible { opacity: 1; }
+/* ON is the loud state, because ON is the one with a consequence for everyone else. */
+.ap-map-ping-toggle.is-on {
+  opacity: 0.95; color: #ffd9d9; border-color: rgba(255, 77, 77, 0.6); background: rgba(52, 10, 10, 0.62);
+}
 /* T4 (Plan 0457): no height cap — the viewport takes all the room its host gives
    it (flex), with a floor for embedded (non-full-bleed) contexts like scene cells. */
 .ap-map-viewport {

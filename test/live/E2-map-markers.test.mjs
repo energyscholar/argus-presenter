@@ -17,6 +17,12 @@ test('E2 — a click writes an attributed marker to the store; peer sees it', as
     await waitContentFrame(alice); await waitContentFrame(bob);
     await new Promise((r) => setTimeout(r, 300));
 
+    /* ⚠ SPEC CHANGE, plan 0720 RUN A / F4: whether a viewer's own taps ping is now that viewer's
+       setting and it starts OFF. This test is about the MECHANISM — store-native, attributed,
+       visible to a peer — not about the default, so Alice turns hers on exactly as a player would
+       when they mean to point at something. Bob never touches his and must still see the marker. */
+    await contentFrame(alice).evaluate(() => window.ApMapPing.set(true));
+
     await contentFrame(alice).$eval('.ap-map-viewport', (el) => {
       const r = el.getBoundingClientRect();
       const o = { clientX: r.left + 140, clientY: r.top + 100, bubbles: true };
