@@ -39,6 +39,7 @@ const IDENTITY_GATE_MAX_FRAMES = 64;
 import { createSessionLog, resolveSessionLogDir, defaultSessionLogDir } from '../lib/session-log.mjs';
 import { CursorBook, isDeliveryKey } from '../lib/delivery-cursors.mjs';
 import { createCursorStore } from '../lib/cursor-store.mjs';
+import { createDurableState, resolveStateDir, resolveStatePaths } from '../lib/durable-state.mjs';
 import { selectProfile, DEFAULT_PROFILE } from './profiles.mjs';
 import { createHeuristicSummarizer } from './summarizer.mjs';
 import { buildDigest } from './digests.mjs';
@@ -182,7 +183,7 @@ function sendStatic(res, req, absPath, contentType) {
   } catch (e) { res.writeHead(404); res.end('not found'); }
 }
 
-export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null, profile = DEFAULT_PROFILE, settlingMs = null, queueMaxPending = null, queueTtlMs = null, perTurnBudgetMs = null, perTurnWrapMs = null, floorThresholds = null, sessionLogDir = null, enforceOAuth = undefined, allowPasswordCommandOnLAN = undefined, allowlist = null, oidc = null, oidcDeps = null, oidcSessionTtlMs = null, tailscale = null, tailscaleResolve = null, tailscaleWhois = null, breakGlass = null, breakGlassDeps = null, revokedNonceFile = null, sessionStoreFile = null, bindHosts = null, cursorDir = null } = {}) {
+export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null, profile = DEFAULT_PROFILE, settlingMs = null, queueMaxPending = null, queueTtlMs = null, perTurnBudgetMs = null, perTurnWrapMs = null, floorThresholds = null, sessionLogDir = null, enforceOAuth = undefined, allowPasswordCommandOnLAN = undefined, allowlist = null, oidc = null, oidcDeps = null, oidcSessionTtlMs = null, tailscale = null, tailscaleResolve = null, tailscaleWhois = null, breakGlass = null, breakGlassDeps = null, revokedNonceFile = null, sessionStoreFile = null, bindHosts = null, cursorDir = null, stateDir = null, statePaths = null, stateQuietMs = null, stateMaxMs = null } = {}) {
   // Plan 0543 P1 — the AUTH POLICY dial. Validated HERE (the single startup path shared by the CLI
   // self-run and presenter_start): an unknown enforceOAuth value THROWS rather than falling through
   // to a policy the deployer never chose. This slice is plumbing only — P3 makes the policy govern.
@@ -582,8 +583,52 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     onWarn: (event, detail) => log.warn('session-log', event, detail),
   });
   if (sessionLog.status().enabled) log.info('session-log', 'open', { sessionLogId: sessionLog.sessionLogId, dir: sessionLog.status().sessionLogDir, source: sessionLog.status().sessionLogDirSource });
+  /*
+   * ── Plan 0720 RUN C (F18) — THE LIVE STATE IS NOW DURABLE ───────────────────────────────────
+   *
+   * ⛔ The store below is an IN-MEMORY object tree and the CI on this estate redeploys within
+   * ~60 s of a push, restarting the service. Until this phase, ONE PUSH DESTROYED A LIVE SESSION:
+   * every piece anyone had moved, the turn order, who had acted, and every point of damage.
+   *
+   * ⚠ CONFIGURED ⇒ DURABLE; UNCONFIGURED ⇒ INERT, and that is the LIBRARY default, by the same
+   *   rule as the session log two screens up: this suite stands up hundreds of servers in one
+   *   process and none of them may read or write a human's real state directory — nor each
+   *   other's. The CLI self-run and `presenter_start` resolve it, so a REAL session is durable.
+   *
+   * ⭐ `noteOp` rides the SAME `onOp` seam the session log uses, so it sees exactly the durable
+   *   ops and never the ephemerals (pointer/laser return from `apply` before the op log).
+   *   ⛔ Late-bound through `__durable`, because the store must exist before the thing that dumps
+   *   it — a straight reference here would read `undefined` on the first op.
+   */
+  const durableTarget = stateDir !== null
+    ? { stateDir, stateDirSource: 'option', campaign: null }
+    : (process.env.PRESENTER_STATE_DIR || process.env.PRESENTER_DATA_DIR || process.env.PRESENTER_CAMPAIGN_DIR
+      ? resolveStateDir()
+      : { stateDir: null, stateDirSource: null, campaign: null });
+  let __durable = null;
   // core session state machine (Plan 0435 group B); P16.2 hangs the durable sink off its op path
-  const store = createStore({ onOp: (entry) => sessionLog.append({ kind: 'op', ...entry }) });
+  const store = createStore({ onOp: (entry) => { sessionLog.append({ kind: 'op', ...entry }); if (__durable) __durable.noteOp(entry); } });
+  /*
+   * ⛔⛔ `apply` IS `serverApply`, THE BROADCASTING ONE — NOT `store.apply`. A restore that used
+   * the raw reducer would rebuild the server's tree perfectly and leave every connected client
+   * showing the pre-restore board, with nothing on the wire to tell them otherwise. `serverApply`
+   * is a hoisted function declaration further down this same scope; the arrow defers the lookup.
+   */
+  const durableState = createDurableState({
+    dir: durableTarget.stateDir,
+    store,
+    apply: (op, actor) => serverApply(op, actor),
+    /* ⛔ THE STORE'S OWN DEFINITION OF "EPHEMERAL", handed in rather than re-typed. An ephemeral op
+       returns early from `apply` but the REDUCER HAS ALREADY RUN, so `shared/pointer/**` really is
+       in the tree and a dump that did not know that would persist every viewer's cursor and
+       restore a room full of them. One definition, one place it can change. */
+    isEphemeralPath: isEphemeral,
+    paths: resolveStatePaths({ statePaths }),
+    quietMs: Number.isFinite(stateQuietMs) ? stateQuietMs : undefined,
+    maxMs: Number.isFinite(stateMaxMs) ? stateMaxMs : undefined,
+    log,
+  });
+  __durable = durableState;
   // Current DISPLAY per role / per user (C6): what a (re)connecting client should
   // be shown. A descriptor is re-rendered per connection on hello.
   const displayByRole = {};    // role -> descriptor
@@ -3577,6 +3622,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       get sendPageTo() { return sendPageTo; },   // Plan 0689 R5
       get serverApply() { return serverApply; },
       get sessionLog() { return sessionLog; },
+      get durableState() { return durableState; },   // Plan 0720 RUN C
       get setDisplay() { return setDisplay; },
       get setModerationFloor() { return setModerationFloor; },
       get setSpeaking() { return setSpeaking; },
@@ -3690,6 +3736,21 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   return new Promise((resolve) => {
     httpServer.listen(port, '127.0.0.1', async () => {
       await loadPluginServerModules();
+      /*
+       * ⛔ RESTORE RUNS **AFTER** THE PLUGINS HAVE SEEDED, AND THE ORDER IS THE WHOLE POINT.
+       * A plugin writes its opening defaults during `register`. Restoring first would let those
+       * defaults overwrite the session that was in progress — the restore would appear to work,
+       * report every leaf applied, and hand back the opening layout anyway. Last write wins, so
+       * the restore has to be the last write.
+       * ⚠ Unconfigured ⇒ this is a no-op, and it is SAID OUT LOUD rather than silently skipped:
+       *   "the session does not survive a restart" is a fact an operator has to be able to see.
+       */
+      if (durableState.configured) {
+        const r = durableState.restore();
+        log.info('durable-state', 'boot', { file: durableState.file, present: r.present, applied: r.applied, skipped: r.skipped, locksBroken: r.locksBroken, error: r.error, source: durableTarget.stateDirSource, campaign: durableTarget.campaign });
+      } else {
+        log.info('durable-state', 'ephemeral', { reason: 'no state directory configured — the live session does NOT survive a restart' });
+      }
       // Plan 0650 — extra binds AFTER the primary one, so a bad address can never stop the
       // deployment coming up on loopback. Failures are logged, not thrown.
       await bindExtraHosts(httpServer.address().port);
@@ -3767,6 +3828,16 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     // Plan 0650 — extra listen addresses (e.g. the tailnet interface), so a tailnet peer can reach
     // the server and be identified by `tailscale whois`. Absent ⇒ loopback only, unchanged.
     bindHosts: bindHostsConfig(),
+    /*
+     * Plan 0720 RUN C (F18) — THE LIVE SESSION SURVIVES A RESTART, and the resolution happens HERE
+     * rather than inside createServer() for exactly the reason the session log does: a bare
+     * library call must still write nothing, so the suite never touches a human's real state.
+     * ⛔ ROUTED, not literal. The estate's routing table puts deployment-local play state at
+     *   `{dataRoot}/campaigns/{campaign}/state`; writing to $PRESENTER_DATA_DIR itself would put
+     *   this file at the ROOT of the data tree, where no tool that asks the router would find it.
+     *   See lib/durable-state.mjs for the four rungs and which one wins.
+     */
+    stateDir: resolveStateDir().stateDir,
     // Plan 0543 P4 — a durable store for revoked guest-link nonces (in the state/log dir) so a
     // revocation survives a restart. State, not content: it holds only nonces.
     revokedNonceFile: join(logTarget.sessionLogDir || defaultSessionLogDir(), 'revoked-caps.json'),

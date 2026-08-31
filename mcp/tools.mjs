@@ -13,6 +13,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { presenterPort, authPolicy, identityConfig, identityServerOptions, identityStartupLine, bindHostsConfig, controlTokenConfig } from '../lib/deployment-config.mjs';
 import { resolveSessionLogDir, defaultSessionLogDir } from '../lib/session-log.mjs';
+import { resolveStateDir } from '../lib/durable-state.mjs';
 import { srvRoot, currentRelease, enumerateReleases, unitStatus, staleUnit, roomTable, probe, tailnetAddress, REAL_PAGE_MARKERS } from '../lib/ops-status.mjs';
 import { join, dirname } from 'node:path';
 import {
@@ -227,6 +228,16 @@ export const coreTools = [
        */
       const sessionLogTarget = resolveSessionLogDir();
       if (sessionLogTarget.sessionLogDir) opts.sessionLogDir = sessionLogTarget.sessionLogDir;
+      /*
+       * ── Plan 0720 RUN C (F18) — THE AGENT-RAISED SESSION IS DURABLE, AND THE AGENT DOES NOT GET
+       * TO SAY WHERE. This is the path that raises the real live sessions: the ones a CI redeploy
+       * used to wipe mid-fight, taking every dragged piece, the turn order and every point of
+       * damage with it. Resolved here, not inside createServer(), so a bare library call still
+       * writes nothing — and deliberately NOT a property on this tool's input schema, for the same
+       * reason `sessionLogDir` is not: a caller-settable destination for other people's session
+       * state is a redirect primitive, and a wrong one loses the session it was meant to save.
+       */
+      opts.stateDir = resolveStateDir().stateDir;
       // Plan 0543 P4 — durable revoked-nonce store (state, not content) so a guest-link revocation
       // survives a restart. Kept in the resolved state/log dir (so it honours PRESENTER_SESSION_LOG_DIR
       // test isolation); resolved here, not taken from the caller, like the session log dir.
