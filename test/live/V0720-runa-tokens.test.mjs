@@ -179,6 +179,80 @@ test('0720 RUN-A.1c — ⛔ the ONE exclusion: host bookkeeping is not token dat
   await unmountProbe(A);
 });
 
+/* ────────────────────────────────────────────────────────────────────────────────────────────────
+ * A2 — THE PER-TOKEN PIN
+ * ──────────────────────────────────────────────────────────────────────────────────────────────*/
+
+test('0720 RUN-A.2 — ⭐⭐ A PINNED TOKEN REFUSES THE DRAG, AND THE PROOF IS THE STORE', async () => {
+  /*
+   * ⛔ ASSERT ON THE STORE, NOT ON THE DOM. A component that let the piece slide under the finger
+   * and merely declined to WRITE would look identical in a DOM assertion taken mid-drag — and it
+   * would be wrong in the way that matters, because the next diff would snap the piece back and
+   * every viewer would see a different board for as long as the hand was down.
+   *
+   * The control is the whole test: an UNPINNED token on the same board, dragged by the same helper
+   * in the same call, MUST move. Without it this passes on a component that has stopped dragging
+   * anything at all.
+   */
+  await mountProbe(A, { path: PATH + '2', draggable: 'all', tokens: [
+    { id: 'origin', label: 'Origin', px: 0.5, py: 0.5, pin: true },
+    { id: 'raider', label: 'Raider', px: 0.2, py: 0.2 },
+  ] });
+
+  const cls = await contentFrame(A).evaluate(() => {
+    const q = (id) => document.querySelector('#runa-host .ap-token[data-token-id="' + id + '"]');
+    return {
+      pinned: q('origin').className, pinnedAttr: q('origin').getAttribute('data-pin'),
+      free: q('raider').className, freeAttr: q('raider').getAttribute('data-pin'),
+    };
+  });
+  check(`the pinned token is marked on screen: "${cls.pinned}"`,
+    /is-pinned/.test(cls.pinned) && /is-static/.test(cls.pinned) && cls.pinnedAttr === '1', JSON.stringify(cls));
+  check(`…and the free one is not: "${cls.free}"`,
+    !/is-pinned|is-static/.test(cls.free) && cls.freeAttr === null, JSON.stringify(cls));
+
+  await dragIn(A, 'origin', 0.85, 0.85);
+  await dragIn(A, 'raider', 0.7, 0.75);
+  await poll(() => { const t = server.store.get(PATH + '2/raider'); return t && near(t.px, 0.7, 0.03); },
+    'the CONTROL drag reached the store');
+  await wait(300);                                    // give a wrong write time to arrive
+
+  const coll = server.store.get(PATH + '2') || {};
+  check('⭐ THE PINNED TOKEN WROTE NOTHING — no key of its own exists at all',
+    coll.origin === undefined, JSON.stringify(coll.origin));
+  check('⭐ CONTROL: the unpinned token on the same board moved, so the refusal is not a dead surface',
+    !!coll.raider && near(coll.raider.px, 0.7, 0.03) && near(coll.raider.py, 0.75, 0.03),
+    JSON.stringify(coll.raider));
+  check(`…and exactly one key exists: ${Object.keys(coll).join(', ') || '(none)'}`,
+    Object.keys(coll).join(',') === 'raider', Object.keys(coll).join(','));
+
+  const still = await modelOf(A);
+  check('…and the pinned token is still exactly where it was declared',
+    near(still.origin.px, 0.5, 1e-6) && near(still.origin.py, 0.5, 1e-6),
+    `${still.origin.px} / ${still.origin.py}`);
+});
+
+test('0720 RUN-A.2b — ⛔ a pin that arrives LATER pins a token that is already on the board', async () => {
+  /* The origin may be declared after the board is up — that is exactly the shape the board document
+     takes when a tool writes it. An element created before the pin arrived must not stay draggable
+     for the rest of the session, so the guard reads the LIVE record rather than the mount. */
+  server.apply({ path: PATH + '2/raider', verb: 'set', value: {
+    id: 'raider', label: 'Raider', px: 0.7, py: 0.75, pin: true,
+  } }, gm);
+  await poll(async () => (await modelOf(A)).raider.pin === true, 'the pin diff landed');
+
+  const marked = await contentFrame(A).$eval('#runa-host .ap-token[data-token-id="raider"]', (el) => el.className);
+  check(`the already-rendered element picked the pin up: "${marked}"`, /is-pinned/.test(marked), marked);
+
+  await dragIn(A, 'raider', 0.1, 0.1);
+  await wait(300);
+  const t = server.store.get(PATH + '2/raider');
+  check('⭐ …and it now refuses the drag too', near(t.px, 0.7, 0.01) && near(t.py, 0.75, 0.01),
+    `${t.px} / ${t.py}`);
+  await unmountProbe(A);
+});
+
+
 test('0720 RUN-A.9 — teardown', async () => {
   if (browser) await browser.close();
   if (server) await server.close();

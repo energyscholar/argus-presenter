@@ -6,8 +6,12 @@
  * different tokens in the same instant cannot lose a write.
  *
  *   opts = <map opts> + { path?:      'shared/tactical/tokens',
- *                         tokens?:    [ { id, label, side, kind, px, py, status, ...anything } ],
+ *                         tokens?:    [ { id, label, side, kind, px, py, status, pin, ...anything } ],
  *                         draggable?: 'all' | 'off' }
+ *
+ * ⛔ `draggable` is a property of the MOUNT; `pin` is a property of the TOKEN. A board whose centre
+ * is a declared origin needs one piece that cannot be moved on a surface where everything else can,
+ * and `draggable` cannot express that. A pinned token refuses the grab and says so on screen.
  *
  * ⭐ A TOKEN RECORD IS OPEN, NOT A FIXED SEVEN FIELDS. `id/label/side/kind/px/py/status` are the
  * only names this component understands, and it understands them only well enough to COERCE them;
@@ -154,7 +158,7 @@
      * (`_locks` and friends), never a token's own data. Carrying them would round-trip the store's
      * internals back through a participant write, and a lock would start rendering as a piece.
      */
-    var COERCED = { id: 1, label: 1, side: 1, kind: 1, px: 1, py: 1, status: 1 };
+    var COERCED = { id: 1, label: 1, side: 1, kind: 1, px: 1, py: 1, status: 1, pin: 1 };
 
     /** A shallow copy of a record — the ONE place a record is duplicated, so no copy can shrink it. */
     function cloneRec(rec) {
@@ -178,6 +182,19 @@
       out.px = clamp01(num(r.px, 0.5));
       out.py = clamp01(num(r.py, 0.5));
       out.status = r.status === undefined ? null : r.status;
+      /*
+       * ⛔ `pin` — THE PER-TOKEN EXCEPTION TO `draggable`, and it is not a nicety.
+       * `draggable` is a property of the MOUNT: every piece moves or none do. A board whose centre
+       * is a declared origin needs the opposite — one piece that cannot be shoved, on a surface
+       * where everything else can. `recompute()` lets STORED beat AUTHORED, so a single stray
+       * finger writes a new position for the origin and re-pushing the roster does NOT put it back;
+       * from that moment every ring on the board measures from the wrong place, silently.
+       *
+       * ⚠ Boolean and nothing else. A pin that arrived as the string "false" must not read as
+       * pinned, and a pin that is simply absent must read as NOT pinned rather than as `undefined`,
+       * or the drag guard would be deciding on a value it never received.
+       */
+      out.pin = r.pin === true;
       return out;
     }
     var roster = Array.isArray(opts.tokens) ? opts.tokens : [];
@@ -257,14 +274,23 @@
     }
 
     // ── DOM, reconciled rather than rebuilt ───────────────────────────────────────────────────
+    /** Can THIS viewer move THIS token right now? Mount-wide permission AND the token's own pin. */
+    function movable(id) {
+      var rec = model[id];
+      return !!(editable && rec && rec.pin !== true);
+    }
     function create(id) {
       var el = document.createElement('div');
-      el.className = 'ap-token' + (editable ? '' : ' is-static');
+      el.className = 'ap-token';
       el.setAttribute('data-token-id', id);
       var body = document.createElement('div'); body.className = 'ap-token-body';
       var status = document.createElement('div'); status.className = 'ap-token-status';
       var label = document.createElement('div'); label.className = 'ap-token-label';
       body.appendChild(status); el.appendChild(body); el.appendChild(label);
+      /* ⛔ THE LISTENER IS BOUND ON PERMISSION, THE REFUSAL HAPPENS IN `grab`. A pin can arrive
+         from the store at any moment — the origin may be declared long after the piece is on the
+         board — and an element created before that diff would otherwise stay draggable for the
+         rest of the session with nothing on screen to show it. `grab` reads the LIVE record. */
       if (editable) el.addEventListener('pointerdown', function (ev) { grab(id, el, ev); });
       layer.appendChild(el);
       els[id] = { el: el, body: body, status: status, label: label };
@@ -301,6 +327,12 @@
       if (e.label.textContent !== rec.label) e.label.textContent = rec.label;
       e.el.setAttribute('data-side', rec.side == null ? '' : rec.side);
       e.el.setAttribute('data-kind', rec.kind == null ? '' : rec.kind);
+      /* A piece nobody can move must LOOK like one. `is-static` covers both reasons — the mount
+         forbids dragging, or this token is pinned — because to a finger they are the same fact;
+         `data-pin` keeps the two distinguishable for anyone who needs to know which. */
+      e.el.classList.toggle('is-static', !movable(id));
+      e.el.classList.toggle('is-pinned', rec.pin === true);
+      if (rec.pin === true) e.el.setAttribute('data-pin', '1'); else e.el.removeAttribute('data-pin');
       e.el.style.setProperty('--ap-token-tint', tint(rec.side == null ? id : rec.side));
       paintStatus(e, rec.status);
     }
@@ -314,7 +346,11 @@
 
     // ── drag: local while moving, ONE write on drop ───────────────────────────────────────────
     function grab(id, el, ev) {
-      if (!editable || !model[id]) return;
+      /* ⛔ A PINNED TOKEN IS NOT A GRAB HANDLE — and note what is NOT done here: no
+         `stopPropagation`, no `preventDefault`. The press falls through to the map exactly as a
+         press on empty space does, so a pinned piece stays clickable and pannable-through rather
+         than becoming a dead patch on the board. */
+      if (!movable(id)) return;
       /* ⛔ CLONE BEFORE MOVING. `recompute()` puts the AUTHORED record itself into the model when
          the store has nothing for that token, so mutating it in place during a drag would rewrite
          the roster's own starting position — and the corruption would only show up the next time
