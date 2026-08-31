@@ -265,11 +265,18 @@
     }
     if (controllable ? (opts.laser !== false) : (cursorsMode !== 'off')) viewport.addEventListener('mousemove', emitPointer);
 
+    /* ⛔ THE PAN LISTENERS ARE ON `window`, SO THE DOM CANNOT COLLECT THEM. Everything else this
+       component binds hangs off elements that go away with `root.innerHTML = ''`; these two do not,
+       and they close over `view` and `apply`, so a leaked pair keeps driving a detached tree. Held
+       by name and removed by `destroy`. */
+    var onWinMove = null, onWinUp = null;
     if (controllable) {
       var drag = false, sx = 0, sy = 0, ox = 0, oy = 0;
       viewport.addEventListener('mousedown', function (e) { drag = true; viewTouched = true; sx = e.clientX; sy = e.clientY; ox = view.x; oy = view.y; e.preventDefault(); });
-      window.addEventListener('mousemove', function (e) { if (!drag) return; view.x = ox + (e.clientX - sx); view.y = oy + (e.clientY - sy); apply(); emitView(); });
-      window.addEventListener('mouseup', function () { if (drag) { drag = false; emitView(true); } });
+      onWinMove = function (e) { if (!drag) return; view.x = ox + (e.clientX - sx); view.y = oy + (e.clientY - sy); apply(); emitView(); };
+      onWinUp = function () { if (drag) { drag = false; emitView(true); } };
+      window.addEventListener('mousemove', onWinMove);
+      window.addEventListener('mouseup', onWinUp);
       viewport.addEventListener('wheel', function (e) { e.preventDefault(); viewTouched = true; view.scale = Math.max(0.3, Math.min(6, view.scale * (e.deltaY < 0 ? 1.1 : 0.9))); apply(); emitView(); }, { passive: false });
     }
 
@@ -405,7 +412,27 @@
       }
     }) : null;
 
-    return { setView: function (v) { viewTouched = true; Object.assign(view, v); apply(); }, view: function () { return view; }, destroy: function () { if (off) off(); if (offPing) offPing(); subs.forEach(function (u) { u(); }); if (root.classList) root.classList.remove('ap-fullbleed'); root.innerHTML = ''; } };
+    /*
+     * ⛔ TEARDOWN IS EXHAUSTIVE AND IT IS IDEMPOTENT. Exhaustive because three things this
+     * component owns outlive its DOM — the two `window` pan listeners, the per-user cursor timers,
+     * and the ping-toggle watcher — and `root.innerHTML = ''` collects none of them. Idempotent
+     * because the registry now destroys before re-mounting, so a caller that ALSO keeps its own
+     * handle (scene, stepper) would otherwise tear the same instance down twice.
+     * ⚠ Each unsubscribe is guarded: one that throws must not strand the ones after it.
+     */
+    var dead = false;
+    function destroy() {
+      if (dead) return; dead = true;
+      if (off) { try { off(); } catch (e) {} }
+      if (offPing) { try { offPing(); } catch (e) {} }
+      subs.forEach(function (u) { try { u(); } catch (e) {} });
+      if (onWinMove) window.removeEventListener('mousemove', onWinMove);
+      if (onWinUp) window.removeEventListener('mouseup', onWinUp);
+      for (var uid in cursorEls) removeCursor(uid);          // clears the idle/kill timers too
+      if (root.classList) root.classList.remove('ap-fullbleed');
+      root.innerHTML = '';
+    }
+    return { setView: function (v) { viewTouched = true; Object.assign(view, v); apply(); }, view: function () { return view; }, destroy: destroy };
   }
   if (window.ApComponents) window.ApComponents.register('map', render);
 })();

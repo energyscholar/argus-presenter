@@ -152,6 +152,7 @@
     var dragBefore = null; // the record as it stood at pointerdown, restored if this was a tap
     var dragMoved = false; // has the hand travelled far enough to mean it?
     var subs = [];
+    var dead = false;    // teardown is idempotent — the registry may destroy what a caller already did
 
     // ── the roster ────────────────────────────────────────────────────────────────────────────
     /*
@@ -538,8 +539,19 @@
         for (var id in model) out[id] = JSON.parse(JSON.stringify(model[id]));
         return out;
       },
+      /*
+       * ⛔ IDEMPOTENT. The registry now tears down whatever it last mounted on a host before it
+       * mounts again (plan 0720 RUN A / F12), so a caller that also keeps its own handle would
+       * otherwise destroy the same instance twice. Guarding here rather than trusting every caller
+       * is the same reasoning that put the fix in the registry rather than in `assemble.mjs`.
+       *
+       * ⚠ NOTHING HERE IS COLLECTED BY THE DOM. Three window pointer listeners, a MutationObserver
+       * and a store subscription all outlive `root.innerHTML = ''` — which is exactly why a leaked
+       * instance kept reconciling a detached tree on every diff instead of failing loudly.
+       */
       destroy: function () {
-        if (offSnapshot) offSnapshot();
+        if (dead) return; dead = true;
+        if (offSnapshot) { try { offSnapshot(); } catch (e) {} }
         window.removeEventListener('pointermove', onMove, true);
         window.removeEventListener('pointerup', onUp, true);
         window.removeEventListener('pointercancel', onUp, true);

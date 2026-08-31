@@ -12,6 +12,7 @@
  *   A3  ⛔ A ZERO-MOVEMENT TAP WROTE. On a touch screen a tap IS a pointerdown/up pair, so merely
  *          touching a piece converted it to a stored record.
  *   A5  ⛔ AN EMPTY BOARD RENDERED NOTHING AND SAID NOTHING — indistinguishable from a broken one.
+ *   A6  ⛔ RE-MOUNTING LEAKED. The handle carries a working teardown that no caller ever kept.
  *
  * ⚠ EVERY CLAIM IS READ OUT OF `server.store` OR OUT OF THE COMPONENT'S OWN HANDLE. A field that
  * is present in a page's local variable and absent from the store is not shared — and "it is in the
@@ -386,6 +387,143 @@ test('0720 RUN-A.5 — ⭐ AN EMPTY BOARD SAYS IT IS EMPTY, and stops saying so 
     back.tokens === 0 && back.empty === 1, JSON.stringify(back));
   await unmountProbe(A);
 });
+
+/* ────────────────────────────────────────────────────────────────────────────────────────────────
+ * A6 — THE DESTROY HANDLE
+ * ──────────────────────────────────────────────────────────────────────────────────────────────*/
+
+test('0720 RUN-A.6 — ⛔⛔ MOUNTING TWICE ON ONE HOST LEAKS NOTHING, AND THE CALLER KEEPS NO HANDLE', async () => {
+  /*
+   * ⛔ THE TEST MUST NOT KEEP THE HANDLE, BECAUSE THE DEFECT IS THAT NOBODY DOES.
+   * `harness/assemble.mjs` mounts and throws the handle away; a station that re-renders its region
+   * calls `mount` again on the SAME element. The old DOM goes with the innerHTML — the store
+   * subscription, the three window pointer listeners and the MutationObserver do not, because none
+   * of them is owned by the DOM. A test that dutifully kept both handles and destroyed both would
+   * pass against the broken code and prove nothing.
+   *
+   * ⇒ So: mount, mount again over it, destroy through the registry, twice over — and COUNT what is
+   * still bound, by instrumenting the two doors a component can leak through.
+   */
+  const out = await contentFrame(A).evaluate(async () => {
+    const A_ = window.Argus, reg = window.ApComponents;
+
+    // Door 1: host-message subscriptions (`subscribeState` is built on `onMessage`).
+    let liveSubs = 0;
+    const realOn = A_.onMessage;
+    A_.onMessage = function (h) {
+      liveSubs++;
+      const un = realOn.call(A_, h);
+      let done = false;
+      return function () { if (!done) { done = true; liveSubs--; } return un(); };
+    };
+    // Door 2: window listeners — the pointer trio and the pan pair outlive every DOM teardown.
+    const liveWin = {};
+    const realAdd = window.addEventListener, realRemove = window.removeEventListener;
+    window.addEventListener = function (t, f, o) { liveWin[t] = (liveWin[t] || 0) + 1; return realAdd.call(window, t, f, o); };
+    window.removeEventListener = function (t, f, o) { if (liveWin[t]) liveWin[t]--; return realRemove.call(window, t, f, o); };
+    // Door 3: MutationObservers, which nothing else on the page would create during this window.
+    let liveMo = 0;
+    const RealMO = window.MutationObserver;
+    window.MutationObserver = function (cb) {
+      const m = new RealMO(cb); liveMo++;
+      const realDisc = m.disconnect.bind(m);
+      let done = false;
+      m.disconnect = function () { if (!done) { done = true; liveMo--; } return realDisc(); };
+      return m;
+    };
+
+    const host = document.createElement('div');
+    host.id = 'runa-leak';
+    host.style.cssText = 'position:relative;width:400px;height:300px';
+    document.body.appendChild(host);
+    const opts = { path: 'shared/tactical/runa-leak', tokens: [{ id: 'flag', label: 'Flag' }] };
+
+    /*
+     * ⭐ THE UNIT IS MEASURED, NOT ASSUMED. One `tokens` mount is really SIX host subscriptions —
+     * the base map's three `subscribeState` calls plus its snapshot `onMessage`, then the tokens
+     * layer's own subscription and ITS snapshot handler — and hard-coding a number here would have
+     * made this test a statement about today's internals rather than about leaking. So: mount one
+     * instance, keep its handle, count, destroy it, and use THAT as the unit.
+     */
+    const solo = reg.get('tokens')(host, opts);
+    const perInstance = { subs: liveSubs, mo: liveMo, pointermove: liveWin.pointermove || 0 };
+    solo.destroy();
+    const afterSolo = { subs: liveSubs, mo: liveMo, pointermove: liveWin.pointermove || 0 };
+
+    /* THE CONTROL, and it is the reason this file can go red: bypass the registry, call the factory
+       twice on the same host exactly as the OLD `mount` did, and watch the count double. If this
+       does not double, the measurement is not measuring anything. */
+    reg.get('tokens')(host, opts);
+    const leaked = reg.get('tokens')(host, opts);
+    const stacked = { subs: liveSubs, mo: liveMo, pointermove: liveWin.pointermove || 0 };
+    leaked.destroy();                              // the second one; the FIRST is now unreachable
+    const orphaned = { subs: liveSubs, mo: liveMo, pointermove: liveWin.pointermove || 0 };
+
+    /*
+     * ⚠ THE CONTROL LEAVES A REAL ORPHAN BEHIND — that is the point of it, and it is unreachable by
+     * construction, so it cannot be cleaned up. Every count from here is therefore a DELTA from
+     * this line, not an absolute. Reading the raw numbers instead would have made the registry look
+     * broken while it was working perfectly, which is the sort of thing that gets a good fix
+     * reverted.
+     */
+    const base = { subs: liveSubs, mo: liveMo, win: { ...liveWin } };
+    const delta = () => ({
+      subs: liveSubs - base.subs, mo: liveMo - base.mo,
+      pointermove: (liveWin.pointermove || 0) - (base.win.pointermove || 0),
+      pointerup: (liveWin.pointerup || 0) - (base.win.pointerup || 0),
+      pointercancel: (liveWin.pointercancel || 0) - (base.win.pointercancel || 0),
+    });
+
+    const trace = [];
+    for (let round = 1; round <= 2; round++) {
+      reg.mount('tokens', host, opts);            // ⛔ handle deliberately discarded
+      reg.mount('tokens', host, opts);            // ⛔ …and mounted over, exactly as a re-project does
+      trace.push({ round, phase: 'mounted', ...delta() });
+      reg.destroy(host);
+      trace.push({ round, phase: 'destroyed', ...delta() });
+    }
+    const stillRendering = host.querySelectorAll('.ap-token').length;
+
+    host.remove();
+    window.addEventListener = realAdd; window.removeEventListener = realRemove;
+    window.MutationObserver = RealMO; A_.onMessage = realOn;
+    return { trace, stillRendering, perInstance, afterSolo, stacked, orphaned,
+      hasDestroy: typeof reg.destroy === 'function', handleKept: typeof reg.handleFor === 'function' };
+  });
+
+  check('the registry offers a teardown door at all', out.hasDestroy && out.handleKept,
+    JSON.stringify({ d: out.hasDestroy, h: out.handleKept }));
+
+  const u = out.perInstance;
+  check(`ONE instance costs ${u.subs} host subscription(s), ${u.mo} observer(s), ${u.pointermove} window pointermove — measured, not assumed`,
+    u.subs > 0 && u.mo === 1 && u.pointermove === 1, JSON.stringify(u));
+  check('…and destroying that one instance returns every count to zero',
+    out.afterSolo.subs === 0 && out.afterSolo.mo === 0 && out.afterSolo.pointermove === 0,
+    JSON.stringify(out.afterSolo));
+
+  /* ⛔ THE CONTROL IS WHAT LETS THIS TEST GO RED. It reproduces the OLD `mount` — call the factory
+     twice on one host, keep only the last handle — and shows the cost doubling and then STAYING
+     doubled after the reachable handle is destroyed. That orphan is the defect, stated in numbers. */
+  check(`⭐ CONTROL: mounting twice WITHOUT the registry doubles the cost (${u.subs} → ${out.stacked.subs} subs, ${u.mo} → ${out.stacked.mo} observers)`,
+    out.stacked.subs === u.subs * 2 && out.stacked.mo === u.mo * 2 && out.stacked.pointermove === u.pointermove * 2,
+    JSON.stringify(out.stacked));
+  check(`⭐ …and destroying the only handle you still hold leaves the first instance ORPHANED (${out.orphaned.subs} subs, ${out.orphaned.mo} observers still live)`,
+    out.orphaned.subs === u.subs && out.orphaned.mo === u.mo, JSON.stringify(out.orphaned));
+
+  const mounted = out.trace.filter((t) => t.phase === 'mounted');
+  const torn = out.trace.filter((t) => t.phase === 'destroyed');
+  check(`⭐⭐ THROUGH THE REGISTRY, two mounts on one host cost ONE instance, both rounds (Δsubs ${mounted.map((m) => m.subs).join('/')} vs ${u.subs} for one)`,
+    mounted.every((m) => m.subs === u.subs && m.mo === u.mo), JSON.stringify(mounted));
+  check('⭐ …so the second mount tore the first one down rather than stacking on it',
+    mounted.every((m) => m.pointermove === 1 && m.pointerup === 1), JSON.stringify(mounted));
+
+  check(`⭐⭐ AFTER DESTROY: zero subscriptions, zero observers (Δ ${torn.map((t) => t.subs + '/' + t.mo).join(' · ')})`,
+    torn.every((t) => t.subs === 0 && t.mo === 0), JSON.stringify(torn));
+  check('⭐⭐ …and zero window pointer listeners, twice over',
+    torn.every((t) => !(t.pointermove || t.pointerup || t.pointercancel)), JSON.stringify(torn));
+  check('…and nothing is left painting a detached tree', out.stillRendering === 0, String(out.stillRendering));
+});
+
 
 test('0720 RUN-A.9 — teardown', async () => {
   if (browser) await browser.close();
