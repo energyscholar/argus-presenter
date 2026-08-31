@@ -662,6 +662,18 @@ export function createApiSurface(M) {
             sessionLogDirError: slog.sessionLogDirError,
             stats: { ...slog.stats },
           },
+          /*
+           * Plan 0720 RUN C — ⭐ WILL THIS SESSION SURVIVE A PUSH? That is the question an operator
+           * has to be able to ask BEFORE the push, and it had no answer at all: the store was in
+           * memory, the CI redeploys in ~60 s, and nothing anywhere said so.
+           * ⛔ Reported, never scored — for the same reason the session log is. The library default
+           *   IS inert (a bare createServer() writes nothing, which is what keeps the suite out of
+           *   a human's real state), so degrading on it would paint every test red and teach a
+           *   reader to ignore the word. ⚠ A rising `failures` means the DISK is refusing while the
+           *   session itself is fine — the moment to look, not the moment to stop play.
+           * ⛔ STATE ONLY: the directory and the counters, never a leaf of what is in the file.
+           */
+          durableState: (() => { const d = M.durableState.status(); return { configured: d.configured, file: d.file, paths: d.paths, quietMs: d.quietMs, maxMs: d.maxMs, writes: d.writes, failures: d.failures, restoredLeaves: d.restoredLeaves, restoreSkipped: d.skipped, lastWriteAt: d.lastWriteAt }; })(),
           rtt: M.telem.rtt.last, reconnects: M.telem.reconnects,
         };
       },

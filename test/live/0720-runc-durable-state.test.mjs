@@ -267,6 +267,32 @@ test('0720 RUN-C C1.9 — ⛔ THE THREE SUBTREES ARE THE CONTRACT: narrowing wha
   check('the file itself carries both, not merely the config', heads.has('shared') && heads.has('ships'), JSON.stringify([...heads]));
 });
 
+test('0720 RUN-C C1.9b — ⭐ "WILL THIS SESSION SURVIVE A PUSH?" IS ANSWERABLE FROM THE OUTSIDE', async () => {
+  /*
+   * ⛔ INERT MUST BE VISIBLE FROM THE OUTSIDE. Before this run the answer was "no" and nothing
+   * anywhere said so: the store was in memory, the CI redeploys within ~60 s of a push, and the
+   * only way to find out was to lose a session. `presenter_health` already reports whether the
+   * session is being RECORDED; it now reports whether it SURVIVES.
+   * ⛔ Reported, never scored — a bare createServer() is inert on purpose, so degrading on it
+   *   would paint the whole suite red and teach a reader to ignore the word.
+   */
+  const h = B.health({});
+  check('health names the durable store', !!h.durableState, JSON.stringify(Object.keys(h)));
+  check('⭐ and answers the question directly', h.durableState.configured === true);
+  check('…with the path, so an operator can go and look', h.durableState.file === FILE);
+  check('…and the counters that say whether the disk is refusing',
+    typeof h.durableState.writes === 'number' && typeof h.durableState.failures === 'number');
+  check('⛔ STATE ONLY — no leaf of the session is in the health payload',
+    !JSON.stringify(h.durableState).includes('0.77'), JSON.stringify(h.durableState));
+  check('and a green server is still green with the store configured', h.status === 'green' || h.status === 'degraded');
+
+  const bare = await createServer({ port: 0 });
+  try {
+    check('⭐ an inert deployment says so rather than looking the same',
+      bare.health({}).durableState.configured === false, JSON.stringify(bare.health({}).durableState));
+  } finally { await bare.close(); }
+});
+
 test('0720 RUN-C C1.10 — ⛔ THE RESTORE IS THE LAST WRITE: a plugin\'s opening defaults do NOT overwrite the session', async () => {
   /*
    * ⛔ AN ORDERING BUG THAT REPORTS SUCCESS. A plugin writes its opening defaults during
