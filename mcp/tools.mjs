@@ -13,6 +13,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { presenterPort, authPolicy, identityConfig, identityServerOptions, identityStartupLine, bindHostsConfig, controlTokenConfig } from '../lib/deployment-config.mjs';
 import { resolveSessionLogDir, defaultSessionLogDir } from '../lib/session-log.mjs';
+import { resolveStateDir, undeclaredStateReason } from '../lib/durable-state.mjs';
 import { srvRoot, currentRelease, enumerateReleases, unitStatus, staleUnit, roomTable, probe, tailnetAddress, REAL_PAGE_MARKERS } from '../lib/ops-status.mjs';
 import { join, dirname } from 'node:path';
 import {
@@ -227,6 +228,23 @@ export const coreTools = [
        */
       const sessionLogTarget = resolveSessionLogDir();
       if (sessionLogTarget.sessionLogDir) opts.sessionLogDir = sessionLogTarget.sessionLogDir;
+      /*
+       * ── Plan 0720 RUN C (F18) — THE AGENT-RAISED SESSION IS DURABLE, AND THE AGENT DOES NOT GET
+       * TO SAY WHERE. This is the path that raises the real live sessions: the ones a CI redeploy
+       * used to wipe mid-fight, taking every dragged piece, the turn order and every point of
+       * damage with it. Resolved here, not inside createServer(), so a bare library call still
+       * writes nothing — and deliberately NOT a property on this tool's input schema, for the same
+       * reason `sessionLogDir` is not: a caller-settable destination for other people's session
+       * state is a redirect primitive, and a wrong one loses the session it was meant to save.
+       */
+      const stateTarget = resolveStateDir();
+      /* \u26d4\u26d4 ONLY WHEN SOMETHING DECLARED A LOCATION. The built-in rung needs NO environment
+         variable, so assigning this unconditionally turned persistence ON everywhere this code runs
+         \u2014 including inside the suite, where every presenter_start then shared ONE file under the
+         real ~/.local/state and restored each other's boards. Measured: it took out two RUN B tests.
+         And on the live box that same file is the DEPLOYMENT'S OWN STATE. `declared:false` means
+         "say so and write nothing", never "write here". */
+      if (stateTarget.declared) opts.stateDir = stateTarget.stateDir;
       // Plan 0543 P4 — durable revoked-nonce store (state, not content) so a guest-link revocation
       // survives a restart. Kept in the resolved state/log dir (so it honours PRESENTER_SESSION_LOG_DIR
       // test isolation); resolved here, not taken from the caller, like the session log dir.
@@ -608,7 +626,7 @@ export const coreTools = [
   },
   {
     name: 'presenter_health',
-    description: 'Health check: status (green/degraded), per-connection liveness (stale detection), op throughput, error rate, state/op-log size, AND (Plan 0525 P2) whether THIS SESSION IS BEING RECORDED — `sessionLog: {enabled, sessionLogId, sessionLogDir, sessionLogDirSource, sessionLogDirError, stats}`. Check it once after presenter_start and again before you rely on the record: `enabled:false` means nothing is being written and sessionLogDirError says why, and a rising stats.dropped / stats.failures means the log is degrading mid-session while the session itself is fine. STATE ONLY — the directory and the counters, NEVER the content: the log is participants\' own words and reading it back is role-gated at GET /api/session-log (control credential required).',
+    description: 'Health check: status (green/degraded), per-connection liveness (stale detection), op throughput, error rate, state/op-log size, AND (Plan 0525 P2) whether THIS SESSION IS BEING RECORDED — `sessionLog: {enabled, sessionLogId, sessionLogDir, sessionLogDirSource, sessionLogDirError, stats}`. Check it once after presenter_start and again before you rely on the record: `enabled:false` means nothing is being written and sessionLogDirError says why, and a rising stats.dropped / stats.failures means the log is degrading mid-session while the session itself is fine. STATE ONLY — the directory and the counters, NEVER the content: the log is participants\' own words and reading it back is role-gated at GET /api/session-log (control credential required). AND (Plan 0720 RUN C) whether THIS SESSION SURVIVES A RESTART — `durableState: {configured, file, paths, quietMs, maxMs, writes, failures, restoredLeaves, restoreSkipped, lastWriteAt}`. \u26d4 `configured:false` means the live board, the turn order and the damage are IN MEMORY ONLY and the next deploy destroys them: check it BEFORE you push, because the CI restarts the service within ~60s of one. A rising `failures` means the disk is refusing while play is fine, and a non-zero `restoreSkipped` means the last boot came back INCOMPLETE \u2014 a partial restore is the failure that looks like a success. STATE ONLY \u2014 the path and the counters, never what is in the file.',
     input: { type: 'object', properties: { staleMs: { type: 'number', default: 10000, description: 'A connection idle longer than this is stale' } } },
     handler: async ({ staleMs = 10000 } = {}) => need().health({ staleMs })
   },

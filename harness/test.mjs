@@ -67,6 +67,34 @@ if (!process.env[PLUGIN_STATE_ENV]) {
 }
 let _stateSeq = 0;
 
+/*
+ * ── Plan 0720 RUN C — THE SUITE MUST NEVER INHERIT A DEPLOYMENT'S STATE DIRECTORY ───────────
+ *
+ * `createServer()` becomes DURABLE when any of the three variables below is set: it then dumps
+ * `shared/**` + `ships/**` to disk on change and restores from that file at boot. Both halves are
+ * a disaster inside a test run, and the second one is the worse:
+ *
+ *   1. ACROSS THE MACHINE — the live deployment on this estate sets `PRESENTER_DATA_DIR`. A suite
+ *      run in that environment would write into, and restore from, THE RUNNING SESSION'S OWN
+ *      STATE FILE. The tests would be editing the game.
+ *   2. ACROSS THE SUITE — every bare `createServer()` would share ONE file, so one test's board
+ *      would be the next test's boot state and results would depend on file-listing order. That is
+ *      the worst kind of intermittent: it looks like flake, it bisects to nothing, it is nobody's
+ *      diff. (The same argument the plugin-state block above makes, one layer down.)
+ *
+ * ⇒ The variables are CLEARED, not redirected. Redirecting to a scratch directory would leave
+ *   every server durable and merely move failure 2 somewhere tidier; clearing makes a bare
+ *   `createServer()` INERT, which is the library default this repo already relies on. A test that
+ *   wants durability passes `stateDir:` explicitly and owns its own directory.
+ *
+ * ⚠ An explicit `PRESENTER_STATE_DIR` still wins outright, so a run can be pointed somewhere
+ *   deliberately — the same escape hatch the two blocks above give.
+ */
+if (!process.env.PRESENTER_STATE_DIR) {
+  delete process.env.PRESENTER_DATA_DIR;
+  delete process.env.PRESENTER_CAMPAIGN_DIR;
+}
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
 const TEST_DIR = join(ROOT, 'test');

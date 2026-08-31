@@ -662,6 +662,18 @@ export function createApiSurface(M) {
             sessionLogDirError: slog.sessionLogDirError,
             stats: { ...slog.stats },
           },
+          /*
+           * Plan 0720 RUN C — ⭐ WILL THIS SESSION SURVIVE A PUSH? That is the question an operator
+           * has to be able to ask BEFORE the push, and it had no answer at all: the store was in
+           * memory, the CI redeploys in ~60 s, and nothing anywhere said so.
+           * ⛔ Reported, never scored — for the same reason the session log is. The library default
+           *   IS inert (a bare createServer() writes nothing, which is what keeps the suite out of
+           *   a human's real state), so degrading on it would paint every test red and teach a
+           *   reader to ignore the word. ⚠ A rising `failures` means the DISK is refusing while the
+           *   session itself is fine — the moment to look, not the moment to stop play.
+           * ⛔ STATE ONLY: the directory and the counters, never a leaf of what is in the file.
+           */
+          durableState: (() => { const d = M.durableState.status(); return { configured: d.configured, file: d.file, paths: d.paths, quietMs: d.quietMs, maxMs: d.maxMs, writes: d.writes, failures: d.failures, restoredLeaves: d.restoredLeaves, restoreSkipped: d.skipped, lastWriteAt: d.lastWriteAt }; })(),
           rtt: M.telem.rtt.last, reconnects: M.telem.reconnects,
         };
       },
@@ -700,7 +712,16 @@ export function createApiSurface(M) {
       },
     store: M.store,
     sessionLog: M.sessionLog,
-    close: () => new Promise((res) => { try { M.saveCursors(); } catch { /* Plan 0687 R3: flush the delivery cursors; a failed write must never block a shutdown */ } try { M.sessionLog.close(); } catch { /* a log must never block a shutdown either */ } clearInterval(M.heartbeat); /* Plan 0468 (INV-7) */ if (M.ephTimer) clearTimeout(M.ephTimer); for (const t of M.hotTimers.values()) clearTimeout(t); M.hotTimers.clear(); for (const w of [...M.inboxWaiters]) w.wake(); /* Plan 0472: drain pending long-poll waiters (resolve, no dangling) */ if (M.openTurn && M.openTurn.timer) { clearTimeout(M.openTurn.timer); M.openTurn.timer = null; } /* Plan 0473 P2: clear a pending turn-settling timer */ for (const [, c] of M.conns) { if (c.voice && c.voice.timer) clearTimeout(c.voice.timer); } if (M.asr) { try { M.asr.close(); } catch (e) {} M.asr = null; } M.watcher && M.watcher.close(); M.wss.clients.forEach((c) => c.close()); for (const e of M.extraServers) { try { e.close(); } catch {} } M.extraServers.length = 0; /* Plan 0650 — the opt-in extra binds go down with the primary */ M.httpServer.close(() => res()); }),
+    /*
+     * Plan 0720 RUN C — the durable state store. Exposed for the same reason `sessionLog` is: an
+     * operator (and a test) has to be able to ask whether the session actually survives a restart,
+     * and `configured:false` is the answer that matters.
+     * ⛔ IT IS NOT THE MECHANISM. `flushSync` here is a manual capture; the automatic
+     *   debounced-with-a-ceiling write is what makes the session survive an unplanned restart, and
+     *   nothing may be built that depends on somebody remembering to call this.
+     */
+    durableState: M.durableState,
+    close: () => new Promise((res) => { try { M.durableState.close(); } catch { /* Plan 0720 RUN C: a pending capture is flushed on the way out; a failed write must never block a shutdown */ } try { M.saveCursors(); } catch { /* Plan 0687 R3: flush the delivery cursors; a failed write must never block a shutdown */ } try { M.sessionLog.close(); } catch { /* a log must never block a shutdown either */ } clearInterval(M.heartbeat); /* Plan 0468 (INV-7) */ if (M.ephTimer) clearTimeout(M.ephTimer); for (const t of M.hotTimers.values()) clearTimeout(t); M.hotTimers.clear(); for (const w of [...M.inboxWaiters]) w.wake(); /* Plan 0472: drain pending long-poll waiters (resolve, no dangling) */ if (M.openTurn && M.openTurn.timer) { clearTimeout(M.openTurn.timer); M.openTurn.timer = null; } /* Plan 0473 P2: clear a pending turn-settling timer */ for (const [, c] of M.conns) { if (c.voice && c.voice.timer) clearTimeout(c.voice.timer); } if (M.asr) { try { M.asr.close(); } catch (e) {} M.asr = null; } M.watcher && M.watcher.close(); M.wss.clients.forEach((c) => c.close()); for (const e of M.extraServers) { try { e.close(); } catch {} } M.extraServers.length = 0; /* Plan 0650 — the opt-in extra binds go down with the primary */ M.httpServer.close(() => res()); }),
     _http: M.httpServer,
     _acks: M.acks,
     _lastResults: M.lastResults,
