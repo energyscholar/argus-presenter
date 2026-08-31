@@ -34,8 +34,29 @@
   background: #8a8a8a; border: 1px solid rgba(0, 0, 0, 0.65); box-sizing: border-box;
 }
 .ap-token-status.is-emphasis { box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9); }
+/*
+ * ⛔⛔ THE LABEL IS OUT OF FLOW, AND THAT IS A CORRECTNESS FIX RATHER THAN A STYLING CHOICE.
+ *
+ * A token is anchored by `translate(-50%,-50%)` on the ELEMENT, so whatever the element's border
+ * box contains decides where its centre is. With the label in flow the box was body + gap + line,
+ * the element's centre fell between the body and the text, and the BODY — the thing a player reads
+ * as "the ship is here" — sat above the coordinate the store holds for it. Every ring on the board
+ * then measured from a place nothing was drawn at, and no amount of care over px/py could fix it,
+ * because the error was introduced after the arithmetic.
+ * ⇒ `position:absolute` takes the label out of the box entirely: the element is the 20px body, its
+ *   centre IS the body's centre, and the anchor is exact. The label hangs below from `top:100%`.
+ *
+ * ⛔ `pointer-events:none` IS THE SECOND HALF OF THE SAME FIX, and it is the one a screenshot will
+ *   not show. `.ap-token` takes the pointer for the whole of its box; a nowrap label is as wide as
+ *   the name is long, so a long name gave a piece an invisible grab handle stretching far past it,
+ *   over its neighbours. On a crowded board the piece you grabbed was not the piece you touched —
+ *   and the wider the name, the more likely it was the SIGNIFICANT ship that swallowed the tap.
+ *   The body is the piece. Only the body takes the pointer.
+ */
 .ap-token-label {
-  margin-top: 3px; font-size: 0.7rem; letter-spacing: 0.06em; white-space: nowrap;
+  position: absolute; left: 50%; top: 100%; transform: translateX(-50%);
+  margin-top: 3px; pointer-events: none;
+  font-size: 0.7rem; letter-spacing: 0.06em; white-space: nowrap;
   color: var(--ap-token-tint); text-shadow: 0 0 4px #000, 0 0 2px #000;
 }
 /* An EMPTY board says so. A blank plot and a broken plot are indistinguishable to the person
