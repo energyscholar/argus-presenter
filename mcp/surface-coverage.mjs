@@ -320,4 +320,16 @@ export const TOOL_COVERAGE = {
    * READ-ONLY; presenter_deploy / presenter_rollback are R3 and need Bruce's recorded decision. */
   presenter_release_status:   'Plan 0689 R1. READ-ONLY deployment inspection — the current release, its sha/builtAt, each unit\'s MainPID AND ExecMainStartTimestamp, and the enumerable releases with every rejection\'s reason. Not an `api` method: it reads the filesystem and systemd, deliberately WITHOUT a running presenter, because ssh-and-a-pipe lost an exit code twice on 2026-08-25/26 and text through a pipe is not a measurement.',
   presenter_health_deep:      'Plan 0689 R2. READ-ONLY per-room reachability — loopback AND tailnet, each answering a REAL PAGE (id="stage" + id="ap-config") rather than merely 200. Distinct from presenter_health, which reports the IN-PROCESS server this MCP owns: this one probes the DEPLOYMENT, including rooms in other processes, which is where the 26-hour phantom hid.',
+  /* ── Plan 0720 RUN B — THE BOARD. `api.apply` is declined above as a general capability, and the
+   * reason it gives is the reason these exist: *"expose later as a tool SCOPED to `shared/**`"*.
+   * That is exactly what these are — five tools that can only ever address one collection of
+   * tokens, with the conversion between the board-as-document and the board-as-live-keys done in
+   * one place (app/board-document.mjs) instead of re-derived by each caller. ⛔ They are NOT a
+   * wrapper around `apply`: a wrapper would take a path and a verb, which is the arbitrary write
+   * that entry refuses. */
+  board_read:                 'Plan 0720 RUN B. CAPTURE the live board as one document. Reads the LIVE store, never an authored roster — a capture of authored positions replays the opening layout on restore and teleports every piece back mid-fight. Host bookkeeping (`_locks`, a record `lock`) is never returned as a piece, which is the whole reason a defined serialiser exists instead of a generic subtree dump.',
+  board_write:                'Plan 0720 RUN B. RESTORE a whole board document, authoritatively: omission DELETES. Its own description says so, twice, because that is the fact that surprised its author — re-pushing a shorter roster used to change nothing. ⛔ Restore-only: it rewrites keys somebody may be dragging, so board_add/board_remove are the normal path. Never issues a `clear`.',
+  board_add:                  'Plan 0720 RUN B. ONE piece, ONE write on its own key — the delta form. Per-key is what makes concurrent dragging lossless (measured: 8/8 retained per-key, 1/8 collection-level), so this is the shape that is safe during play.',
+  board_remove:               'Plan 0720 RUN B. ONE piece off the board, one `remove`. Deliberately no "clear the board" tool: `clear` broadcasts an empty board to every client as its own diff, and a drop landing in that window resurrects a piece that was supposed to be gone.',
+  board_path:                 'Plan 0720 RUN B. RE-POINT the board live. During a session the deploy poller is stopped — the store is in memory and a push destroys positions, round, turn and damage — so this store key is the only way to change what the mounted board shows. It was needed live on 2026-08-31 and had to be done by hand.',
 };

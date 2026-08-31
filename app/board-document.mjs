@@ -62,8 +62,11 @@ export const BOARD_PATH_KEY = 'shared/tactical/boardpath';
 /**
  * Fields that belong to the HOST's bookkeeping and never to a token.
  * `lock` — a record lock, written by the store's `lock` verb as a child of the record.
- * `force` — the lock-break flag a restore carries INTO `apply`; it is an instruction, not data,
- *           and letting it round-trip would make "somebody once forced this write" a board field.
+ * `force` — the lock-break flag `state.mjs` reads off an op's VALUE. It is an instruction to the
+ *           reducer, not data, and it is CLONED INTO THE TREE by `set` — so a caller who put it in
+ *           a token record would leave "somebody once forced this write" behind as a board field,
+ *           for the rest of the session. Stripped on the way out AND the way in; a restore that
+ *           must break a lock does it with `unlock`, which stores nothing.
  */
 const NOT_BOARD_FIELDS = { lock: 1, force: 1 };
 
@@ -145,8 +148,6 @@ export function serialise(store, opts = {}) {
  * @param {object} opts
  * @param {string} [opts.path]       write here instead of the document's own path.
  * @param {object|string[]} [opts.current]  the live collection (or its ids) — enables removals.
- * @param {boolean} [opts.force]     break a stale lock. An INSTRUCTION: stripped back out by
- *                                   `serialise`, so it can never become a board field.
  * @returns {{path:string, verb:string, value:any}[]}  ops, in apply order: writes, then removals.
  */
 export function deserialise(document, opts = {}) {
@@ -166,7 +167,6 @@ export function deserialise(document, opts = {}) {
     kept.add(id);
     const value = boardFields(raw);
     value.id = id;
-    if (opts.force === true) value.force = true;
     ops.push(setTokenOp(path, id, value));
   }
 
@@ -196,7 +196,6 @@ export function setTokenOp(path, id, token) {
   const key = String(id);
   const value = boardFields(token || {});
   value.id = key;
-  if (token && token.force === true) value.force = true;
   return { path: p + '/' + key, verb: 'set', value };
 }
 
