@@ -95,6 +95,13 @@ test('0720 RUN-B B4.3 — the tools drive a real board end to end', async () => 
     two.document.tokens.find((t) => t.id === 'raider').size === 3, JSON.stringify(two.document.tokens));
   check('⛔ an id-less piece is REFUSED BY NAME, not silently dropped',
     (await callAsDeclared('board_add', { path: PATH, token: { label: 'nameless' } })).reason === 'no-id');
+  /* ⛔ THE TWO DOORS MUST AGREE. `deserialise` refuses a compound id; if this one did not, the
+     piece would be written NESTED under another key — off the document and reachable by no
+     ordinary removal, which is the "a piece nobody can take off the board" failure again. */
+  for (const bad of ['a/b', '_locks', '..']) {
+    const r = await callAsDeclared('board_add', { path: PATH, token: { id: bad, px: 0.5, py: 0.5 } });
+    check(`⛔ the id "${bad}" is refused BY NAME`, r.reason === 'bad-id', JSON.stringify(r));
+  }
 
   const rm = await callAsDeclared('board_remove', { path: PATH, id: 'raider' });
   check('a removal reports whether the piece was actually there', rm.ok && rm.existed === true, JSON.stringify(rm));

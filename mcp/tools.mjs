@@ -549,6 +549,13 @@ export const coreTools = [
       const s = need();
       const id = token && token.id != null ? String(token.id) : null;
       if (!id) return { ok: false, reason: 'no-id', message: 'a piece needs an id — it is the key it lives at, and what a removal names' };
+      /* ⛔ ONE SEGMENT, AND THE TWO DOORS MUST AGREE. `deserialise` already refuses an id carrying a
+         slash or a leading `_`; without the same rule here, `board_add` would write a piece NESTED
+         under another key — reachable by no ordinary removal and invisible in the document, which is
+         precisely the "a piece nobody can take off the board" failure this surface exists to end. */
+      if (id !== normaliseBoardPath(id) || id.includes('/') || id.charAt(0) === '_') {
+        return { ok: false, reason: 'bad-id', id, message: 'an id is one path segment: no "/", no leading "_"' };
+      }
       const target = boardPathOf(s.store, path, null);
       const res = s.apply(setTokenOpFor(target, id, token));
       return { ok: !(res && res.denied), path: target, id, refused: res && res.denied ? 'locked' : null };
