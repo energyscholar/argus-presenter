@@ -25,7 +25,7 @@ import { homedir } from 'node:os';
 import {
   resolveStateDir, resolveStateFile, resolveStatePaths, normaliseStatePath,
   flattenSubtree, dumpState, restoreOps, lockedAncestor,
-  DURABLE_STATE_FILE, DURABLE_STATE_FORMAT, DEFAULT_STATE_PATHS, UNDECLARED_CAMPAIGN,
+  DURABLE_STATE_FILE, DURABLE_STATE_FORMAT, DEFAULT_STATE_PATHS, UNDECLARED_CAMPAIGN, undeclaredStateReason,
   STATE_DIR_ENV, CAMPAIGN_DIR_ENV, DATA_DIR_ENV, CAMPAIGN_ID_ENV,
 } from '../../lib/durable-state.mjs';
 import { createStore, isEphemeral } from '../../app/state.mjs';
@@ -80,6 +80,50 @@ test('0720 RUN-C C2.2 — the four rungs, most specific first, each naming itsel
   check('   …and with no HOME at all it still resolves rather than throwing',
     typeof resolveStateDir({ env: {} }).stateDir === 'string'
       && resolveStateDir({ env: {} }).stateDir.startsWith(homedir()));
+});
+
+test('0720 RUN-C C2.2b — ⛔⛔ "NOBODY DECLARED A LOCATION" MEANS WRITE NOTHING, NOT WRITE HERE', async () => {
+  /*
+   * ⛔⛔ THE BUG THIS EXISTS TO PREVENT WAS SHIPPED AND MEASURED ON THIS BRANCH, and it is the most
+   * expensive thing this run produced. The built-in rung needs NO environment variable, so a launch
+   * path that took `stateDir` unconditionally enabled persistence EVERYWHERE this code runs. Inside
+   * the suite, every `presenter_start` then shared ONE file under the real `~/.local/state` and
+   * restored each other's state — it took out two of RUN B's tests by handing one test the previous
+   * test's board, and the file really did appear in the home directory:
+   *     ~/.local/state/argus-presenter/campaigns/default/state/durable-state.json   21716 bytes
+   * On the live box that same path is the DEPLOYMENT'S OWN STATE, so running the suite there would
+   * have edited the session in progress.
+   *
+   * ⚠ Clearing the env in the harness did NOT fix it, and that is the lesson: the fallback needed no
+   *   env var to fire. The fix has to be at the decision, not at the input.
+   * ⭐ And it matches the estate's own doctrine (0718 D2): `default` is a WARNING, not a normal
+   *   state. The right answer to "nobody said where this lives" is to say so and write nothing.
+   */
+  check('⛔ nothing declared ⇒ declared:false', resolveStateDir({ env: { HOME: '/home/x' } }).declared === false);
+  check('…and it hands back a REASON a banner can print',
+    /does NOT survive a restart/.test(undeclaredStateReason(resolveStateDir({ env: { HOME: '/home/x' } })) || ''));
+  check('the routed path is still returned — a caller that has decided to persist needs somewhere routed',
+    resolveStateDir({ env: { HOME: '/home/x' } }).stateDir.endsWith(join('campaigns', UNDECLARED_CAMPAIGN, 'state')));
+  for (const [name, env] of [
+    [DATA_DIR_ENV, { [DATA_DIR_ENV]: '/d' }],
+    [CAMPAIGN_DIR_ENV, { [CAMPAIGN_DIR_ENV]: '/c' }],
+    [STATE_DIR_ENV, { [STATE_DIR_ENV]: '/s' }],
+  ]) {
+    check(`⭐ ${name} IS a declaration`, resolveStateDir({ env }).declared === true, JSON.stringify(resolveStateDir({ env })));
+    check(`   …and undeclaredStateReason says nothing about it`, undeclaredStateReason(resolveStateDir({ env })) === null);
+  }
+
+  /*
+   * ⛔ AND BOTH LAUNCH PATHS MUST KEY OFF IT. A source assertion, deliberately: the failure was that
+   * one call site took `.stateDir` without asking `.declared`, and no behavioural test in this repo
+   * can observe presenter_start's effect on a real home directory without writing to one.
+   */
+  for (const f of ['../../mcp/tools.mjs', '../../app/server.mjs']) {
+    const src = readFileSync(new URL(f, import.meta.url), 'utf8');
+    check(`${f} never assigns stateDir from an undeclared resolve`,
+      !/stateDir:\s*resolveStateDir\(\)\.stateDir|opts\.stateDir\s*=\s*resolveStateDir\(\)\.stateDir/.test(src), f);
+    check(`${f} consults .declared`, /\.declared/.test(src), f);
+  }
 });
 
 test('0720 RUN-C C2.3 — the persisted prefix list is an ALLOW list, and a bad entry cannot widen it', async () => {

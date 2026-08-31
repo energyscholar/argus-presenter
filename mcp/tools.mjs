@@ -13,7 +13,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { presenterPort, authPolicy, identityConfig, identityServerOptions, identityStartupLine, bindHostsConfig, controlTokenConfig } from '../lib/deployment-config.mjs';
 import { resolveSessionLogDir, defaultSessionLogDir } from '../lib/session-log.mjs';
-import { resolveStateDir } from '../lib/durable-state.mjs';
+import { resolveStateDir, undeclaredStateReason } from '../lib/durable-state.mjs';
 import { srvRoot, currentRelease, enumerateReleases, unitStatus, staleUnit, roomTable, probe, tailnetAddress, REAL_PAGE_MARKERS } from '../lib/ops-status.mjs';
 import { join, dirname } from 'node:path';
 import {
@@ -237,7 +237,14 @@ export const coreTools = [
        * reason `sessionLogDir` is not: a caller-settable destination for other people's session
        * state is a redirect primitive, and a wrong one loses the session it was meant to save.
        */
-      opts.stateDir = resolveStateDir().stateDir;
+      const stateTarget = resolveStateDir();
+      /* \u26d4\u26d4 ONLY WHEN SOMETHING DECLARED A LOCATION. The built-in rung needs NO environment
+         variable, so assigning this unconditionally turned persistence ON everywhere this code runs
+         \u2014 including inside the suite, where every presenter_start then shared ONE file under the
+         real ~/.local/state and restored each other's boards. Measured: it took out two RUN B tests.
+         And on the live box that same file is the DEPLOYMENT'S OWN STATE. `declared:false` means
+         "say so and write nothing", never "write here". */
+      if (stateTarget.declared) opts.stateDir = stateTarget.stateDir;
       // Plan 0543 P4 — durable revoked-nonce store (state, not content) so a guest-link revocation
       // survives a restart. Kept in the resolved state/log dir (so it honours PRESENTER_SESSION_LOG_DIR
       // test isolation); resolved here, not taken from the caller, like the session log dir.

@@ -39,7 +39,7 @@ const IDENTITY_GATE_MAX_FRAMES = 64;
 import { createSessionLog, resolveSessionLogDir, defaultSessionLogDir } from '../lib/session-log.mjs';
 import { CursorBook, isDeliveryKey } from '../lib/delivery-cursors.mjs';
 import { createCursorStore } from '../lib/cursor-store.mjs';
-import { createDurableState, resolveStateDir, resolveStatePaths } from '../lib/durable-state.mjs';
+import { createDurableState, resolveStateDir, resolveStatePaths, undeclaredStateReason } from '../lib/durable-state.mjs';
 import { selectProfile, DEFAULT_PROFILE } from './profiles.mjs';
 import { createHeuristicSummarizer } from './summarizer.mjs';
 import { buildDigest } from './digests.mjs';
@@ -3783,6 +3783,17 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   // directory disables the log and the presenter still starts.
   const logTarget = resolveSessionLogDir();
   if (logTarget.sessionLogDirError) console.log('  session log:', 'DISABLED —', logTarget.sessionLogDirError);
+  /*
+   * Plan 0720 RUN C — ⛔⛔ ONLY WHEN A DEPLOYMENT DECLARED WHERE ITS STATE LIVES.
+   * The built-in rung needs NO environment variable, so taking it unconditionally would turn
+   * persistence on for every checkout on every machine — which is exactly what happened when this
+   * was first written: every server in the suite shared ONE file under the real ~/.local/state and
+   * restored each other's boards. `declared:false` means SAY SO and write nothing.
+   */
+  const stateTarget = resolveStateDir();
+  console.log('  durable state:', stateTarget.declared
+    ? `${stateTarget.stateDir}  (declared by ${stateTarget.stateDirSource})`
+    : `DISABLED — ${undeclaredStateReason(stateTarget)}`);
   // Plan 0543 P1 — the auth policy is deployment config, read the same way the port is, so the CLI
   // self-run and presenter_start agree on it. A bad value throws here at startup, not silently.
   const policy = authPolicy();
@@ -3837,7 +3848,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
      *   this file at the ROOT of the data tree, where no tool that asks the router would find it.
      *   See lib/durable-state.mjs for the four rungs and which one wins.
      */
-    stateDir: resolveStateDir().stateDir,
+    stateDir: stateTarget.declared ? stateTarget.stateDir : null,
     // Plan 0543 P4 — a durable store for revoked guest-link nonces (in the state/log dir) so a
     // revocation survives a restart. State, not content: it holds only nonces.
     revokedNonceFile: join(logTarget.sessionLogDir || defaultSessionLogDir(), 'revoked-caps.json'),
