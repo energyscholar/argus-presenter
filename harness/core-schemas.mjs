@@ -121,6 +121,26 @@ export const coreSchemas = {
     { name: 'tokenPy', type: 'number', default: 0.345 },
     { name: 'tokenId', type: 'string', default: 'ship-ad' },
   ] },
+  /*
+   * tokens — the map, plus N tokens any seat may drag, ONE STORE KEY EACH (plan 0720 §4b / B3).
+   * Like navmap it delegates rendering to `map` and shares its opts (above); unlike navmap it does
+   * not hard-code a single token, so its own three fields are a PATH, a ROSTER and a switch:
+   *   path       the collection every token key hangs off      opts.path || 'shared/tactical/tokens'
+   *              ⛔ no `pointer` or `laser` segment — those paths are ephemeral-coalesced by the
+   *              host (B6: 12 ops -> 1 diff, version:null), so a drop on one is not durable
+   *   tokens     the authored roster: [{id,label,side,kind,px,py,status}]. px/py are FRACTIONS of
+   *              the untransformed content box, the same anchoring as a map marker, so they
+   *              survive pan and zoom. `side`/`kind` are OPAQUE — domain vocabulary belongs to the
+   *              caller, never to the engine (PSS t0531-01)
+   *   draggable  'all' (default) or 'off' for a read-only board
+   * The defaults are the component's own, recorded rather than tidied.
+   */
+  tokens: { fields: [
+    ...mapFields,
+    { name: 'path', type: 'string', default: 'shared/tactical/tokens' },
+    { name: 'tokens', type: 'array', default: [] },
+    { name: 'draggable', type: 'string', default: 'all' },
+  ] },
   'svg-reactive': { fields: [
     { name: 'label', type: 'string' },
     { name: 'watch', type: 'string' },

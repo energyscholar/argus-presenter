@@ -1,0 +1,392 @@
+/*!
+ * Argus Presenter component: TOKENS — N draggable tokens over the shared map.
+ *
+ * `navmap` drags exactly ONE token and rides `map/markers` to do it. This is the general case:
+ * an authored roster of N tokens, each with ITS OWN STORE KEY, so two people dragging two
+ * different tokens in the same instant cannot lose a write.
+ *
+ *   opts = <map opts> + { path?:      'shared/tactical/tokens',
+ *                         tokens?:    [ { id, label, side, kind, px, py, status } ],
+ *                         draggable?: 'all' | 'off' }
+ *
+ * ⛔ DOMAIN-FREE (PSS t0531-01). `side` and `kind` are opaque strings the caller supplies; this
+ * component never learns what any of them mean. `side` only ever picks a stable tint out of a hash,
+ * exactly as map.js tints a peer cursor, so a caller gets distinguishable teams without the engine
+ * naming one. `kind` is published as a `data-kind` hook and styled by nobody here.
+ *
+ * ── WHAT THIS IS BUILT TO, and every line of it was MEASURED (plan 0720 B3/B6), not guessed ─────
+ *
+ * 1. ⛔ ONE KEY PER TOKEN — `op(path + '/' + id, 'set', record)`. B3 measured the alternative on
+ *    the same server: 8 clients appending to one collection key retained 1 of 8 writes per round,
+ *    silently, every op accepted and acknowledged. Per key retained 8 of 8, four rounds of four.
+ *    ⚠ That buys CONCURRENCY, NOT OWNERSHIP: `shared/**` lets any participant write any key, so
+ *    two people dragging the SAME token is still last-write-wins. Nothing here claims otherwise.
+ *
+ * 2. ⛔ SUBSCRIBE AT THE COLLECTION, NEVER AT AN ITEM. B6 measured a subscriber on an item path
+ *    hearing NOTHING when the collection was written wholesale (itemHits:0, collHits:1) — which
+ *    would have shipped as "the board silently goes stale". So one subscription, at `path`, and
+ *    the token id is derived from the tail of the FULL path the handler is given.
+ *
+ * 3. ⛔ NO `pointer` OR `laser` SEGMENT IN THE PATH. Any such path is ephemeral-coalesced: B6 saw
+ *    12 ops collapse into 1 delivered diff with `version:null`. A drag may ride that deliberately;
+ *    a DROP must not. A path that would be coalesced is refused a drop and says so, visibly.
+ *
+ * 4. ⭐ EMIT ON DROP, NOT DURING THE DRAG. navmap paid for this one: `map` renders a radar ping per
+ *    marker write, and streaming at pointer rate carpets the board.
+ *
+ * 5. ⚠ RENDER IDEMPOTENTLY. The writer gets its own diff back, and B6 saw 8 diffs arrive at a
+ *    wholly idle client merely because two other people connected. So every state event runs the
+ *    same reconcile — create the missing, remove the departed, repaint the rest — and running it
+ *    twice is indistinguishable from running it once.
+ *
+ * 6. The snapshot is separate and complete, so a late joiner is seeded with zero diffs. The roster
+ *    is therefore read on MOUNT (`Argus.state`) as well as on every diff: a panel is never blank.
+ *
+ * ── ANCHORING (plan 0457 T2, as map.js does it) ────────────────────────────────────────────────
+ * `px`/`py` are fractions of the UNTRANSFORMED `.ap-map-content` box. Tokens live INSIDE that box
+ * and counter-scale (`translate(-50%,-50%) scale(1/scale)`), so they stay pinned under pan and
+ * zoom at a constant apparent size. The scale is re-read from the map's own live view whenever the
+ * map re-applies its transform — observed, not mirrored, so there is no second copy to go stale.
+ */
+(function () {
+  'use strict';
+
+  var DEFAULT_PATH = 'shared/tactical/tokens';
+  var EPHEMERAL_SEGMENTS = { pointer: 1, laser: 1 };   // B6: these paths are coalesced by the host
+
+  /* Stable tint from an opaque string — the same hash map.js uses for a peer cursor. Domain-free:
+     the component never knows which side is which, only that two different strings differ. */
+  function tint(s) {
+    var h = 0, str = String(s || '');
+    for (var i = 0; i < str.length; i++) h = (h * 131 + str.charCodeAt(i)) % 100000;
+    return 'hsl(' + Math.round((h * 137.508) % 360) + ', 70%, 64%)';
+  }
+
+  function num(v, dflt) { return typeof v === 'number' && isFinite(v) ? v : dflt; }
+  function clamp01(n) { return n < 0 ? 0 : (n > 1 ? 1 : n); }
+
+  function render(root, opts) {
+    opts = opts || {};
+    var reg = window.ApComponents;
+    var mapFactory = reg && reg.get && reg.get('map');
+    /* ⛔ DEGRADE VISIBLY, NEVER THROW. A thrown factory takes the whole surface down and says
+       nothing a human can read; a sentence in the host element says exactly what is missing. */
+    if (!mapFactory) {
+      root.textContent = 'tokens: base map component unavailable';
+      return { destroy: function () { root.innerHTML = ''; } };
+    }
+
+    var handle = mapFactory(root, opts) || {};
+    var Argus = window.Argus;
+    var content = root.querySelector('.ap-map-content');
+    if (!content) return handle;                       // base map changed shape — degrade to a plain map
+
+    var path = String(opts.path || DEFAULT_PATH).replace(/^\/+/, '').replace(/\/+$/, '');
+    var editable = opts.draggable !== 'off';
+    var segments = path.split('/');
+    var coalesced = false;
+    for (var si = 0; si < segments.length; si++) {
+      if (EPHEMERAL_SEGMENTS[segments[si]]) coalesced = true;
+    }
+
+    var layer = document.createElement('div');
+    layer.className = 'ap-tokens-layer';
+    layer.setAttribute('data-ap-path', path);
+    content.appendChild(layer);
+
+    /* The path is unusable for a DROP, so say so where a human will see it rather than dropping
+       writes into a coalescing channel and letting the board look merely unreliable. */
+    if (coalesced) {
+      var warning = document.createElement('div');
+      warning.className = 'ap-tokens-warning';
+      warning.textContent = 'tokens: "' + path + '" contains an ephemeral segment — drops are not durable';
+      layer.appendChild(warning);
+      layer.setAttribute('data-ap-ephemeral', '1');
+      editable = false;
+    }
+
+    /*
+     * ⭐ TWO SOURCES, AND WHICH ONE OWNS WHAT IS THE WHOLE DESIGN.
+     *
+     *   `authored` — the roster the beat supplies. It owns MEMBERSHIP: which tokens exist at all.
+     *                Plan 0720 D2: "nothing creates a token in play; the roster is authored ahead
+     *                of the fight."
+     *   `stored`   — the collection in the shared store. It owns POSITION and CONDITION: what has
+     *                happened to those tokens since.
+     *
+     * ⛔ THE STORE IS AN OVERLAY, NOT A REPLACEMENT, and the first cut of this got it wrong in a
+     * way only a late joiner could see: seeding by REPLACING the roster with the collection showed
+     * a viewer who arrived mid-fight only the tokens somebody had already dragged, and silently
+     * dropped every token still sitting where it was authored. Everyone already in the room saw a
+     * complete board, so the defect was invisible from inside the session that caused it.
+     * ⇒ union by id, store wins per token; a token removed from the store falls back to its
+     *   authored record rather than vanishing.
+     */
+    var authored = {};   // id -> record — membership, from opts
+    var stored = {};     // id -> record — position/condition, mirroring the store collection
+    var model = {};      // id -> record — what this viewer is showing (authored ⊕ stored ⊕ my hand)
+    var els = {};        // id -> { el, body, status, label }
+    var dragId = null;   // the token under this viewer's hand, or null
+    var subs = [];
+
+    // ── the roster ────────────────────────────────────────────────────────────────────────────
+    function normalise(id, raw) {
+      var r = raw && typeof raw === 'object' ? raw : {};
+      return {
+        id: id,
+        label: r.label == null ? id : String(r.label),
+        side: r.side == null ? null : String(r.side),
+        kind: r.kind == null ? null : String(r.kind),
+        px: clamp01(num(r.px, 0.5)),
+        py: clamp01(num(r.py, 0.5)),
+        status: r.status === undefined ? null : r.status
+      };
+    }
+    var roster = Array.isArray(opts.tokens) ? opts.tokens : [];
+    for (var ai = 0; ai < roster.length; ai++) {
+      var a = roster[ai];
+      if (a && a.id != null) authored[String(a.id)] = normalise(String(a.id), a);
+    }
+
+    /** model = authored ⊕ stored, with the token under this hand left exactly where the hand is. */
+    function recompute() {
+      var next = {}, id;
+      for (id in authored) next[id] = authored[id];
+      for (id in stored) next[id] = stored[id];
+      /* ⚠ THE ECHO (B6 finding 4): the writer gets its own diff back, and diffs it did not cause
+         arrive constantly. Neither may yank a token out from under the person dragging it. */
+      if (dragId && model[dragId]) next[dragId] = model[dragId];
+      model = next;
+    }
+
+    function seedFromStore() {
+      /* Finding 6: the snapshot is separate and COMPLETE, so a late joiner is seeded with zero
+         diffs. Reading the collection on mount is what turns that fact into a board that is never
+         blank and never half a roster. */
+      if (!Argus || !Argus.state) return;
+      applyCollection(Argus.state(path, null));
+    }
+
+    function applyCollection(value) {
+      stored = {};
+      if (value && typeof value === 'object') {
+        for (var id in value) {
+          if (!Object.prototype.hasOwnProperty.call(value, id)) continue;
+          if (value[id] == null) continue;
+          stored[id] = normalise(id, value[id]);
+        }
+      }
+    }
+    function applyToken(id, value) {
+      if (value == null) delete stored[id];            // ⇒ falls back to the authored record
+      else stored[id] = normalise(id, value);
+    }
+    function applyField(id, parts, value) {
+      if (parts.length !== 1) return;                  // deeper leaves are not ours to guess at
+      var base = stored[id] || authored[id] || normalise(id, {});
+      var raw = { label: base.label, side: base.side, kind: base.kind, px: base.px, py: base.py, status: base.status };
+      raw[parts[0]] = value;
+      stored[id] = normalise(id, raw);
+    }
+
+    // ── geometry ──────────────────────────────────────────────────────────────────────────────
+    function scaleNow() {
+      var v = handle.view && handle.view();
+      var s = v && v.scale;
+      if (!s) {                                        // map changed shape: read the transform back
+        var m = /scale\(([-0-9.]+)\)/.exec(content.style.transform || '');
+        s = m ? parseFloat(m[1]) : 1;
+      }
+      return s && isFinite(s) && s !== 0 ? s : 1;
+    }
+    function place(id) {
+      var e = els[id], rec = model[id];
+      if (!e || !rec) return;
+      e.el.style.left = (rec.px * 100) + '%';
+      e.el.style.top = (rec.py * 100) + '%';
+      e.el.style.transform = 'translate(-50%, -50%) scale(' + (1 / scaleNow()) + ')';
+    }
+    function placeAll() { for (var id in els) place(id); }
+
+    /** Event coords -> fraction of the untransformed content box (the wire's own units). */
+    function frac(ev) {
+      var r = content.getBoundingClientRect();
+      if (!r.width || !r.height) return null;
+      return { px: clamp01((ev.clientX - r.left) / r.width), py: clamp01((ev.clientY - r.top) / r.height) };
+    }
+
+    // ── DOM, reconciled rather than rebuilt ───────────────────────────────────────────────────
+    function create(id) {
+      var el = document.createElement('div');
+      el.className = 'ap-token' + (editable ? '' : ' is-static');
+      el.setAttribute('data-token-id', id);
+      var body = document.createElement('div'); body.className = 'ap-token-body';
+      var status = document.createElement('div'); status.className = 'ap-token-status';
+      var label = document.createElement('div'); label.className = 'ap-token-label';
+      body.appendChild(status); el.appendChild(body); el.appendChild(label);
+      if (editable) el.addEventListener('pointerdown', function (ev) { grab(id, el, ev); });
+      layer.appendChild(el);
+      els[id] = { el: el, body: body, status: status, label: label };
+    }
+    function drop(id) {
+      var e = els[id];
+      if (e && e.el.parentNode) e.el.parentNode.removeChild(e.el);
+      delete els[id];
+    }
+    /* `status` is whatever the caller publishes and is NEVER derived here — a second derivation of
+       a fact the system already computes is how two sources of truth start. Two shapes are honoured:
+       an opaque string (published as a hook), or a record carrying the colour/word/emphasis the
+       producer already settled on. */
+    function paintStatus(e, st) {
+      var el = e.status;
+      el.removeAttribute('title'); el.classList.remove('is-emphasis');
+      el.style.background = ''; el.setAttribute('data-status', '');
+      if (st == null || st === '') { el.style.display = 'none'; return; }
+      el.style.display = '';
+      if (typeof st === 'object') {
+        var colour = st.colour || st.color;
+        if (colour) el.style.background = String(colour);
+        if (st.word != null) el.setAttribute('title', String(st.word));
+        if (st.emphasis) el.classList.add('is-emphasis');
+        el.setAttribute('data-status', st.word == null ? '' : String(st.word));
+      } else {
+        el.setAttribute('data-status', String(st));
+        el.setAttribute('title', String(st));
+      }
+    }
+    function paint(id) {
+      var e = els[id], rec = model[id];
+      if (!e || !rec) return;
+      if (e.label.textContent !== rec.label) e.label.textContent = rec.label;
+      e.el.setAttribute('data-side', rec.side == null ? '' : rec.side);
+      e.el.setAttribute('data-kind', rec.kind == null ? '' : rec.kind);
+      e.el.style.setProperty('--ap-token-tint', tint(rec.side == null ? id : rec.side));
+      paintStatus(e, rec.status);
+    }
+    /** ⭐ The whole render, and it is IDEMPOTENT: running it twice equals running it once. */
+    function sync() {
+      var id;
+      for (id in model) if (!els[id]) create(id);
+      for (id in els) if (!model[id]) drop(id);
+      for (id in els) { paint(id); place(id); }
+    }
+
+    // ── drag: local while moving, ONE write on drop ───────────────────────────────────────────
+    function grab(id, el, ev) {
+      if (!editable || !model[id]) return;
+      /* ⛔ CLONE BEFORE MOVING. `recompute()` puts the AUTHORED record itself into the model when
+         the store has nothing for that token, so mutating it in place during a drag would rewrite
+         the roster's own starting position — and the corruption would only show up the next time
+         the store dropped that key and the token was expected to fall back to where it began. */
+      var r = model[id];
+      model[id] = { id: r.id, label: r.label, side: r.side, kind: r.kind, px: r.px, py: r.py, status: r.status };
+      dragId = id;
+      el.classList.add('is-dragging');
+      try { el.setPointerCapture(ev.pointerId); } catch (e) { /* synthetic pointers have no capture */ }
+      /* stopPropagation keeps the map from panning; preventDefault on `pointerdown` suppresses the
+         compatibility mouse events, which is what keeps map.js from dropping a click marker under
+         the token. Both are needed, and navmap learned it the same way. */
+      ev.stopPropagation(); ev.preventDefault();
+    }
+    /* Move/up are on WINDOW, not on the token. With pointer capture the events retarget to the
+       token and bubble here anyway; WITHOUT capture (a synthetic pointer, a fast drag that outruns
+       the element) they land on whatever is underneath and still bubble here. One listener covers
+       both, and it fires exactly once either way. */
+    function onMove(ev) {
+      if (!dragId) return;
+      var f = frac(ev); if (!f) return;
+      var rec = model[dragId];
+      if (!rec) return;
+      rec.px = f.px; rec.py = f.py;
+      place(dragId);                                   // local only — see 4: no write per pointer move
+      ev.stopPropagation();
+    }
+    function onUp(ev) {
+      if (!dragId) return;
+      var id = dragId; dragId = null;
+      var e = els[id]; if (e) e.el.classList.remove('is-dragging');
+      if (e) { try { e.el.releasePointerCapture(ev.pointerId); } catch (err) {} }
+      emit(id);                                        // ⭐ ONE write, on drop
+      ev.stopPropagation();
+    }
+    function emit(id) {
+      var rec = model[id];
+      if (!rec || !Argus || !Argus.op || coalesced) return;
+      /* `set` with the whole record, not `merge`: a token that has never been written must arrive
+         complete, and B3.2 measured `set` per key as the lossless form. */
+      Argus.op(path + '/' + id, 'set', {
+        id: rec.id, label: rec.label, side: rec.side, kind: rec.kind,
+        px: rec.px, py: rec.py, status: rec.status
+      });
+    }
+    window.addEventListener('pointermove', onMove, true);
+    window.addEventListener('pointerup', onUp, true);
+    window.addEventListener('pointercancel', onUp, true);
+
+    // ── state ─────────────────────────────────────────────────────────────────────────────────
+    if (Argus && Argus.subscribeState) {
+      /* ⛔ ONE subscription, AT THE COLLECTION (B6 finding 1). The handler is given the FULL path,
+         never a path relative to the prefix, so the id comes off the tail. */
+      subs.push(Argus.subscribeState(path, function (full, value) {
+        if (full === path) applyCollection(value);
+        else {
+          var tail = full.slice(path.length + 1);
+          if (!tail) return;
+          var parts = tail.split('/');
+          if (parts.length === 1) applyToken(parts[0], value);
+          else applyField(parts[0], parts.slice(1), value);
+        }
+        recompute(); sync();
+      }));
+    }
+
+    /* The map owns the transform; we only need to know when it changed. Observing the element it
+       writes covers pan, wheel zoom, zoom-to-fit and a remote `map/view` diff with one mechanism —
+       and there is no mirrored copy of the view to fall out of step. */
+    var mo = null;
+    if (window.MutationObserver) {
+      mo = new MutationObserver(placeAll);
+      mo.observe(content, { attributes: true, attributeFilter: ['style'] });
+    }
+
+    /*
+     * ⛔ THE SNAPSHOT CAN ARRIVE AFTER THE MOUNT, AND A LATE JOINER HAS NOTHING ELSE.
+     * `Argus._state` is filled by the host's `snapshot` frame; a component mounted before that
+     * frame lands reads an empty cache, and because a late joiner is seeded ENTIRELY from the
+     * snapshot (B6 finding 3: zero diffs), it would then sit on the authored roster for the rest
+     * of the session with every drag that happened before it arrived invisible. Seeding twice —
+     * now, and again on any snapshot — costs nothing, because `sync()` is idempotent. map.js does
+     * exactly this for `map/view`, for exactly this reason.
+     */
+    var offSnapshot = Argus && Argus.onMessage ? Argus.onMessage(function (m) {
+      if (!m || m.type !== 'snapshot') return;
+      seedFromStore(); recompute(); sync();
+    }) : null;
+
+    seedFromStore();
+    recompute();
+    sync();
+
+    return {
+      setView: handle.setView,
+      view: handle.view,
+      /** Read-only view of what this viewer is showing. For tests and for a host that wants a count. */
+      tokens: function () {
+        var out = {};
+        for (var id in model) out[id] = JSON.parse(JSON.stringify(model[id]));
+        return out;
+      },
+      destroy: function () {
+        if (offSnapshot) offSnapshot();
+        window.removeEventListener('pointermove', onMove, true);
+        window.removeEventListener('pointerup', onUp, true);
+        window.removeEventListener('pointercancel', onUp, true);
+        if (mo) mo.disconnect();
+        subs.forEach(function (u) { try { u(); } catch (e) {} });
+        if (handle.destroy) handle.destroy(); else root.innerHTML = '';
+      }
+    };
+  }
+
+  if (window.ApComponents) window.ApComponents.register('tokens', render);
+})();

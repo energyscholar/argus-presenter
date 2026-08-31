@@ -1,0 +1,39 @@
+/* TOKENS — N content-anchored, counter-scaled, draggable tokens over the shared map.
+   The layer fills the UNTRANSFORMED content box, so a token's left/top percentages are the
+   wire's own px/py fractions and survive every pan and zoom untouched. */
+.ap-tokens-layer {
+  position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+  pointer-events: none;                 /* the map keeps its pan/click surface … */
+  z-index: 8;
+}
+.ap-token {
+  position: absolute; pointer-events: auto;   /* … and only the tokens take the pointer */
+  cursor: grab; touch-action: none; user-select: none; text-align: center;
+  --ap-token-tint: #9fc0ff;
+}
+.ap-token.is-static { cursor: default; }
+.ap-token.is-dragging { cursor: grabbing; }
+.ap-token-body {
+  position: relative; width: 20px; height: 20px; margin: 0 auto; border-radius: 50%;
+  background: var(--ap-token-tint);
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  box-shadow: 0 0 10px rgba(160, 200, 255, 0.6), 0 0 3px #fff;
+}
+.ap-token.is-dragging .ap-token-body { box-shadow: 0 0 18px rgba(235, 244, 255, 0.95), 0 0 4px #fff; }
+/* The condition indicator rides ON the token, per the reference UI: a small pip at its shoulder.
+   Its colour is whatever the producer published — this component derives nothing. */
+.ap-token-status {
+  position: absolute; right: -3px; top: -3px; width: 8px; height: 8px; border-radius: 50%;
+  background: #8a8a8a; border: 1px solid rgba(0, 0, 0, 0.65); box-sizing: border-box;
+}
+.ap-token-status.is-emphasis { box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9); }
+.ap-token-label {
+  margin-top: 3px; font-size: 0.7rem; letter-spacing: 0.06em; white-space: nowrap;
+  color: var(--ap-token-tint); text-shadow: 0 0 4px #000, 0 0 2px #000;
+}
+/* A path the host coalesces cannot carry a durable drop. Say so on the board, not in a console. */
+.ap-tokens-warning {
+  position: absolute; left: 8px; top: 8px; max-width: 90%; pointer-events: none;
+  padding: 4px 8px; border-radius: 4px; font-size: 0.72rem;
+  background: rgba(60, 12, 12, 0.88); color: #ffd7d7; border: 1px solid #a33;
+}

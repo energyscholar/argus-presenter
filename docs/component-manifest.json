@@ -498,6 +498,67 @@
           "type": "string"
         }
       ]
+    },
+    {
+      "name": "tokens",
+      "fields": [
+        {
+          "name": "controllable",
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "name": "image",
+          "type": "string"
+        },
+        {
+          "name": "svg",
+          "type": "string"
+        },
+        {
+          "name": "preset",
+          "type": "string"
+        },
+        {
+          "name": "label",
+          "type": "string"
+        },
+        {
+          "name": "laser",
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "name": "x",
+          "type": "number",
+          "default": 0
+        },
+        {
+          "name": "y",
+          "type": "number",
+          "default": 0
+        },
+        {
+          "name": "scale",
+          "type": "number",
+          "default": 1
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "default": "shared/tactical/tokens"
+        },
+        {
+          "name": "tokens",
+          "type": "array",
+          "default": []
+        },
+        {
+          "name": "draggable",
+          "type": "string",
+          "default": "all"
+        }
+      ]
     }
   ]
 }

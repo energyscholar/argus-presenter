@@ -15,7 +15,7 @@
  */
 
 /*
- * The 16 real components in components/, plus 'clear' as a recognised terminal pseudo-beat.
+ * The 17 real components in components/, plus 'clear' as a recognised terminal pseudo-beat.
  *
  * ⛓ THIS IS THE THIRD OF THREE LISTS THAT MUST AGREE, and it is the one that drifted.
  * The other two are the `components/` directory listing (the server-side registry) and
@@ -33,6 +33,9 @@
 export const DEFAULT_COMPONENTS = [
   'card', 'choice', 'crud', 'dice', 'form', 'image', 'map', 'narration', 'navmap',
   'poll-results', 'prose', 'scene', 'slider', 'stepper', 'svg-reactive', 'text-input',
+  // `tokens` (0720 C3) — the third edit the header above demands. It joined `components/` and
+  // `core-schemas.mjs` in the same commit; leaving it out here is precisely the 16-vs-14 drift.
+  'tokens',
 ];
 /*
  * Plan 0525 P1.3 — THE DECLARED BEAT KEYS.

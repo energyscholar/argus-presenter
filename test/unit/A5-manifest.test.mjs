@@ -20,7 +20,10 @@ test('A5 — manifest lists ALL core components, each with fields', () => {
   // hid the count AND hid a committed manifest two components out of date. Plan 0525 P5 restores
   // both; `t80` (test/unit/0525-p5-core-schema-coverage.test.mjs) is the assertion that now names a
   // schemaless component directly, so this literal can never again be shadowed by a throw.
-  expect(m.components.length === names.length && names.length === 16, 'all 16 core components listed', `${m.components.length}/${names.length}`);
+  // 16 -> 17: `tokens` joined the registry with plan 0720 C3 (N draggable tokens over the map),
+  // and it arrived with its schema entry, so this literal is the tripwire doing its job rather
+  // than the throw hiding it.
+  expect(m.components.length === names.length && names.length === 17, 'all 17 core components listed', `${m.components.length}/${names.length}`);
   for (const c of m.components) {
     expect(Array.isArray(c.fields) && c.fields.length >= 1, `${c.name} has a field schema`, c.name);
     expect(c.fields.every((f) => f.name && f.type), `${c.name} fields have name+type`);
