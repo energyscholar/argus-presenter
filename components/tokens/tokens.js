@@ -63,6 +63,34 @@
   var DEFAULT_PATH = 'shared/tactical/tokens';
   var EPHEMERAL_SEGMENTS = { pointer: 1, laser: 1 };   // B6: these paths are coalesced by the host
   /*
+   * ⭐⭐ THE BOARD PATH IS A STORE KEY, AND IT IS THE ONLY MID-SESSION ESCAPE HATCH THERE IS.
+   *
+   * A live board is authored into the store, and a board that has been authored wrong — stale keys
+   * from a rehearsal, a roster pushed at the wrong collection — cannot be un-authored by editing
+   * code, because during a session the deploy poller is STOPPED (a push restarts the service and
+   * destroys the store, positions, round, turn, acted flags and damage with it). The only lever left
+   * is one that already lives in the store. Writing this key re-points every viewer at a fresh
+   * collection in one op, mid-fight, with nobody redeploying anything.
+   *
+   * ⛔ IT OVERRIDES `opts.path` DELIBERATELY. A mount's opts are frozen at push time, and the whole
+   * point is to change the board without re-pushing. A second, unrelated board on the same
+   * deployment names its own key with `opts.boardPathKey`.
+   */
+  var BOARD_PATH_KEY = 'shared/tactical/boardpath';
+
+  /** Trim a candidate to the store's own path shape, or null if it is not one. */
+  function usablePath(p) {
+    if (typeof p !== 'string') return null;
+    var s = p.replace(/^\/+/, '').replace(/\/+$/, '').replace(/^\s+|\s+$/g, '');
+    if (!s) return null;
+    var segs = s.split('/');
+    for (var i = 0; i < segs.length; i++) {
+      var g = segs[i];
+      if (!g || g === '.' || g === '..' || g === '__proto__' || g === 'prototype' || g === 'constructor') return null;
+    }
+    return s;
+  }
+  /*
    * ⛔ A TAP IS NOT A MOVE, AND ON A TOUCH SCREEN A TAP *IS* A DRAG. `onUp` used to emit whatever
    * had happened between `pointerdown` and `pointerup`, and a finger resting on a piece for a
    * moment produces exactly that pair with nothing in between. So merely TOUCHING a token converted
@@ -102,28 +130,52 @@
     var content = root.querySelector('.ap-map-content');
     if (!content) return handle;                       // base map changed shape — degrade to a plain map
 
-    var path = String(opts.path || DEFAULT_PATH).replace(/^\/+/, '').replace(/\/+$/, '');
-    var editable = opts.draggable !== 'off';
-    var segments = path.split('/');
+    var pathKey = usablePath(opts.boardPathKey) || BOARD_PATH_KEY;
+    var mountPath = usablePath(opts.path) || DEFAULT_PATH;
+    /* ⛔ THE STORE KEY WINS, and it is read HERE rather than only subscribed to, because a viewer
+       who joins after the board was re-pointed has no diff coming — the key is already set and the
+       snapshot is all they get. */
+    var path = usablePath(Argus && Argus.state ? Argus.state(pathKey, null) : null) || mountPath;
+    var editable = false;                              // set by bindPath, below
     var coalesced = false;
-    for (var si = 0; si < segments.length; si++) {
-      if (EPHEMERAL_SEGMENTS[segments[si]]) coalesced = true;
-    }
 
     var layer = document.createElement('div');
     layer.className = 'ap-tokens-layer';
-    layer.setAttribute('data-ap-path', path);
     content.appendChild(layer);
 
-    /* The path is unusable for a DROP, so say so where a human will see it rather than dropping
-       writes into a coalescing channel and letting the board look merely unreliable. */
-    if (coalesced) {
-      var warning = document.createElement('div');
-      warning.className = 'ap-tokens-warning';
-      warning.textContent = 'tokens: "' + path + '" contains an ephemeral segment — drops are not durable';
-      layer.appendChild(warning);
-      layer.setAttribute('data-ap-ephemeral', '1');
-      editable = false;
+    var warning = null;
+    /**
+     * Everything about the component that DEPENDS ON WHICH COLLECTION IT IS SHOWING, in one place.
+     * Called once at mount and again every time the board path changes under it.
+     *
+     * ⚠ It resets the elements, not merely the model. `editable` is read when a token's element is
+     * created, so an element that survived the re-point would keep the OLD board's drag permission —
+     * a piece that looks draggable and refuses, or worse, one that does not and writes.
+     */
+    function bindPath() {
+      layer.setAttribute('data-ap-path', path);
+      editable = opts.draggable !== 'off';
+      coalesced = false;
+      var segments = path.split('/');
+      for (var si = 0; si < segments.length; si++) {
+        if (EPHEMERAL_SEGMENTS[segments[si]]) coalesced = true;
+      }
+      /* The path is unusable for a DROP, so say so where a human will see it rather than dropping
+         writes into a coalescing channel and letting the board look merely unreliable. */
+      if (coalesced) {
+        if (!warning) {
+          warning = document.createElement('div');
+          warning.className = 'ap-tokens-warning';
+          layer.appendChild(warning);
+        }
+        warning.textContent = 'tokens: "' + path + '" contains an ephemeral segment — drops are not durable';
+        layer.setAttribute('data-ap-ephemeral', '1');
+        editable = false;
+      } else {
+        if (warning && warning.parentNode) warning.parentNode.removeChild(warning);
+        warning = null;
+        layer.removeAttribute('data-ap-ephemeral');
+      }
     }
 
     /*
@@ -487,19 +539,60 @@
     window.addEventListener('pointercancel', onUp, true);
 
     // ── state ─────────────────────────────────────────────────────────────────────────────────
-    if (Argus && Argus.subscribeState) {
-      /* ⛔ ONE subscription, AT THE COLLECTION (B6 finding 1). The handler is given the FULL path,
-         never a path relative to the prefix, so the id comes off the tail. */
-      subs.push(Argus.subscribeState(path, function (full, value) {
-        if (full === path) applyCollection(value);
+    var offCollection = null;
+    /**
+     * ⛔ ONE subscription, AT THE COLLECTION (B6 finding 1). The handler is given the FULL path,
+     * never a path relative to the prefix, so the id comes off the tail.
+     * ⚠ Held on its own handle, not in `subs`, because a re-point must drop THIS one and keep the
+     * board-path subscription that caused the re-point.
+     */
+    function subscribeCollection() {
+      if (!Argus || !Argus.subscribeState) return;
+      var bound = path;                                // the path this closure belongs to
+      offCollection = Argus.subscribeState(bound, function (full, value) {
+        if (bound !== path) return;                    // a diff for the board we have just left
+        if (full === bound) applyCollection(value);
         else {
-          var tail = full.slice(path.length + 1);
+          var tail = full.slice(bound.length + 1);
           if (!tail) return;
           var parts = tail.split('/');
           if (parts.length === 1) applyToken(parts[0], value);
           else applyField(parts[0], parts.slice(1), value);
         }
         recompute(); sync();
+      });
+    }
+
+    /**
+     * ⭐ RE-POINT THE BOARD, LIVE. One store write and every viewer is looking at a different
+     * collection — the escape hatch described at the top of this file.
+     *
+     * ⛔ Every element is torn down, not reconciled. Two boards can share an id, and a surviving
+     * element would keep the drag permission, the listener and the paint of the board it came from.
+     * ⛔ And any drag in this viewer's hand is abandoned: the piece under the finger belongs to a
+     * board that is no longer on screen, and dropping it would write a position into it.
+     */
+    function repoint(next) {
+      var want = usablePath(next) || mountPath;
+      if (want === path) return;
+      dragId = null; dragFrom = null; dragBefore = null; dragMoved = false;
+      if (offCollection) { try { offCollection(); } catch (e) {} offCollection = null; }
+      path = want;
+      bindPath();
+      for (var id in els) drop(id);                    // ⛔ elements too — see above
+      stored = {}; model = {};
+      subscribeCollection();
+      seedFromStore(); recompute(); sync();
+    }
+
+    bindPath();
+    subscribeCollection();
+    if (Argus && Argus.subscribeState) {
+      /* ⚠ A LEAF SUBSCRIPTION, and the prefix test is `p === key || p.startsWith(key + '/')`, so a
+         collection whose path merely begins with the key's text cannot trigger it. */
+      subs.push(Argus.subscribeState(pathKey, function (full, value) {
+        if (full !== pathKey) return;
+        repoint(value);
       }));
     }
 
@@ -523,6 +616,11 @@
      */
     var offSnapshot = Argus && Argus.onMessage ? Argus.onMessage(function (m) {
       if (!m || m.type !== 'snapshot') return;
+      /* ⛔ THE BOARD PATH ARRIVES IN THE SNAPSHOT TOO, and for a late joiner that is the ONLY place
+         it arrives — the write that re-pointed the board happened before they connected, so there
+         is no diff coming. Reading it here is what stops one viewer sitting on the abandoned
+         collection for the rest of the session while everyone else is on the new one. */
+      repoint(Argus.state(pathKey, null));
       seedFromStore(); recompute(); sync();
     }) : null;
 
@@ -556,6 +654,7 @@
         window.removeEventListener('pointerup', onUp, true);
         window.removeEventListener('pointercancel', onUp, true);
         if (mo) mo.disconnect();
+        if (offCollection) { try { offCollection(); } catch (e) {} offCollection = null; }
         subs.forEach(function (u) { try { u(); } catch (e) {} });
         paintEmpty(false);
         if (handle.destroy) handle.destroy(); else root.innerHTML = '';
