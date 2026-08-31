@@ -11,8 +11,6 @@
  *          could be shoved off centre by one stray finger, and re-authoring does not put it back.
  *   A3  ⛔ A ZERO-MOVEMENT TAP WROTE. On a touch screen a tap IS a pointerdown/up pair, so merely
  *          touching a piece converted it to a stored record.
- *   A5  ⛔ AN EMPTY BOARD RENDERED NOTHING AND SAID NOTHING — indistinguishable from a broken one.
- *   A6  ⛔ RE-MOUNTING LEAKED. The handle carries a working teardown that no caller ever kept.
  *
  * ⚠ EVERY CLAIM IS READ OUT OF `server.store` OR OUT OF THE COMPONENT'S OWN HANDLE. A field that
  * is present in a page's local variable and absent from the store is not shared — and "it is in the
@@ -249,6 +247,77 @@ test('0720 RUN-A.2b — ⛔ a pin that arrives LATER pins a token that is alread
   const t = server.store.get(PATH + '2/raider');
   check('⭐ …and it now refuses the drag too', near(t.px, 0.7, 0.01) && near(t.py, 0.75, 0.01),
     `${t.px} / ${t.py}`);
+  await unmountProbe(A);
+});
+
+
+/* ────────────────────────────────────────────────────────────────────────────────────────────────
+ * A3 — THE MOVEMENT THRESHOLD
+ * ──────────────────────────────────────────────────────────────────────────────────────────────*/
+
+test('0720 RUN-A.3 — ⭐⭐ A TAP WITH NO MOVEMENT WRITES NOTHING AT ALL', async () => {
+  /*
+   * ⛔ "NOTHING", NOT "THE SAME VALUE". A `set` of an identical record still converts an AUTHORED
+   * token into a STORED one, and `recompute()` lets the store win from then on — so re-authoring
+   * the roster can never change that piece again. The board goes quietly un-authorable one tap at a
+   * time, with every value on screen still perfectly correct. The assertion is therefore about the
+   * EXISTENCE of the key, not about its contents.
+   *
+   * ⚠ And this is a phone defect above all: a tap IS a pointerdown/pointerup pair with nothing in
+   * between, so on a touch screen simply touching a piece to see it did this.
+   */
+  await mountProbe(A, { path: PATH + '3', tokens: [
+    { id: 'flag', label: 'Flag', px: 0.4, py: 0.4 },
+    { id: 'scout-2', label: 'Scout Two', px: 0.6, py: 0.6 },
+  ] });
+  check('the collection starts empty', server.store.get(PATH + '3') === undefined,
+    JSON.stringify(server.store.get(PATH + '3')));
+
+  const n = await dragIn(A, 'flag', 0, 0, { moves: 0 });
+  check(`a bare down/up pair was dispatched (${n} events)`, n === 2, String(n));
+  await wait(400);                                    // give a wrong write every chance to land
+
+  check('⭐ THE TAP CREATED NO KEY — the token is still purely authored',
+    server.store.get(PATH + '3') === undefined || server.store.get(PATH + '3').flag === undefined,
+    JSON.stringify(server.store.get(PATH + '3')));
+
+  /* CONTROL. Without this the check above passes just as well on a component that has stopped
+     writing altogether — which is the failure this threshold is most likely to introduce. */
+  await dragIn(A, 'scout-2', 0.25, 0.8);
+  await poll(() => { const t = server.store.get(PATH + '3/scout-2'); return t && near(t.px, 0.25, 0.03); },
+    'CONTROL: a real drag on the same board still writes');
+  check('⭐ CONTROL: a real drag on the same board still writes',
+    near(server.store.get(PATH + '3/scout-2').px, 0.25, 0.03), JSON.stringify(server.store.get(PATH + '3/scout-2')));
+});
+
+test('0720 RUN-A.3b — a 3px tremor is a tap; a 40px pull is a drag', async () => {
+  /* The threshold is in VIEWPORT pixels, not content fractions, because the question is "did the
+     hand move" and the hand does not know the map's zoom. So the fixture moves the pointer by an
+     exact pixel count rather than by a fraction of the board. */
+  const jitter = (id, dx) => contentFrame(A).evaluate((tokenId, d) => {
+    const tok = document.querySelector('#runa-host .ap-token[data-token-id="' + tokenId + '"]');
+    const r = tok.getBoundingClientRect();
+    const base = { clientY: r.top + r.height / 2, bubbles: true, cancelable: true, pointerId: 1, pointerType: 'mouse', isPrimary: true };
+    const x0 = r.left + r.width / 2;
+    tok.dispatchEvent(new PointerEvent('pointerdown', { ...base, clientX: x0 }));
+    for (let i = 1; i <= 6; i++) window.dispatchEvent(new PointerEvent('pointermove', { ...base, clientX: x0 + (d * i) / 6 }));
+    window.dispatchEvent(new PointerEvent('pointerup', { ...base, clientX: x0 + d }));
+    return d;
+  }, id, dx);
+
+  const before = { ...(await modelOf(A)).flag };
+  await jitter('flag', 3);
+  await wait(350);
+  const afterTremor = (await modelOf(A)).flag;
+  check('a 3px tremor left the record untouched, on the board as well as in the store',
+    near(afterTremor.px, before.px, 1e-9) && (server.store.get(PATH + '3') || {}).flag === undefined,
+    `${before.px} -> ${afterTremor.px} · store=${JSON.stringify((server.store.get(PATH + '3') || {}).flag)}`);
+
+  await jitter('flag', 40);
+  await poll(() => (server.store.get(PATH + '3') || {}).flag !== undefined, 'a 40px pull did write');
+  const wrote = server.store.get(PATH + '3/flag');
+  check('⭐ …and a 40px pull wrote, so the threshold is a threshold and not an off switch',
+    !!wrote && wrote.px > before.px, JSON.stringify(wrote));
   await unmountProbe(A);
 });
 

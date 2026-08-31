@@ -62,6 +62,18 @@
 
   var DEFAULT_PATH = 'shared/tactical/tokens';
   var EPHEMERAL_SEGMENTS = { pointer: 1, laser: 1 };   // B6: these paths are coalesced by the host
+  /*
+   * ⛔ A TAP IS NOT A MOVE, AND ON A TOUCH SCREEN A TAP *IS* A DRAG. `onUp` used to emit whatever
+   * had happened between `pointerdown` and `pointerup`, and a finger resting on a piece for a
+   * moment produces exactly that pair with nothing in between. So merely TOUCHING a token converted
+   * it from an authored record into a stored one — after which the roster no longer owns it and
+   * re-authoring can no longer change it.
+   *
+   * 4px, the same figure `map.js` already uses to tell a click from a pan, so the two surfaces
+   * agree about what counts as having moved. It is in CSS pixels of the viewport, deliberately: the
+   * question is "did the hand move", and the hand does not know the map's zoom.
+   */
+  var MOVE_THRESHOLD_PX = 4;
 
   /* Stable tint from an opaque string — the same hash map.js uses for a peer cursor. Domain-free:
      the component never knows which side is which, only that two different strings differ. */
@@ -136,6 +148,9 @@
     var model = {};      // id -> record — what this viewer is showing (authored ⊕ stored ⊕ my hand)
     var els = {};        // id -> { el, body, status, label }
     var dragId = null;   // the token under this viewer's hand, or null
+    var dragFrom = null; // where the hand went down (viewport px) — the threshold's origin
+    var dragBefore = null; // the record as it stood at pointerdown, restored if this was a tap
+    var dragMoved = false; // has the hand travelled far enough to mean it?
     var subs = [];
 
     // ── the roster ────────────────────────────────────────────────────────────────────────────
@@ -361,6 +376,12 @@
          audit listed would have left the drag path erasing them anyway. */
       model[id] = cloneRec(model[id]);
       dragId = id;
+      /* Where the hand went down, and the record as it stood before it did. A press that turns out
+         to be a tap must leave BOTH the board and the store exactly as it found them, and "exactly"
+         means the record, not just the two coordinates. */
+      dragFrom = { x: ev.clientX, y: ev.clientY };
+      dragBefore = cloneRec(model[id]);
+      dragMoved = false;
       el.classList.add('is-dragging');
       try { el.setPointerCapture(ev.pointerId); } catch (e) { /* synthetic pointers have no capture */ }
       /* stopPropagation keeps the map from panning; preventDefault on `pointerdown` suppresses the
@@ -374,6 +395,16 @@
        both, and it fires exactly once either way. */
     function onMove(ev) {
       if (!dragId) return;
+      /* ⛔ NOTHING MOVES UNTIL THE THRESHOLD IS CROSSED. Tracking the movement but painting it
+         anyway would mean a sub-threshold press visibly nudged the piece and then snapped it back
+         on release, which reads as a glitch; and if the press ended above the threshold the piece
+         would have been following a hand that had not yet decided to drag. Below 4px, nothing
+         happened — on the board and in the record alike. */
+      if (!dragMoved) {
+        if (Math.abs(ev.clientX - dragFrom.x) <= MOVE_THRESHOLD_PX
+          && Math.abs(ev.clientY - dragFrom.y) <= MOVE_THRESHOLD_PX) return;
+        dragMoved = true;
+      }
       var f = frac(ev); if (!f) return;
       var rec = model[dragId];
       if (!rec) return;
@@ -386,6 +417,21 @@
       var id = dragId; dragId = null;
       var e = els[id]; if (e) e.el.classList.remove('is-dragging');
       if (e) { try { e.el.releasePointerCapture(ev.pointerId); } catch (err) {} }
+      /*
+       * ⛔⛔ A TAP WRITES NOTHING. Not "writes the same value" — NOTHING. The distinction is the
+       * whole point: a `set` of an identical record still converts an AUTHORED token into a STORED
+       * one, and from that moment `recompute()` lets the store win, so re-authoring the roster can
+       * never change that piece again. The board would go quietly un-authorable one tap at a time,
+       * with every value on screen still correct.
+       */
+      if (!dragMoved) {
+        if (dragBefore) model[id] = dragBefore;        // put the record back, whole
+        place(id);
+        dragBefore = null;
+        ev.stopPropagation();
+        return;
+      }
+      dragBefore = null;
       emit(id);                                        // ⭐ ONE write, on drop
       ev.stopPropagation();
     }
