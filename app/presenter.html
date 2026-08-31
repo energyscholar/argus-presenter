@@ -134,7 +134,10 @@
      control changes. ⛔ pointer-events is no longer `none` — that is the one line that made it a
      readout rather than a target. Unnamed it brightens and gains a cursor; named it goes back to
      ambient. ⚠ The 7-element budget (docs/display-chrome-budget.md, t0537-P4-C5) is unchanged. */
-  #who{position:fixed;bottom:8px;left:12px;font-size:.65rem;opacity:.55;letter-spacing:.1em;
+  /* ⚠ bottom:28px, not 8px — #ap-echo is fixed at bottom:6px and spans the full width, so at 8px
+     this readout sat in the echo line's row and the recognized-speech text ran into it. Raising it
+     clears that band. Reported from a live session, not reasoned from the stylesheet. */
+  #who{position:fixed;bottom:28px;left:12px;font-size:.65rem;opacity:.55;letter-spacing:.1em;
     background:rgba(6,10,24,.86);border:1px solid #1e2c46;border-radius:5px;padding:3px 9px;
     cursor:pointer;z-index:54;}
   #who:hover{opacity:.95;border-color:#22e5a0;}
