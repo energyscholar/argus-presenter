@@ -177,11 +177,24 @@ export function deserialise(document, opts = {}) {
   return ops;
 }
 
-/** The ids currently in a collection — accepts the collection object or a plain id list. */
+/**
+ * The ids currently in a collection — accepts the collection object or a plain id list.
+ *
+ * ⛔ IT SKIPS WHAT IS NOT A PIECE, BY THE SAME TEST `serialise` USES. A lock on the COLLECTION lands
+ * at `<board>/lock` as a plain string, beside the tokens. `serialise` already ignores it (it is not
+ * a record), and a removal list that did not would hand back `remove lock` — so restoring a board
+ * would quietly DELETE somebody's lock as a side effect. Breaking a lock has to be an act; it is
+ * what `force` is for.
+ * ⚠ With only an id list there is nothing to test, so a caller passing ids owns that decision.
+ */
 function currentIds(current) {
   if (!current) return [];
-  const ids = Array.isArray(current) ? current.map(String) : Object.keys(current);
-  return ids.filter((id) => !isHostKey(id));
+  if (Array.isArray(current)) return current.map(String).filter((id) => !isHostKey(id));
+  return Object.keys(current).filter((id) => {
+    if (isHostKey(id)) return false;
+    const rec = current[id];
+    return rec != null && typeof rec === 'object' && !Array.isArray(rec);
+  });
 }
 
 /**

@@ -89,6 +89,16 @@ test('0720 RUN-B B1.4 — ⛔ a LOCK is not a piece: `_locks` and `lock` never r
      `_locks` entry. That is the store's behaviour, not this module's, and it is worth knowing. */
   store.apply({ path: PATH + '/scout-1/label', verb: 'lock', value: { by: 'ann' } }, { userId: 'ann', role: 'system' });
 
+  /* ⛔ AND THE COLLECTION-LEVEL `_locks` MAP, which the first draft of this test never produced —
+     so the guard against it sat UNCOVERED and a deliberate break of it stayed green. A lock on a
+     SCALAR child of the collection puts the owner in a sibling map, `<collection>/_locks/<leaf>`,
+     right beside the tokens. That is precisely the key a generic subtree sweep hands back as a
+     piece; `serialise` must skip it by NAME, and nothing else in this file makes it exist. */
+  store.apply({ path: PATH, verb: 'lock', value: { by: 'ann' } }, { userId: 'ann', role: 'system' });
+  store.apply({ path: PATH + '/lock', verb: 'lock', value: { by: 'ann' } }, { userId: 'ann', role: 'system' });
+  check('a collection-level `_locks` map is present in the raw collection',
+    !!store.get(PATH + '/_locks'), JSON.stringify(Object.keys(store.get(PATH))));
+
   // the locks really are in the store — otherwise this test proves nothing
   check('a record lock is present in the raw collection', store.get(PATH + '/flag/lock') === 'ann');
   check('a leaf lock is present in the raw collection',
@@ -215,4 +225,23 @@ test('0720 RUN-B B1.11 — serialise defaults to the board path the store itself
   const d = serialise(store);
   check('with the key set, the SAME call reads the new collection', d.tokens.length === 1, JSON.stringify(d));
   check('and the document records which path it came from', d.path === 'shared/tactical/round2', d.path);
+});
+
+test('0720 RUN-B B1.12 — \u26d4 A RESTORE DOES NOT SILENTLY DELETE A LOCK ON THE WAY PAST', () => {
+  /* A lock on the COLLECTION lands at `<board>/lock` as a plain string, beside the tokens. It is
+     not a piece, so the document ignores it \u2014 and the REMOVAL list must ignore it too, or
+     restoring a board would break somebody's lock as a side effect of writing tokens. Breaking a
+     lock is what `force` is for, and it has to be an act. */
+  const store = applyAll(deserialise(doc([{ id: 'flag', px: 0.5, py: 0.5 }, { id: 'raider', px: 0.2, py: 0.2 }])));
+  store.apply({ path: PATH, verb: 'lock', value: { by: 'ann' } }, { userId: 'ann', role: 'system' });
+  check('precondition: the collection carries a lock beside its tokens',
+    store.get(PATH + '/lock') === 'ann', JSON.stringify(Object.keys(store.get(PATH))));
+
+  const ops = deserialise(doc([{ id: 'flag', px: 0.5, py: 0.5 }]), { current: store.get(PATH) });
+  const removed = ops.filter((o) => o.verb === 'remove').map((o) => o.value);
+  check('the omitted PIECE is removed', removed.includes('raider'), JSON.stringify(removed));
+  check('\u26d4 and the lock is NOT', !removed.includes('lock'), JSON.stringify(removed));
+  applyAll(ops, store);
+  check('\u21d2 the lock still stands after the restore', store.get(PATH + '/lock') === 'ann');
+  check('\u2026and it is still enforced', store.lockOwnerFor(PATH + '/raider') === 'ann');
 });
