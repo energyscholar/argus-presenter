@@ -32,6 +32,7 @@ import { mkdtempSync, existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { DURABLE_STATE_FILE } from '../../lib/durable-state.mjs';
+import { makePluginsDir, withPlugins } from '../unit/_0514-fixtures.mjs';
 
 const SYS = { userId: 'server', role: 'system' };
 
@@ -264,6 +265,40 @@ test('0720 RUN-C C1.9 — ⛔ THE THREE SUBTREES ARE THE CONTRACT: narrowing wha
   const doc = onDisk();
   const heads = new Set(Object.keys(doc.leaves).map((k) => k.split('/')[0]));
   check('the file itself carries both, not merely the config', heads.has('shared') && heads.has('ships'), JSON.stringify([...heads]));
+});
+
+test('0720 RUN-C C1.10 — ⛔ THE RESTORE IS THE LAST WRITE: a plugin\'s opening defaults do NOT overwrite the session', async () => {
+  /*
+   * ⛔ AN ORDERING BUG THAT REPORTS SUCCESS. A plugin writes its opening defaults during
+   * `register`. Restore before that, and the defaults land on top: the restore applies every leaf,
+   * counts them, logs a clean boot — and the board is back at its opening layout anyway. Nothing
+   * anywhere is an error. Last write wins, so the restore has to BE the last write.
+   *
+   * The fixture plugin seeds one value under a persisted prefix, so the two writers are in direct
+   * competition and only the order decides.
+   */
+  const SEED = 'shared/runc-order/who';
+  const dir = makePluginsDir({
+    'runc-seed': {
+      'plugin.json': { name: 'runc-seed', requires: [], components: [], presets: {}, fieldSchemas: {}, server: 'server.mjs' },
+      'server.mjs': `export function register(ctx) { ctx.store.apply({ path: '${SEED}', verb: 'set', value: 'plugin-default' }); }\n`,
+    },
+  });
+  const d2 = mkdtempSync(join(tmpdir(), 'ap-runc-order-'));
+  await withPlugins(dir, async () => {
+    const one = await createServer({ port: 0, stateDir: d2, ...FAST });
+    check('the plugin seeded its default', one.store.get(SEED) === 'plugin-default');
+    one.apply({ path: SEED, verb: 'set', value: 'what-happened-in-play' }, SYS);   // the session moves on
+    await poll(() => existsSync(join(d2, DURABLE_STATE_FILE)), 'the capture to land');
+    one.durableState.flushSync();
+    await one.close();
+
+    const two = await createServer({ port: 0, stateDir: d2, ...FAST });
+    check('⭐ THE SESSION WON, NOT THE PLUGIN DEFAULT — the restore ran after register',
+      two.store.get(SEED) === 'what-happened-in-play', JSON.stringify(two.store.get(SEED)));
+    await two.close();
+  });
+  try { rmSync(d2, { recursive: true, force: true }); rmSync(dir, { recursive: true, force: true }); } catch { /* scratch */ }
 });
 
 test('0720 RUN-C C1.Z — teardown', async () => {
