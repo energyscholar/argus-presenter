@@ -1,13 +1,12 @@
 /*
  * Plan 0720 P1 — THE INITIATIVE TRACKER, END TO END.
  *
- * Bruce, 2026-08-30: *"Wire in the Initiative Tracker such that YOU and also me, in Presenter
- * Console role, can move the initiative… Verify both the plan and the delivery functionally
- * end-to-end via functional testing."*
+ * REQUIREMENT: the tracker must be movable from BOTH the agent side and the operator's console,
+ * and that must be proven end-to-end rather than asserted.
  *
  * So this file proves BOTH DOORS against a REAL SERVER with the real plugin loaded:
- *   Argus's door  — the MCP plugin tools (combat_begin / combat_advance / …)
- *   Bruce's door  — an `Argus.emit('combat-command')` arriving on the `result` channel
+ *   the agent door    — the MCP plugin tools (combat_begin / combat_advance / …)
+ *   the console door  — an `Argus.emit('combat-command')` arriving on the `result` channel
  * and it proves the door that must STAY SHUT — a participant sending the same command.
  *
  * ⛔⛔ IT ALSO PROVES THE ONE RULE THAT IS EASY TO GET WRONG AND SILENT WHEN WRONG:
@@ -176,9 +175,9 @@ test('0720 T7 — STATIONS act individually in the Actions step (CRB: every stat
   expect(s.acted.flag !== true, 'and the hull itself is not marked done by a station action');
 });
 
-test('0720 T8 — ⭐⭐ BRUCE DOOR: a presenter-role console command moves the tracker', async () => {
+test('0720 T8 — ⭐⭐ CONSOLE DOOR: a presenter-role console command moves the tracker', async () => {
   await call('combat_begin', { order: FORCE, round: 1 });
-  const ws = await client(url, { userId: 'bruce', userName: 'Bruce', role: 'presenter' });
+  const ws = await client(url, { userId: 'op-1', userName: 'Operator', role: 'presenter' });
 
   command(ws, 'turn');
   await poll(async () => (await call('combat_state')).turn === 1, 'console advanced the turn');
@@ -193,9 +192,10 @@ test('0720 T8 — ⭐⭐ BRUCE DOOR: a presenter-role console command moves the 
 });
 
 test('0720 T9 — ⭐⭐ A PLAYER CAN ADVANCE IT TOO — there is deliberately NO role gate', async () => {
-  /* Bruce reversed his own earlier instinct, 2026-08-30: "I'd rather EVERYONE AT THE TABLE could
-     advance the initiative… we gain nothing by locking it away from players" and "Would be GREAT
-     if we turned this over to a player to handle."
+  /* DESIGN RULING: anyone at the table may advance the initiative. An earlier draft gated this to
+     the operator; that was reversed deliberately — locking it away from players buys nothing, and
+     handing the tracker to a player is a feature, not a risk. The accident case is handled by the
+     press-and-hold guard plus undo plus attribution, NOT by a role check.
      ⛔ This test exists to make the ABSENCE of a gate deliberate and load-bearing. If someone
      later adds one, this goes red and says why. */
   await call('combat_begin', { order: FORCE, round: 1 });
