@@ -38,6 +38,16 @@
   margin-top: 3px; font-size: 0.7rem; letter-spacing: 0.06em; white-space: nowrap;
   color: var(--ap-token-tint); text-shadow: 0 0 4px #000, 0 0 2px #000;
 }
+/* An EMPTY board says so. A blank plot and a broken plot are indistinguishable to the person
+   looking at one mid-session, and this component now legitimately mounts before anything has been
+   written to it. Centred in the plot, quiet, and unmistakably a message rather than a piece. */
+.ap-tokens-empty {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 9;
+  pointer-events: none; white-space: nowrap;
+  padding: 4px 10px; border-radius: 4px; font-size: 0.78rem; letter-spacing: 0.04em;
+  color: rgba(200, 216, 244, 0.72);
+  background: rgba(8, 12, 28, 0.62); border: 1px dashed rgba(140, 170, 220, 0.35);
+}
 /* A path the host coalesces cannot carry a durable drop. Say so on the board, not in a console. */
 .ap-tokens-warning {
   position: absolute; left: 8px; top: 8px; max-width: 90%; pointer-events: none;

@@ -11,6 +11,7 @@
  *          could be shoved off centre by one stray finger, and re-authoring does not put it back.
  *   A3  ⛔ A ZERO-MOVEMENT TAP WROTE. On a touch screen a tap IS a pointerdown/up pair, so merely
  *          touching a piece converted it to a stored record.
+ *   A5  ⛔ AN EMPTY BOARD RENDERED NOTHING AND SAID NOTHING — indistinguishable from a broken one.
  *
  * ⚠ EVERY CLAIM IS READ OUT OF `server.store` OR OUT OF THE COMPONENT'S OWN HANDLE. A field that
  * is present in a page's local variable and absent from the store is not shared — and "it is in the
@@ -321,6 +322,70 @@ test('0720 RUN-A.3b — a 3px tremor is a tap; a 40px pull is a drag', async () 
   await unmountProbe(A);
 });
 
+
+/* ────────────────────────────────────────────────────────────────────────────────────────────────
+ * A5 — THE EMPTY BOARD
+ * ──────────────────────────────────────────────────────────────────────────────────────────────*/
+
+test('0720 RUN-A.5 — ⭐ AN EMPTY BOARD SAYS IT IS EMPTY, and stops saying so the moment it is not', async () => {
+  /*
+   * ⛔ THE ASSERTION IS ON VISIBLE TEXT, NOT ON AN ELEMENT EXISTING. This project has already
+   * shipped a region that rendered nothing and told nobody, and it survived a week of green tests
+   * precisely because "the region rendered" was the thing being asserted. So: a non-empty
+   * `innerText`, measured, and a box with real pixels in it.
+   *
+   * It stops being a corner case the moment the board is authored into the STORE instead of into
+   * the mount — the component then legitimately comes up with nothing, every time, until a tool
+   * writes something.
+   */
+  await mountProbe(A, { path: PATH + '5', tokens: [] });
+  const empty = await contentFrame(A).evaluate(() => {
+    const host = document.getElementById('runa-host');
+    const el = host.querySelector('.ap-tokens-empty');
+    const r = el && el.getBoundingClientRect();
+    return {
+      tokens: host.querySelectorAll('.ap-token').length,
+      text: el ? (el.innerText || el.textContent || '').trim() : null,
+      w: r ? r.width : 0, h: r ? r.height : 0,
+      /* ⛔ It must NOT ride inside `.ap-map-content`: that box is what the map scales and pans, so
+         a message parked there could end up three pixels tall or off the edge. */
+      insideTransformedContent: !!(el && el.closest && el.closest('.ap-map-content')),
+    };
+  });
+  check('the board really is empty (0 tokens), so this is the case under test', empty.tokens === 0, String(empty.tokens));
+  check(`⭐ …and it SAYS SO, in words: "${empty.text}"`,
+    !!empty.text && empty.text.length > 8, JSON.stringify(empty.text));
+  check(`…in a box with real pixels in it (${Math.round(empty.w)}×${Math.round(empty.h)})`,
+    empty.w > 40 && empty.h > 8, `${empty.w}x${empty.h}`);
+  check('⛔ …and it is anchored to the READER, not to the board — outside the scaled content box',
+    empty.insideTransformedContent === false, String(empty.insideTransformedContent));
+
+  // The other half: the moment a piece arrives the message must go. A permanent "no board" caption
+  // over a board with pieces on it is the same defect wearing the other face.
+  server.apply({ path: PATH + '5/flag', verb: 'set', value: { id: 'flag', label: 'Flag', px: 0.5, py: 0.5 } }, gm);
+  await poll(async () => (await contentFrame(A).evaluate(() =>
+    document.querySelectorAll('#runa-host .ap-token').length)) === 1, 'the piece arrived');
+  const after = await contentFrame(A).evaluate(() => ({
+    tokens: document.querySelectorAll('#runa-host .ap-token').length,
+    empty: document.querySelectorAll('#runa-host .ap-tokens-empty').length,
+  }));
+  check('⭐ one piece arrives and the message is gone', after.tokens === 1 && after.empty === 0, JSON.stringify(after));
+
+  /* …and back again, because `sync()` is claimed to be idempotent in BOTH directions.
+     ⚠ `remove` names the COLLECTION and carries the id (`state.mjs`: `path + '/' + idOf(value)`).
+     Addressing the item path with a null value is a silent no-op — it reads like a delete and does
+     nothing at all, which is worth writing down because it cost this test a run. */
+  server.apply({ path: PATH + '5', verb: 'remove', value: 'flag' }, gm);
+  await poll(async () => (await contentFrame(A).evaluate(() =>
+    document.querySelectorAll('#runa-host .ap-tokens-empty').length)) === 1, 'the message came back');
+  const back = await contentFrame(A).evaluate(() => ({
+    tokens: document.querySelectorAll('#runa-host .ap-token').length,
+    empty: document.querySelectorAll('#runa-host .ap-tokens-empty').length,
+  }));
+  check('…and the last piece leaves and it comes back — exactly one of it',
+    back.tokens === 0 && back.empty === 1, JSON.stringify(back));
+  await unmountProbe(A);
+});
 
 test('0720 RUN-A.9 — teardown', async () => {
   if (browser) await browser.close();

@@ -351,12 +351,48 @@
       e.el.style.setProperty('--ap-token-tint', tint(rec.side == null ? id : rec.side));
       paintStatus(e, rec.status);
     }
+    /*
+     * ⛔⛔ AN EMPTY BOARD MUST SAY IT IS EMPTY. This project has already shipped one region that
+     * rendered nothing and told nobody, and it survived a week of green tests because a region that
+     * renders nothing satisfies every assertion that asks "did the region render?".
+     *
+     * It stops being a corner case the moment the board is authored into the STORE rather than into
+     * the mount: the component then legitimately comes up with no pieces, every time, before the
+     * tool has written anything. A blank plot and a broken plot look identical, and the person
+     * looking at it is mid-session and has no way to tell which one they have.
+     *
+     * ⚠ The message says the board is empty. It does NOT say "loading" — the component does not
+     * know whether anything is coming, and a spinner that never resolves is a worse lie than a
+     * statement of fact.
+     *
+     * ⛔ IT HANGS OFF THE VIEWPORT, NOT OFF THE TOKEN LAYER. The layer lives INSIDE
+     * `.ap-map-content`, which the map scales: a message parked there would shrink with the zoom
+     * and slide away with the pan, so the one thing on screen whose whole job is to be read could
+     * end up three pixels tall or off the edge. Tokens counter-scale because they are anchored to
+     * the board; a message is anchored to the reader.
+     */
+    var viewportEl = root.querySelector('.ap-map-viewport') || layer;
+    var emptyEl = null;
+    function paintEmpty(isEmpty) {
+      if (isEmpty && !emptyEl) {
+        emptyEl = document.createElement('div');
+        emptyEl.className = 'ap-tokens-empty';
+        emptyEl.setAttribute('data-ap-empty', '1');
+        emptyEl.textContent = 'No pieces on this board yet.';
+        viewportEl.appendChild(emptyEl);
+      } else if (!isEmpty && emptyEl) {
+        if (emptyEl.parentNode) emptyEl.parentNode.removeChild(emptyEl);
+        emptyEl = null;
+      }
+    }
+
     /** ⭐ The whole render, and it is IDEMPOTENT: running it twice equals running it once. */
     function sync() {
-      var id;
+      var id, any = false;
       for (id in model) if (!els[id]) create(id);
       for (id in els) if (!model[id]) drop(id);
-      for (id in els) { paint(id); place(id); }
+      for (id in els) { paint(id); place(id); any = true; }
+      paintEmpty(!any);
     }
 
     // ── drag: local while moving, ONE write on drop ───────────────────────────────────────────
@@ -509,6 +545,7 @@
         window.removeEventListener('pointercancel', onUp, true);
         if (mo) mo.disconnect();
         subs.forEach(function (u) { try { u(); } catch (e) {} });
+        paintEmpty(false);
         if (handle.destroy) handle.destroy(); else root.innerHTML = '';
       }
     };
