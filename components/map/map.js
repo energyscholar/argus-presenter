@@ -281,7 +281,9 @@
     }
 
     /*
-     * ⭐ THE CONTROL, ON THE BOARD. Bruce: "make the control discreet, they'll find it anyway."
+     * ⭐ THE CONTROL, ON THE BOARD. Discreet by design: small and unobtrusive, but ON the surface
+     * rather than buried in a settings panel — someone who wants to point wants it now, not after
+     * a hunt. Discreet is not hidden; people find it.
      * ⇒ DISCREET, NOT HIDDEN. Small, low-contrast, in the corner of the plot in the style of the
      * rail tabs — and NOT buried in a settings panel, because someone who wants to point at a
      * target wants it now, mid-fight, without hunting for it.
