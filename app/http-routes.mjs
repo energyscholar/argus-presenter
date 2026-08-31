@@ -483,6 +483,25 @@ export function createHttpHandler(ctx) {
         });
   });
 
+  /*
+   * ⭐⭐ Plan 0719 T1 — THE RESOURCE PREFIX. One line in the table; the whole mechanism is
+   *   `app/resource-routes.mjs`, and the VOCABULARY is the plugin's.
+   *
+   * ⛔ CORE NAMES NOTHING HERE. What lives under this prefix is a function of the loaded plugin
+   *   set, exactly as `presenter_plugin_tool` already is. A deployment that loaded no plugins has
+   *   an empty index under it, and that is the correct answer rather than a stub.
+   *
+   * ⛔ READ HALF ONLY (plan 0719 R1a) — the router refuses every non-GET method with a stated
+   *   405. There is no write path behind this line in this run.
+   *
+   * ⚠ IT IS A PREFIX, CHECKED LAST, and it shadows nothing: no other key in any of the three
+   *   tables begins `/api/v2/`.
+   */
+  prefixRoutes.push(["/api/v2", ({ req, res, resourceRoutes }) => {
+        if (typeof resourceRoutes !== 'function') { res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'not found' })); return; }
+        resourceRoutes(req, res);
+  }]);
+
   return function httpRequestHandler(req, res) {
     // Destructured PER REQUEST — see the `api` note in the file header. Every name here is a
     // binding the handler used to capture from createServer()'s closure.
