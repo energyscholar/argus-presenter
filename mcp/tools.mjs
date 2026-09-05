@@ -741,14 +741,17 @@ export const coreTools = [
     handler: async ({ moduleId, title, beats }) => {
       const s = need();
       let loadedFrom = null;
+      let manifest, sections;
       if (moduleId) {
         const m = readModuleById(moduleId);
         beats = m.beats;
+        manifest = m.manifest;
+        sections = m.sections;
         title = title || (m.manifest && m.manifest.title) || moduleId;
         loadedFrom = moduleId;
       }
       if (!Array.isArray(beats)) throw new Error('present_module needs either moduleId or beats[]');
-      s.setModule({ title, beats });
+      s.setModule({ title, beats, manifest, sections });
       const shown = s.showBeat(0);
       return { module: { ...(shown ? { shown: 0 } : {}), beats: beats.length, title, ...(loadedFrom ? { loadedFrom } : {}) } };
     }
