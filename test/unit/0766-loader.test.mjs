@@ -11,7 +11,7 @@
  *   node harness/test.mjs --only 0766-loader (via the aggregate runner)
  */
 import { test, expect } from '../../harness/test.mjs';
-import { checkSystemPlugins, describeBeatTiers, describeRuleset, DEFAULT_RULESET } from '../../lib/loader.mjs';
+import { checkSystemPlugins, describeBeatTiers, describeRuleset } from '../../lib/loader.mjs';
 
 test('0766 A — a loaded @system/ plugin is not refused', () => {
   const r = checkSystemPlugins({ '@system/starship-ops': '1.0.0' }, ['starship-ops', 'ai-train-the-trainer']);
@@ -40,8 +40,8 @@ test('0766 D — describeBeatTiers: enhancedBy tiers as enhanced/tier0, NEVER un
   expect(result.every((r) => r.tier !== 'unrunnable'), 'no beat is ever unrunnable — the GATE clause, made falsifiable', JSON.stringify(result));
 });
 
-test('0766 E — describeRuleset: DEFAULT_RULESET fallback, honestly proven only on the fallback side', () => {
-  expect(describeRuleset(null) === DEFAULT_RULESET, 'null manifest -> DEFAULT_RULESET', describeRuleset(null));
-  expect(describeRuleset({}) === DEFAULT_RULESET, 'no ruleset field -> DEFAULT_RULESET', describeRuleset({}));
+test('0766 E — describeRuleset: NO default. A plugin that declares nothing reports null, never a string (R-107/R-045/R-046)', () => {
+  expect(describeRuleset(null) === null, 'null manifest -> null', describeRuleset(null));
+  expect(describeRuleset({}) === null, 'no ruleset field -> null', describeRuleset({}));
   expect(describeRuleset({ ruleset: 'cepheus' }) === 'cepheus', 'a declared ruleset wins', describeRuleset({ ruleset: 'cepheus' }));
 });
