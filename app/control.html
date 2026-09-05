@@ -879,6 +879,12 @@ import { mount as mountViewport, openCount as viewportsOpen } from '/lib/viewpor
   // P11 adds one marker to the label and only for a non-active module: with "Show All Modules"
   // ticked the list is mixed, and a retired module that looked identical to a live one would be
   // a trap. kind/status/an unrecognised status value are reference ⇒ tooltip.
+  //
+  // Plan 0766 (E14s) Phase 3 — a row carrying a truthy `error` is DISABLED, not merely marked.
+  // `listModules()` (app/server.mjs, not this run's files) still drops `error` rows outright
+  // today, so no real load produces one yet (E14s CONTEXT) — this only makes the render side
+  // ready for whenever a later run wires that gap. The (ERR) label text is UNCHANGED (0522 P10's
+  // own t27 asserts the exact string `<title> (ERR)`) — only `.disabled` is new.
   function modOption(m){
     var o=document.createElement('option'); o.value=m.id;
     var st=m.status||'active';
@@ -887,6 +893,7 @@ import { mount as mountViewport, openCount as viewportsOpen } from '/lib/viewpor
       +'\nkind: '+((m.kind&&String(m.kind))||KIND_NONE)+' · status: '+st
       +(m.statusInvalid?('\n⚠ unrecognized status "'+m.statusInvalid+'" — treated as active'):'')
       +(m.error?('\nERROR: '+m.error):'');
+    if(m.error) o.disabled=true;
     return o;
   }
 
