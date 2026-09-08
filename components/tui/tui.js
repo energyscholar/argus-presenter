@@ -140,12 +140,13 @@
          keystrokes until the server answers feels broken even when it is working. ⛳ The server's
          own echo carries an id; a caller that wants to reconcile the two has it. */
       append((seat || '') + '> ' + text);
-      /* ⛔⛔ `set` AT A CLIENT-MADE KEY, NEVER `add` ON THE COLLECTION. MEASURED in a browser: an
-         `add` to `shared/tui/in` lands NOWHERE and reports nothing — a `set` at
-         `shared/tui/in/<id>` in the same frame, on the same connection, works. Every typed line was
-         being dropped in silence.
-         ⭐ And the key IS the line's id, which is what lets the server echo it back and a client
-         reconcile the echo it drew optimistically against the one that returns. */
+      /* ⛔⛔ `add` KEYS THE ENTRY BY `value.id`, AND A VALUE WITHOUT ONE LANDS NOWHERE, silently.
+         MEASURED in a browser, and my first reading of it was wrong: `add` is not broken — my call
+         simply carried no id, so every typed line vanished with nothing reported. An `add` whose
+         value has an id works exactly as a `set` at that key does.
+         ⇒ `set` at an explicit key is kept, because the key is then VISIBLE at the call site rather
+         than being a convention the reducer applies out of sight — and the key IS the line's id,
+         which lets the server echo it back for a client to reconcile against its optimistic echo. */
       var A = api();
       var opId = (seat || 'anon') + '-' + Date.now().toString(36) + '-'
         + Math.random().toString(36).slice(2, 7);
