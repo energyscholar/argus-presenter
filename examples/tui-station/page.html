@@ -1,0 +1,42 @@
+<!--
+  TUI STATION — the whole page is one component and a heading.
+
+  ⭐ Deliberately bare. The point is to see the TEXT flowing and to type back at it; anything else on
+  this page would be the surface growing before the thing beneath it works, which is the order the
+  owner ruled against.
+-->
+<div class="tui-demo">
+  <h2 class="tui-demo-title">ARGUS · station console</h2>
+  <div id="m-tui"></div>
+  <p class="tui-demo-foot">
+    Every line you type goes to the engine verbatim. Nothing here parses it.
+  </p>
+</div>
+
+<style>
+  .tui-demo { max-width: 108ch; margin: 0 auto; padding: 12px; }
+  .tui-demo-title {
+    margin: 0 0 10px; font-size: 0.8rem; letter-spacing: 0.16em; text-transform: uppercase;
+    color: var(--ap-accent, #9fc0ff); font-family: var(--ap-font, ui-monospace, monospace);
+  }
+  .tui-demo-foot {
+    margin: 8px 0 0; font-size: 0.7rem; opacity: 0.55;
+    font-family: var(--ap-font, ui-monospace, monospace);
+  }
+</style>
+
+<script>
+  /* ⛔ THE PAGE MOUNTS THE COMPONENT AND NOTHING ELSE. No game logic here: the seat is stamped in by
+     the runner, the component writes what was typed, and the engine answers. */
+  (function () {
+    var mount = function () {
+      if (!window.ApComponents || !window.ApComponents.mount) { setTimeout(mount, 50); return; }
+      window.ApComponents.mount([{
+        at: '#m-tui',
+        component: 'tui',
+        opts: { seat: '__SEAT__', log: 'shared/tui/log', input: 'shared/tui/in', rows: 26 },
+      }]);
+    };
+    mount();
+  }());
+</script>

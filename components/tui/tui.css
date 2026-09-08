@@ -1,0 +1,69 @@
+/*!
+ * Argus Presenter component: TUI — the text surface.
+ *
+ * ⭐⭐ MONOSPACE AND `white-space: pre` ARE THE WHOLE REQUIREMENT. The theme already declares
+ * `--ap-font` as a monospace stack; what was missing everywhere else is the whitespace rule, so
+ * column-aligned station text collapsed. A board whose columns do not line up is a board a reader
+ * has to decode instead of read.
+ *
+ * ⛔ NO STYLING OF THE CONTENT ITSELF. No colour by speaker, no bold for orders, no grammar per row
+ * — those are "then we extend it", and each must be defensible against the raw view it replaces.
+ */
+
+.ap-tui {
+  --ap-tui-rows: 24;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;               /* ⛔ so the log may shrink inside a flex parent rather than overflow */
+  gap: 6px;
+  font-family: var(--ap-font, "Courier New", ui-monospace, monospace);
+}
+
+.ap-tui-log {
+  margin: 0;
+  padding: 10px 12px;
+  /* ⛔⛔ `pre`, NEVER `pre-wrap`: a wrapped line breaks the column alignment that IS the content of
+     a station board. Wide output scrolls sideways instead — a scrollbar is honest, a re-flowed
+     table is not. */
+  white-space: pre;
+  overflow: auto;
+  height: calc(var(--ap-tui-rows) * 1.35em + 20px);
+  font-size: 0.86rem;
+  line-height: 1.35;
+  color: var(--ap-fg, #d8e2f0);
+  background: var(--ap-bg-sunken, rgba(0, 0, 0, 0.35));
+  border: 1px solid var(--ap-rule, rgba(255, 255, 255, 0.12));
+  border-radius: 4px;
+  tab-size: 4;
+}
+
+.ap-tui-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ap-tui-prompt {
+  flex: 0 0 auto;
+  color: var(--ap-accent, #9fc0ff);
+  font-size: 0.86rem;
+  white-space: nowrap;
+}
+
+.ap-tui-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 6px 8px;
+  /* ⭐ The input is the same face and size as the log: what you type must look like what appears. */
+  font-family: inherit;
+  font-size: 0.86rem;
+  color: var(--ap-fg, #d8e2f0);
+  background: var(--ap-bg-sunken, rgba(0, 0, 0, 0.35));
+  border: 1px solid var(--ap-rule, rgba(255, 255, 255, 0.12));
+  border-radius: 4px;
+}
+
+.ap-tui-input:focus {
+  outline: none;
+  border-color: var(--ap-accent, #9fc0ff);
+}
