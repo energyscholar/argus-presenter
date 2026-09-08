@@ -33,6 +33,7 @@ const { renderStationText } = await import(join(PLUGIN, 'render-station-text.mjs
 const { renderRoundText } = await import(join(PLUGIN, 'render-round-text.mjs'));
 const { dispatch } = await import(join(PLUGIN, 'text-dispatch.mjs'));
 const { trafficFor, visibleTo } = await import(join(PLUGIN, 'tui-session.mjs'));
+const { chooseAction, lineFor } = await import(join(PLUGIN, 'station-occupant.mjs'));
 const { roundOrder, nextStop } = await import(join(PLUGIN, 'round-order.mjs'));
 const { buildTables, OPTION_FILES } = await import(join(PLUGIN, 'ship-design', 'rules-engine.mjs'));
 const { commission } = await import(join(PLUGIN, 'ship-design', 'instance.mjs'));
@@ -116,6 +117,7 @@ function pump() {
       say(n.done ? '⛳ the round is out of stops.'
         : `── ${n.stop.id} · ${n.stop.anySeat ? 'any seat' : `asking ${n.stop.asks}`} ──`);
       say(renderStationText(viewOf(seat)), who);
+      runNpcs();
       continue;
     }
     if (r.intent) continue;
@@ -134,6 +136,35 @@ function pump() {
     if (r.effects.length) say(renderStationText(viewOf(who)), who);
   }
 }
+/* ⭐⭐⭐ THE SCRIPTED SEATS — "some very simple stupid script that handles unoccupied stations".
+   ⛔⛔ AND IT GOES THROUGH THE SAME DOOR A PERSON TYPES AT. `chooseAction` picks from what the seat
+   is offering and `lineFor` turns that choice into the LINE a player would type; that line is then
+   dispatched exactly as a typed one is. A script with its own route into the game would be a second
+   interface, and this plugin has retired two already.
+   ⛳ It is deliberately stupid: it takes the open stop and nothing else. `annotate` is never
+   auto-taken, because a script has nothing to say and inventing speech for a crew member is the one
+   thing an occupant must not do. */
+const npc = new Set(String(flag('--npc', '') || '').split(',').map((x) => x.trim()).filter(Boolean));
+for (const n of npc) {
+  if (!SEATS.includes(n)) { console.error(`⛔ --npc names "${n}", which has no desk row.`); process.exit(2); }
+}
+function runNpcs() {
+  for (const code of npc) {
+    if (round.askOpen !== code) continue;                 // only when the round is asking them
+    const choice = chooseAction(occupantFor(code));
+    const line = lineFor(choice);
+    if (!line) { say(`  ${code} (npc): ${choice.why}`); continue; }
+    const r = dispatch({ line, seat: code, viewOf, seats: SEATS });
+    for (const e of trafficFor({ line, seat: code, result: r, id: `npc-${Date.now()}` })) append(e);
+    for (const e of r.effects) {
+      const seg = e.path.split('/');
+      if (seg[2] === 'declare') round.declarations[seg[3]] = e.value;
+    }
+  }
+}
+const occupantFor = (code) => stationView({
+  stationCode: code, projection, desk: deskOf(code), round, stops: STOPS });
+
 const timer = setInterval(pump, 250);
 
 /* ⛔ THE MOUNT IS DECLARED HERE, not scripted in the page: the server stamps each viewer's identity
@@ -150,7 +181,7 @@ say('type /help for the seat\'s words, /next to open the next stop, /round for t
 
 const url = server.url();
 console.log(`\n  ⭐ TUI station — open this in a browser:\n\n      ${url}\n`);
-console.log(`  seat ${seat} · hull ${hull}${typeof crit === 'string' ? ` · damaged ${crit}` : ''}`);
+console.log(`  seat ${seat} · hull ${hull}${npc.size ? ` · npc ${[...npc].join(' ')}` : ''}${typeof crit === 'string' ? ` · damaged ${crit}` : ''}`);
 console.log('  ⛔ local and throwaway. Ctrl-C to stop.\n');
 
 process.on('SIGINT', () => { clearInterval(timer); server.close?.(); process.exit(0); });
