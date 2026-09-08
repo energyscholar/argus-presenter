@@ -119,9 +119,8 @@ const seen = new Set();
    occupied by everybody. The mount's `seat` opt is static and identical for all viewers, so it can
    only ever be the DEFAULT; the moment a player says `/seat`, their choice is theirs alone. */
 const seatByUser = new Map();
-/* ⭐⭐⭐ THREE IDENTITIES, NOT ONE. Bruce, 2026-09-07: "the TUI needs to know which NPC or PC the
-   handler is playing." A USER is an account (ann), a SEAT is a station (gunner), and a CHARACTER is
-   the person being played (Delleron) — the surface tracked the first two and had no notion of the
+/* ⭐⭐⭐ THREE IDENTITIES, NOT ONE. The surface must know which NPC or PC the handler is playing. A USER is an account (ann), a SEAT is a station (gunner), and a CHARACTER is
+   the person being played — the surface tracked the first two and had no notion of the
    third, so the log could say which board an order came from but never who gave it.
    ⛔ AND THERE IS NO human-vs-machine FIELD. R-257: a station must not know whether a human or an AI
    is seated, and a character name says WHO is played, never WHAT is playing them. */
