@@ -76,7 +76,20 @@ const viewOf = (code) => stationView({
 
 const server = await createServer({ port: 0 });
 let seq = 0;
-const append = (entry) => server.set(`shared/tui/log/${String(seq += 1).padStart(5, '0')}`, entry);
+/* ⛔⛔ AUDIENCE IS ROUTED HERE, and it is the whole reason `trafficFor` puts a `to` on every entry.
+   A room line goes to the shared log; a private one goes to that USER's own branch, which the engine
+   read-scopes so it never leaves the server for anyone else. ⇒ a refusal reaches the seat that
+   earned it and no one else — writing it to the shared log would publish every mistyped word to the
+   whole crew, which is exactly what makes a console one nobody types honestly at.
+   ⚠ `to` is a SEAT and the scoping is by USER, so a seat with no known user falls back to the room:
+   ⛳ that is a demo simplification, and E16d's read-scoped prefix is where it is done properly. */
+const users = new Map();          // seat → userId, learned from what people type
+const append = (entry) => {
+  const key = String(seq += 1).padStart(5, '0');
+  const user = entry && entry.to ? users.get(entry.to) : null;
+  if (entry && entry.to && user) server.set(`private/${user}/tui/log/${key}`, entry);
+  else server.set(`shared/tui/log/${key}`, entry);
+};
 const say = (text, to = null) => append({ v: 1, kind: 'render', seat: null, to, text, id: null });
 
 /* ⛔ THE STORE OWNS THE STATE, AND THIS LOOP ONLY READS IT. `createStore`'s op hook belongs to the
@@ -89,6 +102,7 @@ function pump() {
     seen.add(id);
     const line = String(v.text || '');
     const who = String(v.seat || seat);
+    if (v.user) users.set(who, v.user);
 
     /* ⭐ META IS THE CLIENT'S OWN QUESTION, answered here because this demo IS the client's console.
        `trafficFor` deliberately returns nothing for it — it is not the crew's traffic. */

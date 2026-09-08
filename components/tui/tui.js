@@ -40,6 +40,12 @@
     var logPath = opts.log || 'shared/tui/log';
     var inPath = opts.input || 'shared/tui/in';
     var seat = opts.seat || null;
+    /* ⭐⭐ THE SERVER STAMPS `userId` INTO EVERY MOUNT, so a pane knows whose it is without asking.
+       ⛔ AND THAT IS WHY A PRIVATE LINE CAN EXIST AT ALL: `private/{self}/**` is read-scoped by the
+       engine, so another seat's branch never leaves the server. A refusal written to the shared log
+       would be a refusal published to the whole crew, which is the one thing it must not be. */
+    var userId = opts.userId || null;
+    var mineePath = userId ? ('private/' + userId + '/tui/log') : null;
 
     root.innerHTML = '';
     var wrap = document.createElement('div');
@@ -105,22 +111,34 @@
        mounted first showed an empty console while the crew were already talking. The bridge raises
        an event when the snapshot lands and sets `_stateReady`; take whichever comes first, and take
        it only once. */
-    function drawBacklog() {
+    function drawBacklog(path) {
       var A = api();
-      if (!A || !A.state) return;
-      var existing = A.state(logPath) || {};
+      if (!A || !A.state || !path) return;
+      var existing = A.state(path) || {};
       Object.keys(existing).sort().forEach(function (k) {
-        var id = logPath + '/' + k;
+        var id = path + '/' + k;
         if (seen[id]) return;
         seen[id] = 1;
         append(lineOf(existing[k]));
       });
     }
-    drawBacklog();
+    /* ⭐ BOTH LOGS ARE THE SAME PANE. A seat reads the room's traffic and its own private lines
+       interleaved, because that is the conversation as it actually happened — splitting them into
+       two panes would make a refusal arrive somewhere the player is not looking. */
+    function drawAll() { drawBacklog(logPath); if (mineePath) drawBacklog(mineePath); }
+    drawAll();
     try {
-      window.addEventListener((api() && api().NS ? api().NS : 'argus-presenter') + ':state', drawBacklog);
+      window.addEventListener((api() && api().NS ? api().NS : 'argus-presenter') + ':state', drawAll);
     } catch (e) { /* no window events here; the mount-time read is the fallback */ }
     if (api() && api().subscribeState) {
+      if (mineePath) {
+        subs.push(api().subscribeState(mineePath, function (path, value) {
+          var id = String(path);
+          if (seen[id]) return;
+          seen[id] = 1;
+          append(lineOf(value));
+        }));
+      }
       subs.push(api().subscribeState(logPath, function (path, value) {
         /* ⛔ EVERY ENTRY IS SHOWN ONCE. A store may resend a key on resync, and a traffic log that
            duplicates lines on reconnect is a log nobody trusts. */
@@ -150,7 +168,7 @@
       var A = api();
       var opId = (seat || 'anon') + '-' + Date.now().toString(36) + '-'
         + Math.random().toString(36).slice(2, 7);
-      if (A && A.op) A.op(inPath + '/' + opId, 'set', { v: 1, id: opId, seat: seat, text: text, ts: Date.now() });
+      if (A && A.op) A.op(inPath + '/' + opId, 'set', { v: 1, id: opId, seat: seat, user: userId, text: text, ts: Date.now() });
       /* ⛔ AND IT SAYS SO WHEN IT CANNOT SEND. Silence here is indistinguishable from success. */
       else append('  ⛔ not connected — that line went nowhere.');
     }

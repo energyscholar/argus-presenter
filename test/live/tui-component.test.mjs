@@ -38,13 +38,13 @@ test('tui — the pane mounts, shows the backlog, follows the log, and sends wha
     const f = await waitContentFrame(p);
 
     expect('the component mounts at all',
-      await f.evaluate(() => !!document.querySelector('.ap-tui-log')), true);
+      await f.evaluate(() => !!document.querySelector('.ap-tui-log')), 'no .ap-tui-log in the frame');
 
     /* ⛔ THE BACKLOG. A pane that only shows what arrives after it opens is useless to anyone who
        was not there first. */
     expect('the pane shows traffic written BEFORE it mounted',
       /Weapon system\s+green/.test(await f.evaluate(
-        () => document.querySelector('.ap-tui-log').textContent)), true);
+        () => document.querySelector('.ap-tui-log').textContent)), 'the backlog never drew');
 
     /* ⛔⛔ COLUMNS — AND THE STYLESHEET IS ACTUALLY LOADED. `pre-wrap` re-flows a station board and
        destroys the alignment that IS its content. ⚠ MEASURED: asserting only `white-space:pre` and
@@ -55,19 +55,19 @@ test('tui — the pane mounts, shows the backlog, follows the log, and sends wha
       return { ws: cs.whiteSpace, mono: /mono|courier/i.test(cs.fontFamily),
         border: cs.borderTopWidth, overflow: cs.overflowY, rows: Math.round(parseFloat(cs.height)) };
     });
-    expect('white-space is pre — a wrapped line breaks every column', css.ws, 'pre');
-    expect('the pane is monospace', css.mono, true);
-    expect('the component stylesheet loaded (its border)', css.border, '1px');
-    expect('the log scrolls rather than growing the page', css.overflow, 'auto');
+    expect('white-space is pre — a wrapped line breaks every column', css.ws === 'pre', `got ${css.ws}`);
+    expect('the pane is monospace', css.mono === true, 'the face is not monospace');
+    expect('the component stylesheet loaded (its border)', css.border === '1px', `got ${css.border}`);
+    expect('the log scrolls rather than growing the page', css.overflow === 'auto', `got ${css.overflow}`);
     expect('and it is sized by its rows opt, not by content',
-      css.rows > 120 && css.rows < 400, true);
+      css.rows > 120 && css.rows < 400, `height was ${css.rows}px`);
 
     /* ⭐ AND IT FOLLOWS THE LOG LIVE. */
     server.set('shared/tui/log/00002', { v: 1, kind: 'say', seat: 'pilot', to: null, text: 'thrust 2' });
     await wait(800);
     expect('a line appended after mount reaches the pane',
       /pilot> thrust 2/.test(await f.evaluate(
-        () => document.querySelector('.ap-tui-log').textContent)), true);
+        () => document.querySelector('.ap-tui-log').textContent)), 'live diffs are not arriving');
 
     /* ⛔⛔ THE HALF THAT WAS SILENTLY BROKEN. An `add` on the collection landed nowhere and said
        nothing, while the local echo still drew — a console that looks like it works and sends
@@ -79,14 +79,57 @@ test('tui — the pane mounts, shows the backlog, follows the log, and sends wha
     });
     await wait(800);
     const sent = Object.values(server.store.get('shared/tui/in') || {}).map((v) => v && v.text);
-    expect(`what was typed reaches the STORE (got ${JSON.stringify(sent)})`,
-      sent.includes('fire mount=mount-1'), true);
+    expect('what was typed reaches the STORE',
+      sent.includes('fire mount=mount-1'), `store held ${JSON.stringify(sent)}`);
 
     /* ⭐ VERBATIM. A client that rewrites a line before sending becomes a second dispatcher. */
     const entry = Object.values(server.store.get('shared/tui/in') || {})
       .find((v) => v && v.text === 'fire mount=mount-1');
-    expect('the line carries the seat that typed it', entry.seat, 'gunner');
-    expect('and an id, so the server echo can be reconciled', typeof entry.id, 'string');
+    expect('the line carries the seat that typed it', entry.seat === 'gunner', `seat was ${entry.seat}`);
+    expect('and an id, so the server echo can be reconciled', typeof entry.id === 'string', 'no id on the line');
+  } finally {
+    await browser.close();
+    server.close?.();
+  }
+});
+
+test('tui — a refusal reaches the seat that earned it and NO other seat sees it', async () => {
+  /* ⛔⛔ THE MESH CLAUSE, AND ITS LIMIT. The crew must see each other's orders — that is what makes
+     a round playable — and must NOT see each other's refusals, which are deliberately instructive
+     and therefore exactly what a player least wants published. `trafficFor` puts a `to` on every
+     entry for this; before this test nothing ever read it, so every refusal went to the shared log
+     and the whole crew watched each other mistype. */
+  const server = await createServer({ port: 0 });
+  const browser = await launch();
+  try {
+    const gunner = await connectUser(browser, server, { userId: 'g1', userName: 'Gunner' });
+    const pilot = await connectUser(browser, server, { userId: 'p1', userName: 'Pilot' });
+    await wait(500);
+    server.pushPage('all', PAGE, { mounts: MOUNTS, requires: ['tui'], contentId: 'tui-test' });
+    await wait(1500);
+    const gf = await waitContentFrame(gunner);
+    const pf = await waitContentFrame(pilot);
+
+    /* An ORDER: the room's business. */
+    server.set('shared/tui/log/00001',
+      { v: 1, kind: 'order', seat: 'gunner', to: null, text: 'gunner: A1 fire' });
+    /* A REFUSAL: the gunner's alone, on the gunner's own branch. */
+    server.set('private/g1/tui/log/00002',
+      { v: 1, kind: 'refusal', seat: 'gunner', to: 'gunner', text: '⛔ this ship mounts no weapons' });
+    await wait(900);
+
+    const read = (f) => f.evaluate(() => document.querySelector('.ap-tui-log').textContent);
+    const seenByGunner = await read(gf);
+    const seenByPilot = await read(pf);
+    console.log('   DIAG pilot  frame:', await pf.evaluate(() => (window.Argus||{}).state ? JSON.stringify({u:Object.keys(((window.Argus._state||{}).private)||{})}) : 'no-argus'));
+    console.log('   DIAG gunner text:', JSON.stringify(seenByGunner));
+
+    expect('the gunner sees the order', /A1 fire/.test(seenByGunner), 'the order never drew');
+    expect('the pilot sees it too — the crew coordinate off it', /A1 fire/.test(seenByPilot), 'the mesh is broken');
+    expect('the gunner sees their own refusal', /mounts no weapons/.test(seenByGunner), 'a private line never reached its owner');
+    /* ⛔ THE ONE THAT MATTERS. Not hidden in the UI — the bytes never reach the other client. */
+    expect('the PILOT never sees the gunner refused',
+      !/mounts no weapons/.test(seenByPilot), `pilot pane held: ${JSON.stringify(seenByPilot)}`);
   } finally {
     await browser.close();
     server.close?.();
