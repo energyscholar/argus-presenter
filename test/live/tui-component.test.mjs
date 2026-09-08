@@ -69,24 +69,36 @@ test('tui — the pane mounts, shows the backlog, follows the log, and sends wha
       /pilot> thrust 2/.test(await f.evaluate(
         () => document.querySelector('.ap-tui-log').textContent)), 'live diffs are not arriving');
 
-    /* ⛔⛔ THE HALF THAT WAS SILENTLY BROKEN. An `add` on the collection landed nowhere and said
-       nothing, while the local echo still drew — a console that looks like it works and sends
-       nothing. This asserts the STORE, never the echo. */
+    /* ⛔⛔ THE HALF THAT WAS SILENTLY BROKEN, AND ITS CONTRACT HAS CHANGED. The pane used to `op()`
+       into `shared/tui/in/<id>`, which the DEMO polls at 250 ms because a demo owns its own store.
+       The engine plugin does not: a line is now a MESSAGE (`tui-line`), which is how every other
+       panel in that plugin talks to it — no timer, no inbox, and no participant-writable path left
+       standing open. This asserts the SERVER received it, never the local echo. */
+    const got = [];
+    server.on('result', (r) => got.push(r));
     await f.evaluate(() => {
       const i = document.querySelector('.ap-tui-input');
       i.value = 'fire mount=mount-1';
       i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
     await wait(800);
-    const sent = Object.values(server.store.get('shared/tui/in') || {}).map((v) => v && v.text);
-    expect('what was typed reaches the STORE',
-      sent.includes('fire mount=mount-1'), `store held ${JSON.stringify(sent)}`);
+    const line = got.find((r) => r && r.type === 'tui-line');
+    expect('what was typed reaches the SERVER as a tui-line',
+      !!line, `results seen: ${JSON.stringify(got.map((r) => r && r.type))}`);
 
     /* ⭐ VERBATIM. A client that rewrites a line before sending becomes a second dispatcher. */
-    const entry = Object.values(server.store.get('shared/tui/in') || {})
-      .find((v) => v && v.text === 'fire mount=mount-1');
-    expect('the line carries the seat that typed it', entry.seat === 'gunner', `seat was ${entry.seat}`);
-    expect('and an id, so the server echo can be reconciled', typeof entry.id === 'string', 'no id on the line');
+    expect('the line arrives exactly as typed',
+      line && line.value && line.value.text === 'fire mount=mount-1',
+      `got ${JSON.stringify(line && line.value)}`);
+    expect('and it names the board it was typed at',
+      line && line.value && line.value.seat === 'gunner', `seat was ${line && line.value && line.value.seat}`);
+
+    /* ⛔⛔ IDENTITY IS THE ENVELOPE'S, NEVER THE PAYLOAD'S. A client that could name its own user
+       could speak as anyone, so core stamps it one level up and the payload must not carry it. */
+    expect('identity is stamped by core, not sent by the client',
+      line && line.userId === 'ann' && !(line.value && line.value.userId),
+      `envelope userId=${line && line.userId}, payload userId=${line && line.value && line.value.userId}`);
+
   } finally {
     await browser.close();
     server.close?.();

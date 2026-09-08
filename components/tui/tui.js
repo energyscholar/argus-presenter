@@ -29,6 +29,10 @@
      number the others disagreed with. Here the pane is sized by CSS and nothing pads by hand. */
   var DEFAULT_ROWS = 24;
 
+  /* ⚠ A component cannot import, so this string is written once here and once in the plugin's
+     `tui-server.mjs`. Changing one without the other is a line that goes nowhere, silently. */
+  var LINE_MESSAGE = 'tui-line';
+
   function render(root, opts) {
     opts = opts || {};
     /* ⛔⛔ LOOKED UP AT CALL TIME, NEVER CAPTURED AT MOUNT. Measured in a browser: this component
@@ -38,6 +42,8 @@
        hides a missing dependency is worse than the crash it prevents. */
     var api = function () { return window.Argus || null; };
     var logPath = opts.log || 'shared/tui/log';
+    /* ⛳ KEPT FOR THE DEMO HARNESS ONLY, which still polls this path. The plugin does not read it,
+       and a new surface should not set it. */
     var inPath = opts.input || 'shared/tui/in';
     var seat = opts.seat || null;
     /* ⭐⭐ THE SERVER STAMPS `userId` INTO EVERY MOUNT, so a pane knows whose it is without asking.
@@ -165,10 +171,16 @@
          ⇒ `set` at an explicit key is kept, because the key is then VISIBLE at the call site rather
          than being a convention the reducer applies out of sight — and the key IS the line's id,
          which lets the server echo it back for a client to reconcile against its optimistic echo. */
+      /* ⭐⭐⭐ THE LINE IS A MESSAGE TO THE PLUGIN, NOT A STORE WRITE. It used to `op()` into
+         `shared/tui/in/<id>`, which the DEMO polled at 250 ms because a demo owns its own store.
+         The engine plugin does not: `Argus.emit` reaches its `on('result', …)` handler, which is how
+         every other panel in that plugin talks to it. ⇒ no timer, no inbox to garbage-collect, and
+         no participant-writable path standing open.
+         ⛔ IDENTITY IS NOT SENT. Core stamps `userId` on the envelope one level up; a client that
+         could name its own user could speak as anyone, so this carries only what was typed and which
+         board it was typed at. */
       var A = api();
-      var opId = (seat || 'anon') + '-' + Date.now().toString(36) + '-'
-        + Math.random().toString(36).slice(2, 7);
-      if (A && A.op) A.op(inPath + '/' + opId, 'set', { v: 1, id: opId, seat: seat, user: userId, text: text, ts: Date.now() });
+      if (A && typeof A.emit === 'function') A.emit(LINE_MESSAGE, { text: text, seat: seat });
       /* ⛔ AND IT SAYS SO WHEN IT CANNOT SEND. Silence here is indistinguishable from success. */
       else append('  ⛔ not connected — that line went nowhere.');
     }
