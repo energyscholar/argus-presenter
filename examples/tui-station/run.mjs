@@ -106,13 +106,21 @@ const say = (text, to = null) => append({ v: 1, kind: 'render', seat: null, to, 
 /* ⛔ THE STORE OWNS THE STATE, AND THIS LOOP ONLY READS IT. `createStore`'s op hook belongs to the
    server, so a demo watches by polling — which is exactly what E16d plans for the same reason. */
 const seen = new Set();
+/* ⛔⛔ A SEAT BELONGS TO A PERSON, NOT TO THE PROCESS. `seat` was a single module-global, so `/seat
+   engineer` re-seated EVERY player at once and `/next` drew one viewer's board to whoever asked —
+   which makes "the stations talk to each other" untestable, because there was only ever one station
+   occupied by everybody. The mount's `seat` opt is static and identical for all viewers, so it can
+   only ever be the DEFAULT; the moment a player says `/seat`, their choice is theirs alone. */
+const seatByUser = new Map();
+const seatOf = (userId, sent) => (userId && seatByUser.has(userId)) ? seatByUser.get(userId)
+  : String(sent || seat);
 function pump() {
   const inbox = server.store.get('shared/tui/in') || {};
   for (const [id, v] of Object.entries(inbox)) {
     if (seen.has(id) || !v || typeof v !== 'object') continue;
     seen.add(id);
     const line = String(v.text || '');
-    const who = String(v.seat || seat);
+    const who = seatOf(v.user, v.seat);
     if (v.user) users.set(who, v.user);
 
     /* ⭐ META IS THE CLIENT'S OWN QUESTION, answered here because this demo IS the client's console.
@@ -120,13 +128,21 @@ function pump() {
     const r = dispatch({ line, seat: who, viewOf, seats: SEATS });
     if (r.intent && r.intent.round) { say(renderRoundText(round, SEATS, { me: who }), who); continue; }
     if (r.intent && r.intent.look) { say(renderStationText(viewOf(who)), who); continue; }
-    if (r.intent && r.intent.seat) { seat = r.intent.seat; say(`seat: ${seat}`, who); say(renderStationText(viewOf(seat)), who); continue; }
+    if (r.intent && r.intent.seat) {
+      /* ⛔ THEIRS ALONE. Also re-key `users`, or a private line for the seat they LEFT would still
+         be routed to them while their new seat's refusals went to the room. */
+      const from = who, to = r.intent.seat;
+      if (v.user) { seatByUser.set(v.user, to); users.set(to, v.user); if (users.get(from) === v.user) users.delete(from); }
+      else seat = to;                                   // an anonymous console keeps the old behaviour
+      say(`seat: ${to}`, to); say(renderStationText(viewOf(to)), to); continue;
+    }
     if (r.intent && r.intent.next) {
-      const n = nextStop(ORDER, at, seat);
+      const n = nextStop(ORDER, at, who);
       at = n.index; round.askOpen = n.askOpen;
       say(n.done ? '⛳ the round is out of stops.'
         : `── ${n.stop.id} · ${n.stop.anySeat ? 'any seat' : `asking ${n.stop.asks}`} ──`);
-      say(renderStationText(viewOf(seat)), who);
+      /* ⛔ THE ASKER'S OWN BOARD, never the process's. */
+      say(renderStationText(viewOf(who)), who);
       runNpcs();
       /* ⛔ NEVER BARE `void` ON AN ASYNC CALL: a rejection here is swallowed and the seat simply
          never answers, which reads exactly like a model still thinking. Silence must be reported. */
