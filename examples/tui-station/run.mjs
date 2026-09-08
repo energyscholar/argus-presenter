@@ -87,6 +87,13 @@ let seq = 0;
    ⛳ that is a demo simplification, and E16d's read-scoped prefix is where it is done properly. */
 const users = new Map();          // seat → userId, learned from what people type
 const append = (entry) => {
+  /* ⭐ THE CHARACTER RIDES ON THE ENTRY, so a reader of the log never has to join it against a
+     session map that may already have changed. `seat` says which board; `as` says who. */
+  if (entry && entry.seat && !entry.as) {
+    const u = users.get(entry.seat);
+    const as = u && charByUser.get(u);
+    if (as) entry = { ...entry, as };
+  }
   const key = String(seq += 1).padStart(5, '0');
   const user = entry && entry.to ? users.get(entry.to) : null;
   if (entry && entry.to && user) server.set(`private/${user}/tui/log/${key}`, entry);
@@ -112,8 +119,43 @@ const seen = new Set();
    occupied by everybody. The mount's `seat` opt is static and identical for all viewers, so it can
    only ever be the DEFAULT; the moment a player says `/seat`, their choice is theirs alone. */
 const seatByUser = new Map();
+/* ⭐⭐⭐ THREE IDENTITIES, NOT ONE. Bruce, 2026-09-07: "the TUI needs to know which NPC or PC the
+   handler is playing." A USER is an account (ann), a SEAT is a station (gunner), and a CHARACTER is
+   the person being played (Delleron) — the surface tracked the first two and had no notion of the
+   third, so the log could say which board an order came from but never who gave it.
+   ⛔ AND THERE IS NO human-vs-machine FIELD. R-257: a station must not know whether a human or an AI
+   is seated, and a character name says WHO is played, never WHAT is playing them. */
+const charByUser = new Map();
 const seatOf = (userId, sent) => (userId && seatByUser.has(userId)) ? seatByUser.get(userId)
   : String(sent || seat);
+/**
+ * Apply what the dispatcher returned.
+ *
+ * ⛔⛔ IT USED TO INTERPRET AND DISCARD. Three copies of this loop each hardcoded two path shapes —
+ * `declare` and `annotate` — mirrored them into the local round model, and SILENTLY DROPPED every
+ * other effect. Measured over the wire: the engineer's board printed `[REFUEL] refuel source=`, the
+ * line echoed to the room, the dispatcher returned `{path:'shared/ops/refuel/engineer', …}` — and
+ * nothing was ever written. The verb looked like it worked from every angle a player, or a test at
+ * the dispatcher, could see.
+ *
+ * ⇒ THE STORE IS THE RECORD: every effect is written, whatever its shape. The round model is a
+ * DERIVED VIEW of the two shapes the round column draws, mirrored AFTER the write and never instead
+ * of it. A caller that understands only the paths it was written for cannot be extended without
+ * editing it, which is how a new verb goes quietly nowhere.
+ */
+function applyEffects(effects) {
+  for (const e of (effects || [])) {
+    if (!e || !e.path) continue;
+    server.set(e.path, e.value);
+    const seg = e.path.split('/');
+    if (seg[1] !== 'combat') continue;              // only the round column is mirrored
+    if (seg[2] === 'declare') round.declarations[seg[3]] = e.value;
+    else if (seg[2] === 'annotate') {
+      (round.annotations[seg[3]] || (round.annotations[seg[3]] = {}))[seg[4]] = e.value;
+    }
+  }
+}
+
 function pump() {
   const inbox = server.store.get('shared/tui/in') || {};
   for (const [id, v] of Object.entries(inbox)) {
@@ -128,6 +170,11 @@ function pump() {
     const r = dispatch({ line, seat: who, viewOf, seats: SEATS });
     if (r.intent && r.intent.round) { say(renderRoundText(round, SEATS, { me: who }), who); continue; }
     if (r.intent && r.intent.look) { say(renderStationText(viewOf(who)), who); continue; }
+    if (r.intent && r.intent.play) {
+      if (v.user) charByUser.set(v.user, r.intent.play);
+      say(`you are playing ${r.intent.play} at ${who}`, who);
+      continue;
+    }
     if (r.intent && r.intent.seat) {
       /* ⛔ THEIRS ALONE. Also re-key `users`, or a private line for the seat they LEFT would still
          be routed to them while their new seat's refusals went to the room. */
@@ -155,13 +202,7 @@ function pump() {
     for (const e of trafficFor({ line, seat: who, result: r, id })) append(e);
 
     /* The store is the round's memory here, exactly as it is in the console. */
-    for (const e of r.effects) {
-      const seg = e.path.split('/');
-      if (seg[2] === 'declare') round.declarations[seg[3]] = e.value;
-      else if (seg[2] === 'annotate') {
-        (round.annotations[seg[3]] || (round.annotations[seg[3]] = {}))[seg[4]] = e.value;
-      }
-    }
+    applyEffects(r.effects);
     if (r.effects.length) say(renderStationText(viewOf(who)), who);
   }
 }
@@ -187,10 +228,7 @@ function runNpcs() {
     if (!line) { say(`  ${code} (npc): ${choice.why}`); continue; }
     const r = dispatch({ line, seat: code, viewOf, seats: SEATS });
     for (const e of trafficFor({ line, seat: code, result: r, id: `npc-${Date.now()}` })) append(e);
-    for (const e of r.effects) {
-      const seg = e.path.split('/');
-      if (seg[2] === 'declare') round.declarations[seg[3]] = e.value;
-    }
+    applyEffects(r.effects);
   }
 }
 /* ⭐⭐⭐ A REAL MODEL IN A SEAT — the goal's last clause, and the ONLY new thing here is `ask`.
@@ -253,10 +291,7 @@ async function runAiSeats() {
       ask: askModel, seat: code, viewOf, seats: SEATS, dispatch });
     if (!r.line) { say(`  ${code}: ${r.why}`); continue; }
     for (const e of trafficFor({ line: r.line, seat: code, result: r.result, id: `ai-${Date.now()}` })) append(e);
-    for (const e of (r.result.effects || [])) {
-      const seg = e.path.split('/');
-      if (seg[2] === 'declare') round.declarations[seg[3]] = e.value;
-    }
+    applyEffects(r.result.effects);
   }
 }
 
