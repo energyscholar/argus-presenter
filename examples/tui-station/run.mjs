@@ -122,7 +122,14 @@ function pump() {
 }
 const timer = setInterval(pump, 250);
 
-server.pushPage('all', PAGE.replace('__SEAT__', seat));
+/* ⛔ THE MOUNT IS DECLARED HERE, not scripted in the page: the server stamps each viewer's identity
+   into every mount and strips what their role may not see. A page is markup with mount POINTS. */
+server.pushPage('all', PAGE, {
+  mounts: [{ at: '#m-tui', component: 'tui',
+    opts: { seat, log: 'shared/tui/log', input: 'shared/tui/in', rows: 26 } }],
+  requires: ['tui'],
+  contentId: 'tui-station',
+});
 say(`ARGUS · ${hull} · ${seat}`);
 say(renderStationText(viewOf(seat)));
 say('type /help for the seat\'s words, /next to open the next stop, /round for the column.');

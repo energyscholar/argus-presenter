@@ -31,7 +31,12 @@
 
   function render(root, opts) {
     opts = opts || {};
-    var Argus = window.Argus;
+    /* ⛔⛔ LOOKED UP AT CALL TIME, NEVER CAPTURED AT MOUNT. Measured in a browser: this component
+       mounted before the bridge had set `window.Argus`, so a captured reference was undefined
+       forever — and `if (Argus && Argus.op)` then dropped every typed line SILENTLY while the local
+       echo still drew, which is a console that looks like it works and sends nothing. A guard that
+       hides a missing dependency is worse than the crash it prevents. */
+    var api = function () { return window.Argus || null; };
     var logPath = opts.log || 'shared/tui/log';
     var inPath = opts.input || 'shared/tui/in';
     var seat = opts.seat || null;
@@ -92,8 +97,31 @@
     }
 
     var subs = [];
-    if (Argus && Argus.subscribeState) {
-      subs.push(Argus.subscribeState(logPath, function (path, value) {
+    /* ⛔⛔ THE PANE MUST SHOW WHAT WAS SAID BEFORE IT MOUNTED. `subscribeState` delivers DIFFS only,
+       so a seat that joins mid-round saw an empty console and a crew already talking — measured in a
+       browser, where the board pushed before mount simply never appeared. ⇒ read the local mirror
+       once at mount, in key order, then subscribe for what follows. */
+    /* ⛔⛔ THE SNAPSHOT CAN ARRIVE AFTER MOUNT, so reading once here is not enough: a pane that
+       mounted first showed an empty console while the crew were already talking. The bridge raises
+       an event when the snapshot lands and sets `_stateReady`; take whichever comes first, and take
+       it only once. */
+    function drawBacklog() {
+      var A = api();
+      if (!A || !A.state) return;
+      var existing = A.state(logPath) || {};
+      Object.keys(existing).sort().forEach(function (k) {
+        var id = logPath + '/' + k;
+        if (seen[id]) return;
+        seen[id] = 1;
+        append(lineOf(existing[k]));
+      });
+    }
+    drawBacklog();
+    try {
+      window.addEventListener((api() && api().NS ? api().NS : 'argus-presenter') + ':state', drawBacklog);
+    } catch (e) { /* no window events here; the mount-time read is the fallback */ }
+    if (api() && api().subscribeState) {
+      subs.push(api().subscribeState(logPath, function (path, value) {
         /* ⛔ EVERY ENTRY IS SHOWN ONCE. A store may resend a key on resync, and a traffic log that
            duplicates lines on reconnect is a log nobody trusts. */
         var id = String(path);
@@ -112,9 +140,18 @@
          keystrokes until the server answers feels broken even when it is working. ⛳ The server's
          own echo carries an id; a caller that wants to reconcile the two has it. */
       append((seat || '') + '> ' + text);
-      if (Argus && Argus.op) {
-        Argus.op(inPath, 'add', { v: 1, seat: seat, text: text, ts: Date.now() });
-      }
+      /* ⛔⛔ `set` AT A CLIENT-MADE KEY, NEVER `add` ON THE COLLECTION. MEASURED in a browser: an
+         `add` to `shared/tui/in` lands NOWHERE and reports nothing — a `set` at
+         `shared/tui/in/<id>` in the same frame, on the same connection, works. Every typed line was
+         being dropped in silence.
+         ⭐ And the key IS the line's id, which is what lets the server echo it back and a client
+         reconcile the echo it drew optimistically against the one that returns. */
+      var A = api();
+      var opId = (seat || 'anon') + '-' + Date.now().toString(36) + '-'
+        + Math.random().toString(36).slice(2, 7);
+      if (A && A.op) A.op(inPath + '/' + opId, 'set', { v: 1, id: opId, seat: seat, text: text, ts: Date.now() });
+      /* ⛔ AND IT SAYS SO WHEN IT CANNOT SEND. Silence here is indistinguishable from success. */
+      else append('  ⛔ not connected — that line went nowhere.');
     }
     if (input) {
       input.addEventListener('keydown', function (e) {
