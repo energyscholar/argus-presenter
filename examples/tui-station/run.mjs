@@ -179,7 +179,9 @@ for (const n of npc) {
 }
 function runNpcs() {
   for (const code of npc) {
-    if (round.askOpen !== code) continue;                 // only when the round is asking them
+    /* ⭐ `'*'` IS EVERY SEAT — the Actions Step asks the whole crew, so a scripted occupant is asked
+       there too. A bare `!==` silently excluded them from the one step that includes everyone. */
+    if (round.askOpen !== '*' && round.askOpen !== code) continue;
     const choice = chooseAction(occupantFor(code));
     const line = lineFor(choice);
     if (!line) { say(`  ${code} (npc): ${choice.why}`); continue; }
@@ -241,7 +243,7 @@ function askModel(boardText) {
    until then the log says the seat is thinking — which is what a human seat looks like too. */
 async function runAiSeats() {
   for (const code of aiSeats) {
-    if (round.askOpen !== code) continue;
+    if (round.askOpen !== '*' && round.askOpen !== code) continue;
     say(`  ${code} is thinking\u2026`);
     /* ⛔⛔ `occupantView`, NEVER THE RAW VIEW. `stationView()` returns structure and has NO `text`;
        `occupantView(view, render)` is what carries the rendered board. Passing the raw view here
