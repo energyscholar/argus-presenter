@@ -196,7 +196,28 @@ export function createWireActions(ctx) {
        * "must be after the resync or the fix is undone" claim was written here first and was
        * simply WRONG; the break-test is what says otherwise. */
       c.converged = true;
-      redisplayFor(ws, c);   // C6: re-push the currently-displayed content module
+      const shown = redisplayFor(ws, c);   // C6: re-push the currently-displayed content module
+      /* ⭐⭐⭐ A SEAT-LINKED ARRIVAL IS SHOWN ITS STATION BY THE SERVER, NOT BY ASKING.
+       *
+       * Plan 0514 line 484 is explicit that selecting a station renders that station's screen, and
+       * the URL path did the seating and skipped the render: `?stationUID=2` seats you server-side
+       * and then shows idle branding, so an anonymous visitor on a correct seat link saw AWAITING
+       * PRESENTATION while the server correctly believed them seated at Pilot.
+       *
+       * ⛔⛔ THE FIRST FIX PUT THIS IN THE CLIENT — `station-show` on socket open — AND THAT BROKE
+       * AN INVARIANT. `0522 t35` asserts the page sends NO station request to learn its own seat
+       * (I3: transient render, durable assignment); a client that asks is a client that can be
+       * made to ask for someone else's. The knowledge is the SERVER'S: it derived this identity
+       * from the resolved station a few lines above. So the server tells, and the page stays mute.
+       *
+       * ⛳ ONLY when the room is showing this viewer NOTHING (`shown` is null), and only for an
+       * identity that came FROM a seat link. A viewer the room has put content in front of keeps
+       * that content — the room outranks the seat — and a bare `/` visitor is audience and keeps
+       * the stage. */
+      if (!shown && c.seatDerived && seat && stationsActive()) {
+        try { renderStationTo(ws, c, seat); }
+        catch (e) { log.warn('station', 'seat-link-render-failed', { userId: c.userId, err: String((e && e.message) || e) }); }
+      }
       if (everSeen.has(c.userId)) telem.reconnects++; else { everSeen.add(c.userId); everSeenOrder.push(c.userId); if (everSeenOrder.length > EVER_SEEN_MAX) everSeen.delete(everSeenOrder.shift()); }   // Plan 0471 L2: bounded
       send(ws, { t: 'ping', ts: Date.now() });   // X3 RTT probe
       log.info('conn', 'hello', { socketId: c.id, userId: c.userId, role: c.role, lastVersion: m.lastVersion || 0 });

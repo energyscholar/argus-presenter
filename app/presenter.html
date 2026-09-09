@@ -782,7 +782,15 @@
          ⛳ ONLY FOR A SEAT-ADDRESSED LINK. A bare `/` visitor keeps the room's stage, which is what
          an audience member should see; hijacking their view to a default station would be worse than
          the bug being fixed. */
-      if (seatLinked) { try { ws.send(JSON.stringify({ t: 'station-show' })); } catch (e) {} } };
+      /* ⛔⛔ THE PAGE DOES NOT ASK FOR ITS OWN STATION, AND THIS LINE USED TO.
+         A seat-linked arrival must see its station — plan 0514 line 484 — and the first fix sent
+         `station-show` from here on socket open. It worked, and it broke `0522 t35`, which asserts
+         the page sends NO station request to learn its own seat (I3: transient render, durable
+         assignment). The invariant is right and the fix was in the wrong half: the SERVER derived
+         this identity from the resolved station, so the server is what knows, and it now renders
+         the seat's screen at the end of `hello` when the room is showing this viewer nothing.
+         ⇒ nothing to do here. Kept as a comment because the empty branch is the point. */
+      };
     ws.onclose = function(){ led.classList.remove('on'); dbg.open = false; dbgRender(); scheduleReconnect(); };
     ws.onerror = function(){ /* onclose handles reconnect */ };
     ws.onmessage = onMessage;

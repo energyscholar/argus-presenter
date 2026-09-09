@@ -204,9 +204,26 @@ export function assemble({ component = 'choice', opts = {}, theme = 'argus', tit
      means "unknown" and still ships everything. */
   let needed = null;
   if (component && !composed) needed = new Set([component]);
-  else if (composed && Array.isArray(mounts) && mounts.length) {
-    const names = mounts.map((m) => m && (m.component || m.name)).filter(Boolean);
-    if (names.length === mounts.length) needed = new Set(names);
+  else if (composed) {
+    /* ⛔⛔ A COMPOSED PAGE DECLARES MOUNTS TWO WAYS AND I ONLY READ ONE. `mounts[]` is the caller's
+       list; `data-ap-component="slider"` written inline in the authored markup is the other, and
+       the bootstrap below mounts both. Reading only `mounts[]` filtered the inline ones out of the
+       bundle, and they surfaced as `no such component: slider` — caught by rep 06/08/09/10/11 and
+       0689 R5, which exist precisely because an unresolved mount must be VISIBLE.
+       ⚠ A regex over authored HTML, deliberately: this runs before any DOM exists, the attribute
+       is a fixed literal the bootstrap greps for the same way, and being GENEROUS here is free —
+       a name that is not a component ships nothing, while a name missed breaks the page. */
+    const names = [];
+    let complete = true;
+    for (const m of (Array.isArray(mounts) ? mounts : [])) {
+      const n = m && (m.component || m.name);
+      if (n) names.push(n); else complete = false;
+    }
+    if (typeof html === 'string') {
+      const re = /data-ap-component\s*=\s*["']([A-Za-z0-9_-]+)["']/g;
+      let m2; while ((m2 = re.exec(html))) names.push(m2[1]);
+    }
+    if (complete && names.length) needed = new Set(names);
   }
   const { css: comp_css, js: comp_js } = bundle(pluginSet, needed);
   apMark('assemble:bundle');
