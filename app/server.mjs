@@ -21,7 +21,7 @@ import { fileURLToPath, pathToFileURL } from 'url';
 import { dirname, join } from 'path';
 import { tmpdir } from 'os';
 import { WebSocketServer } from 'ws';
-import { assemble } from '../harness/assemble.mjs';
+import { assemble, apMark, apPerfTake, apPerfReset } from '../harness/assemble.mjs';
 import { loadManifests, pluginDir, buildStationRegistry, buildSurfaceRegistry, pluginServerModule } from '../harness/plugins.mjs';
 import * as log from './log.mjs';
 import { createStore, isEphemeral, validOp } from './state.mjs';
@@ -1963,7 +1963,16 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   }
   function sendComponentTo(ws, c, desc) {
     const o = stampFor(c, desc.component, desc.opts || {});
-    return send(ws, { t: 'content', contentId: o.promptId || null, html: assemble({ component: desc.component, opts: o, theme: desc.theme || 'argus', requires: desc.requires || [] }) });
+    apMark('component:opts-stamped');
+    const html = assemble({ component: desc.component, opts: o, theme: desc.theme || 'argus', requires: desc.requires || [] });
+    apMark('component:assembled');
+    /* ⭐ THE LEDGER RIDES THE FRAME IT DESCRIBES. A server timing that reaches a log the client
+       never sees cannot be lined up against the client's own marks, and lining them up is the
+       entire point — the gap between `content:sent` and the client's `content:received` IS the
+       transfer cost, and nothing else measures it. */
+    const perf = apPerfTake();
+    perf.push({ where: 'content:sent', at: perf.length ? perf[perf.length - 1].at : 0, d: 0, bytes: html.length });
+    return send(ws, { t: 'content', contentId: o.promptId || null, html, perf });
   }
   /* ── Plan 0689 R5 — AN AUTHORED PAGE THAT HOSTS COMPONENTS ────────────────────────────────
    * ⭐⭐ There was never an architectural gap between "component" and "arbitrary HTML":
@@ -2237,7 +2246,12 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
    * because both used to live in the same map.
    */
   function renderStationTo(ws, c, seat) {
+    /* ⭐ THE LOAD-TIME LEDGER STARTS HERE — this is the first line of a seat-open that the server
+       owns, so every mark after it is measured against the same zero. `apPerfTake()` at the send
+       empties it, so one render can never report another's marks. */
+    apPerfReset(); apMark('station:render-enter');
     const desc = (seat && seat.descriptor) || stationPlaceholder(seat && seat.uid, c);
+    apMark('station:descriptor');
     renderDisplay(ws, c, desc);
     return desc;
   }

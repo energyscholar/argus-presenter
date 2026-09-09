@@ -59,7 +59,25 @@ export function loadManifests() {
  * (S9: allowlisted by the existence of a manifest, no path traversal). Returns a
  * de-duplicated, sorted array; [] in → [] out (pure core).
  */
+let CLOSURE_CACHE = new Map(), CLOSURE_AT = 0;
+const CLOSURE_TTL_MS = 1000;
+
+/* ⛔ MEASURED 2026-09-09: this was 4.96 ms of a 10.12 ms warm seat-open, because it called
+ * loadManifests() — readFileSync + JSON.parse of EVERY plugin.json in the deployment — to answer
+ * a question whose answer changes only when a manifest is edited. Same TTL and same reasoning as
+ * the bundle stamp: an author's edit lands within a second, a render pays a map lookup. */
 export function resolveClosure(requires = []) {
+  const key = (requires || []).join(',');
+  const now = Date.now();
+  if (now - CLOSURE_AT > CLOSURE_TTL_MS) { CLOSURE_CACHE = new Map(); CLOSURE_AT = now; }
+  const hit = CLOSURE_CACHE.get(key);
+  if (hit) return hit;
+  const out = resolveClosureUncached(requires);
+  CLOSURE_CACHE.set(key, out);
+  return out;
+}
+
+function resolveClosureUncached(requires = []) {
   const manifests = loadManifests();
   const seen = new Set();
   const visit = (name) => {

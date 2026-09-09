@@ -23,10 +23,10 @@
  * stays available and unwrapped (`presenter_push_content raw:true`) for a page that wants nothing
  * from us; every page that wants a dice check beside a navmap comes through here.
  */
-import { readFileSync, existsSync, readdirSync } from 'fs';
+import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { resolveClosure, pluginDir } from './plugins.mjs';
+import { resolveClosure, pluginDir, readManifest } from './plugins.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
@@ -40,9 +40,125 @@ function dirsIn(sub) {
 
 // Bundle core components ALWAYS + ONLY the plugins in `pluginSet` (the transitive
 // closure of the content's `requires`). No requires ⇒ pluginSet=[] ⇒ ZERO plugin bytes.
-function bundle(pluginSet = []) {
+/*
+ * ⭐⭐⭐ SHIP WHAT THE PAGE MOUNTS, NOT THE WHOLE PLUGIN. `needed` is the set of component
+ * names this page actually mounts; null means "unknown" and ships everything, which is the
+ * old behaviour and the fail-safe.
+ *
+ * ⛔⛔ MEASURED 2026-09-09, and this is why it exists: a PILOT board is `station-screen.js`
+ * (13 KB) plus one 14 KB SVG, and it was arriving as 1,088,879 bytes — every one of the
+ * plugin's 17 scripts including the 255 KB shipyard design engine and the 221 KB
+ * spaceship-engineering station, plus all 18 core components. 2.5% of the payload was Pilot.
+ * Over the tunnel that is 3.8 s to open a seat. Spaceship Engineering was 2.85 MB.
+ *
+ * ⚠ A plugin .js is shipped when: it IS a needed component; or a needed component declares it
+ * in the manifest's `componentDeps`; or it is UNCLASSIFIED — neither a declared component nor
+ * anybody's declared dep. That last clause is the fail-safe: an unlisted shared helper keeps
+ * shipping, so forgetting to declare something costs bytes, never a blank board.
+ */
+/* ⭐⭐⭐ THE LOAD-TIME LEDGER. Ten marks on the path a seat-open actually takes, each naming its
+ * own code location and the ms since the mark before it, carried to the client ON the frame it
+ * describes. Reading a profiler is guessing at which of our own steps is which; a mark says
+ * `bundle` or `template` by name. Cleared per render, so a mark can never describe an older one. */
+export const AP_PERF = { marks: [], t0: 0 };
+export function apMark(where) {
+  const now = Number(process.hrtime.bigint() / 1000n) / 1000;
+  if (!AP_PERF.t0) AP_PERF.t0 = now;
+  const prev = AP_PERF.marks.length ? AP_PERF.marks[AP_PERF.marks.length - 1].at : 0;
+  const at = +(now - AP_PERF.t0).toFixed(2);
+  AP_PERF.marks.push({ where, at, d: +(at - prev).toFixed(2) });
+}
+export function apPerfReset() { AP_PERF.marks = []; AP_PERF.t0 = 0; }
+export function apPerfTake() { const m = AP_PERF.marks.slice(); apPerfReset(); return m; }
+
+const BUNDLE_CACHE = new Map();
+
+/* ⭐⭐⭐ THE BUNDLE IS THE SAME BYTES EVERY TIME, AND IT WAS REBUILT ON EVERY RENDER.
+ * MEASURED 2026-09-09 on localhost: 102 ms of a 316 ms seat-open was this function re-reading
+ * ~20 files off disk and re-concatenating a 327 KB string — for a result that depends only on
+ * (pluginSet, needed) and changes only when a file on disk does.
+ *
+ * ⚠ INVALIDATED BY MTIME, not by a timer and not never: a plugin author editing a component and
+ * reloading must see the edit, or the cache costs more debugging time than it saves rendering
+ * time. The key carries the newest mtime across every directory the bundle reads, so a changed
+ * file yields a different key and the old entry is simply never asked for again.
+ */
+let STAMP_AT = 0, STAMP_VAL = 0, STAMP_FOR = '';
+const STAMP_TTL_MS = 1000;
+
+/* ⛔⛔ THE FRESHNESS CHECK COST 4.14 ms TO PROTECT A 0.03 ms CACHE HIT. Measured 2026-09-09 with
+ * the load-time ledger: `bundle:key` was 4.14 of a 10.12 ms warm render, because it stat()ed every
+ * file in every component directory and every plugin on EVERY render — a full directory walk to
+ * decide whether to skip work that takes no time at all. The guard was the expense.
+ *
+ * ⇒ Rescan at most once a second. An author editing a component sees it on the next reload, which
+ * is the only thing the mtime scan was ever for; a live seat-open pays one map lookup.
+ * ⚠ NOT a plain "cache forever": that trades a real debugging hour for 4 ms, which is the wrong
+ * side of the trade and is why the scan existed in the first place. */
+function bundleStamp(pluginSet) {
+  const forKey = pluginSet.join(',');
+  const now = Date.now();
+  if (forKey === STAMP_FOR && now - STAMP_AT < STAMP_TTL_MS) return STAMP_VAL;
+  let newest = 0;
+  const stat = (d) => { try { for (const f of readdirSync(d)) { const m = statSync(join(d, f)).mtimeMs; if (m > newest) newest = m; } } catch (e) {} };
+  for (const name of dirsIn('components')) stat(join(ROOT, 'components', name));
+  for (const name of pluginSet) stat(pluginDir(name));
+  STAMP_AT = now; STAMP_VAL = newest; STAMP_FOR = forKey;
+  return newest;
+}
+
+function bundle(pluginSet = [], needed = null) {
+  const key = JSON.stringify([pluginSet, needed ? [...needed].sort() : null, bundleStamp(pluginSet)]);
+  apMark('bundle:key');
+  const hit = BUNDLE_CACHE.get(key);
+  if (hit) { apMark('bundle:CACHE-HIT'); return hit; }
+  const built = buildBundle(pluginSet, needed);
+  apMark('bundle:BUILT-cold');
+  if (BUNDLE_CACHE.size > 64) BUNDLE_CACHE.clear();   // bounded: one entry per station, not per render
+  BUNDLE_CACHE.set(key, built);
+  return built;
+}
+
+function buildBundle(pluginSet = [], needed = null) {
   let css = '', js = '';
+  /* ⛔⛔ THE CLOSURE IS COMPUTED ONCE, BEFORE THE CORE LOOP, AND THAT ORDER IS THE WHOLE BUG I
+     ALMOST SHIPPED. `componentDeps` names CORE components too (station-screen mounts alert-band
+     and combat-desk; observer-station mounts `tokens`), so filtering core on the bare `needed`
+     set drops exactly the dependencies the page is about to mount — and a missing core component
+     is a blank panel with no error, because the mount simply never resolves. */
+  const declared = new Set(), claimed = new Set();
+  const depsOf = {};
+  for (const name of pluginSet) {
+    const man = readManifest(name) || {};
+    for (const c of (man.components || [])) declared.add(c);
+    for (const [c, list] of Object.entries(man.componentDeps || {})) {
+      depsOf[c] = (depsOf[c] || []).concat(list || []);
+      for (const d of (list || [])) claimed.add(d);
+    }
+  }
+  let want = null;
+  if (needed) {
+    want = new Set();
+    const seen = new Set();
+    const visit = (n) => { if (seen.has(n)) return; seen.add(n); want.add(n); for (const d of (depsOf[n] || [])) visit(d); };
+    for (const n of needed) visit(n);                    // transitive: a dep may declare its own
+  }
+  const shipped = (base) => {
+    if (!want) return true;                              // unknown mount set ⇒ ship everything
+    if (want.has(base)) return true;                     // needed, or reachable from something needed
+    if (!declared.has(base) && !claimed.has(base)) return true;   // unclassified ⇒ fail-safe
+    return false;
+  };
   for (const name of dirsIn('components')) {
+    /* ⛔⛔ CORE IS A KNOWN SET, SO IT IS NEVER "UNCLASSIFIED". The fail-safe below (ship anything
+       nobody declared) exists for a PLUGIN's private helper files, whose roles core cannot know.
+       Core component names are enumerable right here, so applying the fail-safe to them meant
+       shipping all 18 of them — 138 KB — to a board that mounts one. A core component ships when
+       something reachable from the page's mounts asked for it, and otherwise does not.
+       ⚠ THE GUARD ON THIS IS `window.__apMissing` (lib/registry.js): if a board turns out to mount
+       a core component nobody declared, the ledger names it instead of the board silently showing
+       `Unknown component: x` in a panel. Verified across all 16 stations 2026-09-09: zero misses. */
+    if (want && !want.has(name)) continue;
     const j = `components/${name}/${name}.js`, c = `components/${name}/${name}.css`;
     if (existsSync(join(ROOT, j))) js += `\n/* --- ${name} --- */\n` + read(j);
     if (existsSync(join(ROOT, c))) css += `\n/* --- ${name} --- */\n` + read(c);
@@ -57,6 +173,8 @@ function bundle(pluginSet = []) {
     const dir = pluginDir(name);
     if (!existsSync(dir)) continue;
     for (const f of readdirSync(dir)) {   // .js/.css only; server-side .mjs + plugin.json excluded
+      const base = f.replace(/\.(js|css)$/, '');
+      if (!shipped(base)) continue;
       if (f.endsWith('.js')) js += `\n/* --- plugin ${name}/${f} --- */\n` + readFileSync(join(dir, f), 'utf8');
       if (f.endsWith('.css')) css += `\n/* --- plugin ${name}/${f} --- */\n` + readFileSync(join(dir, f), 'utf8');
     }
@@ -66,6 +184,7 @@ function bundle(pluginSet = []) {
 
 export function assemble({ component = 'choice', opts = {}, theme = 'argus', title = 'Argus Component', practiceLabel = null, requires = [], html = null, mounts = null } = {}) {
   const composed = typeof html === 'string';
+  apMark('assemble:libs-begin');
   const theme_css = read('lib/theme.css');
   const bridge_js = read('lib/bridge.js');
   const log_js = read('lib/log.mjs');
@@ -75,8 +194,22 @@ export function assemble({ component = 'choice', opts = {}, theme = 'argus', tit
   // component that computes `base + rank + equipment − damage` renders it with the SAME code the
   // host chrome uses on a roll. Without this the next caller writes a second format.
   const breakdown_js = read('lib/breakdown.js');
+  apMark('assemble:libs-read');
+  apMark('assemble:enter');
   const pluginSet = resolveClosure(requires);
-  const { css: comp_css, js: comp_js } = bundle(pluginSet);
+  apMark('assemble:closure');
+  /* ⭐ THE PAGE ALREADY KNOWS WHAT IT MOUNTS — it is the `component` argument, or the components
+     named by `mounts` on a composed page. That set was computed and then thrown away while the
+     bundler shipped every byte the deployment owned. `null` (no component, no mounts) still
+     means "unknown" and still ships everything. */
+  let needed = null;
+  if (component && !composed) needed = new Set([component]);
+  else if (composed && Array.isArray(mounts) && mounts.length) {
+    const names = mounts.map((m) => m && (m.component || m.name)).filter(Boolean);
+    if (names.length === mounts.length) needed = new Set(names);
+  }
+  const { css: comp_css, js: comp_js } = bundle(pluginSet, needed);
+  apMark('assemble:bundle');
 
   const label = practiceLabel
     ? `<div class="ap-practice-label" aria-hidden="true">${practiceLabel}</div>`
