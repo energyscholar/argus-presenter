@@ -767,7 +767,22 @@
       // Plan 0693 T2 — a restart destroys the server's session and the ONLY thing this page notices
       // is the reconnect. Re-ask, debounced (0696 F10), so the pill can never keep asserting an
       // identity the server has never heard of.
-      scheduleAuthReconcile(); };
+      scheduleAuthReconcile();
+      /* ⭐⭐⭐ A SEAT-LINKED VISITOR SEES THEIR STATION. Plan 0514 §484 is explicit — *"Selecting a
+         station sets the seat's station AND RENDERS THAT STATION'S SCREEN FULL SCREEN"* — and the
+         wire table says `station-select` must "render its screen to the caller".
+         ⛔⛔ THE URL PATH DID NEITHER. `?stationUID=2` seats you server-side (server.mjs derives the
+         identity from the RESOLVED station) and then renders nothing, so an anonymous visitor
+         arriving on a correct seat link got idle branding — "AWAITING PRESENTATION" — while the
+         server correctly believed them seated at Pilot. MEASURED headless 2026-09-09: the role pill
+         read "🚀 Pilot" and the stage was empty. Two seating paths, only the DROPDOWN one rendered.
+         ⇒ ask for the seat's own screen once the socket is up. `station-show` already exists for
+         exactly this and is self-scoped and ungated by core's own argument — it renders the CALLER'S
+         OWN SEAT and writes nothing, so this cannot disturb the room or re-seat anybody.
+         ⛳ ONLY FOR A SEAT-ADDRESSED LINK. A bare `/` visitor keeps the room's stage, which is what
+         an audience member should see; hijacking their view to a default station would be worse than
+         the bug being fixed. */
+      if (seatLinked) { try { ws.send(JSON.stringify({ t: 'station-show' })); } catch (e) {} } };
     ws.onclose = function(){ led.classList.remove('on'); dbg.open = false; dbgRender(); scheduleReconnect(); };
     ws.onerror = function(){ /* onclose handles reconnect */ };
     ws.onmessage = onMessage;
