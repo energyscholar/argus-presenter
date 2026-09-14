@@ -1585,11 +1585,11 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       send(ws, { t: 'resync', from: lv, to: store.version(), count: missed.length });
       for (const e of missed) {
         const visible = {};
-        for (const p of Object.keys(e.diff)) if (store.perms.canRead({ role: c.role, userId: c.userId }, p)) visible[p] = e.diff[p];   // Plan 0471 C3: actor-aware read
+        for (const p of Object.keys(e.diff)) if (store.perms.canRead({ role: c.role, userId: c.userId, stationUid: seatStationUid(c.userId) }, p)) visible[p] = e.diff[p];   // Plan 0471 C3: actor-aware read
         if (Object.keys(visible).length) send(ws, { t: 'host', msg: { source: 'argus-host', type: 'diff', diff: visible, by: e.by, version: e.version } });
       }
     } else {
-      send(ws, { t: 'snapshot', state: store.snapshot({ role: c.role, userId: c.userId }).state, version: store.version() });   // Plan 0471 C3: actor-aware snapshot
+      send(ws, { t: 'snapshot', state: store.snapshot({ role: c.role, userId: c.userId, stationUid: seatStationUid(c.userId) }).state, version: store.version() });   // Plan 0471 C3: actor-aware snapshot
     }
   }
 
@@ -1875,7 +1875,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
        * report for what that costs and what was actually observed. */
       if (!c.converged) continue;
       const visible = {};
-      for (const p of Object.keys(diff)) if (store.perms.canRead({ role: c.role, userId: c.userId }, p)) visible[p] = diff[p];   // Plan 0471 C3: actor-aware read (per-recipient vote redaction)
+      for (const p of Object.keys(diff)) if (store.perms.canRead({ role: c.role, userId: c.userId, stationUid: seatStationUid(c.userId) }, p)) visible[p] = diff[p];   // Plan 0471 C3: actor-aware read (per-recipient vote redaction)
       if (Object.keys(visible).length) {
         send(ws, { t: 'host', msg: { source: 'argus-host', type: 'diff', diff: visible, by: meta.by, version: meta.version } });
         recipients++;
