@@ -103,6 +103,19 @@ export const DEFAULT_READ_POLICY = [
 // is deliberately where `/gm …` asides are written, so the private backchannel inherits an
 // already-proven default-deny instead of inventing a second secrecy mechanism.
 
+/*
+ * R-297 / R-326 (0780, E16s) — the `{station}` segment: TRUE iff `seg` equals the actor's OWN
+ * stationUid (stringified); FALSE — never a match — when the actor holds no seat (stationUid is
+ * null or undefined). Shared by matchGlob (write) and readMatch (read) so the segment exists in
+ * exactly one place. Distinct from `{self}` (equality against actor.userId): this compares against
+ * actor.stationUid instead.
+ */
+function matchesStationSegment(seg, actor) {
+  const uid = actor && actor.stationUid;
+  if (uid == null) return false;
+  return seg === String(uid);
+}
+
 // WRITE matcher (S3): glob and path must have the SAME segment count (exact op target).
 function matchGlob(glob, path, actor) {
   const gs = glob.split('/');
@@ -119,6 +132,7 @@ function matchGlob(glob, path, actor) {
       const g = gs[i];
       if (g === '*') continue;
       if (g === '{self}') { if (ps[i] !== (actor && actor.userId)) return false; continue; }
+      if (g === '{station}') { if (!matchesStationSegment(ps[i], actor)) return false; continue; }
       if (g !== ps[i]) return false;
     }
     return true;
@@ -128,6 +142,7 @@ function matchGlob(glob, path, actor) {
     const g = gs[i];
     if (g === '*') continue;
     if (g === '{self}') { if (ps[i] !== (actor && actor.userId)) return false; continue; }
+    if (g === '{station}') { if (!matchesStationSegment(ps[i], actor)) return false; continue; }
     if (g !== ps[i]) return false;
   }
   return true;
@@ -143,6 +158,7 @@ function readMatch(glob, path, actor) {
     const g = gs[i];
     if (g === '*') continue;
     if (g === '{self}') { if (ps[i] !== (actor && actor.userId)) return false; continue; }
+    if (g === '{station}') { if (!matchesStationSegment(ps[i], actor)) return false; continue; }
     if (g !== ps[i]) return false;
   }
   return true;
