@@ -87,6 +87,12 @@ export const DEFAULT_READ_POLICY = [
   // enters their snapshot or their diffs. A referee needs the whole picture, so gm reads all of it.
   { glob: 'private/{self}', roles: ['participant'], self: true },
   { glob: 'private', roles: ['gm'] },
+  // R-297 / R-326 (0780, E16s) — the published STATION VIEW, read-scoped per seat. `{station}`
+  // (see matchesStationSegment, above matchGlob) matches only a participant's OWN stationUid; an
+  // actor holding no seat matches nothing. The gm reads every station, exactly as it reads every
+  // private/* branch above.
+  { glob: 'station/{station}', roles: ['participant'] },
+  { glob: 'station', roles: ['gm'] },
   // Plan 0537 P3.2 — the roll log. READ by everyone: a roll nobody else can see is not a roll, it
   // is a claim. ⛔ There is deliberately NO participant WRITE rule below — the SERVER rolls and the
   // server is the only writer, so nothing in this slice was asserted by a client.
