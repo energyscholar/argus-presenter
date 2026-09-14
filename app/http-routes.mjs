@@ -26,6 +26,7 @@ import { readFileSync, writeFileSync, existsSync, lstatSync } from 'fs';
 import { join } from 'path';
 import * as log from './log.mjs';
 import { validate, summarize } from './validate.mjs';
+import { createStoreRoute } from './store-route.mjs';
 
 /**
  * Build the node `http` request listener.
@@ -501,6 +502,27 @@ export function createHttpHandler(ctx) {
         if (typeof resourceRoutes !== 'function') { res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'not found' })); return; }
         resourceRoutes(req, res);
   }]);
+
+  /*
+   * Plan 0756 run C3d — THE C3 STOREFRONT PREFIX. `createStoreRoute` (./store-route.mjs) is built
+   * ONCE here, at handler-construction time, from ctx.oidcAuth — the SAME oidcAdapter object the
+   * /auth/* routes above already use (never a second auth mechanism, never re-derived). This is safe
+   * unconditionally: server.mjs's `oidcAdapter` is ALWAYS a well-formed object (made by
+   * `makeOidcAdapter(...)`, called unconditionally at line ~316) whose `principalForRequest` just
+   * returns null when OIDC is not configured — it is never absent, so createStoreRoute never throws
+   * at real server startup.
+   *
+   * ctx.storeDir/ctx.accountDir are OPTIONAL — undefined in production (createStoreRoute's own
+   * storeDirFromEnv()/accountDirFromEnv() defaults apply then); a test passes fixture directories
+   * through them instead, which is how this run proves the REGISTRATION itself (not just the
+   * handler in isolation) without touching the real {dataRoot}.
+   *
+   * PREFIX, not exact/path: `/store` must also serve `/store/releases.json` etc — the same shape
+   * `/api/modules/` and `/api/v2` already use above. MEASURED (CONTEXT): no existing entry in
+   * exactRoutes/pathRoutes/prefixRoutes begins `/store` — this shadows nothing.
+   */
+  const storeRoute = createStoreRoute({ oidcAuth: ctx.oidcAuth, storeDir: ctx.storeDir, accountDir: ctx.accountDir });
+  prefixRoutes.push(["/store", ({ req, res }) => storeRoute(req, res)]);
 
   return function httpRequestHandler(req, res) {
     // Destructured PER REQUEST — see the `api` note in the file header. Every name here is a
