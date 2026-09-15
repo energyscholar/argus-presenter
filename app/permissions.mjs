@@ -41,7 +41,17 @@ export const DEFAULT_POLICY = [
    * PATHS are reachable — and this adds exactly one subtree that the server never reads back as
    * authority. Do NOT move server-authoritative state under this prefix.
    */
-  { glob: 'shared/**', roles: ['participant'], verbs: ['set', 'merge', 'add', 'remove', 'clear', 'lock', 'unlock'] },
+  { glob: 'shared/**', roles: ['participant'], verbs: ['set', 'merge', 'add', 'remove', 'clear', 'lock', 'unlock'], except: ['shared/combat/declare'] },
+  /*
+   * ⭐⭐ R-254/R-326 (0751, E12f) — a station's own declaration is not "anyone's shared space": it
+   * is THAT seat's own answer. Excluded from the wide grant above so this narrower row is the
+   * ONLY one that can authorise a write to it. `clear`/`add`/`remove`/`lock`/`unlock` are
+   * deliberately NOT granted — MEASURED: no caller ever writes `declare/<station>` with any verb
+   * but `set` (combat-desk.js, test/live/rig.mjs) — and a bare `clear` on the COLLECTION
+   * (`shared/combat/declare`, no trailing segment) matches NEITHER this row (segment count) NOR
+   * the now-excluded `shared/**` row: default-denied, R-254's second measured breach, closed.
+   */
+  { glob: 'shared/combat/declare/{station}', roles: ['participant'], verbs: ['set'] },
   /*
    * ⭐ PRIVATE PER-USER STATE — the other half of a shared surface.
    * ⚠ Added 2026-08-26 alongside the Hidden Fleet example (commit 510fa43). It has NO numbered
@@ -110,20 +120,30 @@ export const DEFAULT_READ_POLICY = [
 // already-proven default-deny instead of inventing a second secrecy mechanism.
 
 /*
- * R-297 / R-326 (0780, E16s) — the `{station}` segment: TRUE iff `seg` equals the actor's OWN
- * stationUid (stringified); FALSE — never a match — when the actor holds no seat (stationUid is
- * null or undefined). Shared by matchGlob (write) and readMatch (read) so the segment exists in
- * exactly one place. Distinct from `{self}` (equality against actor.userId): this compares against
- * actor.stationUid instead.
+ * R-297/R-326 (0780, E16s) defined this against `actor.stationUid` alone, for a UID-keyed path
+ * family (`station/<stationUid>/view`). R-254/R-326 (0751, E12f) REUSES the same token for a
+ * CODE-keyed path family instead (`shared/combat/declare/<stationCode>`) — MEASURED: an
+ * installed plugin's own manifest is free to declare a station code that never equals its uid's
+ * string form (e.g. uid 5 ↔ some code, uid 4 ↔ a different one), so a uid-only comparison would
+ * refuse the legitimate owner too, not just an impostor. Widened to check BOTH forms — still ONE
+ * helper, ONE token; a caller supplies whichever field(s) its own path family needs, read at call
+ * time from the SAME registry lookup, never cached (see app/server.mjs's
+ * seatStationUid/seatStationCode). No station code is named here — CORE names no plugin vocabulary
+ * (t0514-28).
  */
 function matchesStationSegment(seg, actor) {
-  const uid = actor && actor.stationUid;
-  if (uid == null) return false;
-  return seg === String(uid);
+  if (!actor) return false;
+  if (actor.stationUid != null && seg === String(actor.stationUid)) return true;
+  if (actor.stationCode != null && seg === actor.stationCode) return true;
+  return false;
 }
 
 // WRITE matcher (S3): glob and path must have the SAME segment count (exact op target).
-function matchGlob(glob, path, actor) {
+// `except` (0751, E12f) — a list of path PREFIXES this glob must never match, checked once,
+// before either branch, so a wide grant can carve out a narrower exception without a second
+// exclusion mechanism. `undefined` on every pre-existing row: short-circuits false, no change.
+function matchGlob(glob, path, actor, except) {
+  if (except && except.some((ex) => path === ex || path.startsWith(ex + '/'))) return false;
   const gs = glob.split('/');
   const ps = path.split('/');
   /*
@@ -182,7 +202,7 @@ export function createPermissions(policy = DEFAULT_POLICY, readPolicy = DEFAULT_
     for (const r of policy) {
       if (!r.roles.includes(actor.role)) continue;
       if (!r.verbs.includes(op.verb)) continue;
-      if (matchGlob(r.glob, op.path, actor)) return true;
+      if (matchGlob(r.glob, op.path, actor, r.except)) return true;
     }
     return false;                                             // default-deny
   }

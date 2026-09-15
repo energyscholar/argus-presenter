@@ -1555,7 +1555,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     const op = { path: m.path, verb: m.verb, value: m.value, opId };
     if (!validOp(op)) { telem.ops.malformed++; log.debug('op', 'malformed', { socketId: c.id, path: m && m.path }); return; }
     const t0 = Date.now();
-    const res = store.apply(op, actorOverride || { userId: c.userId, role: c.role });
+    const res = store.apply(op, actorOverride || { userId: c.userId, role: c.role, stationUid: seatStationUid(c.userId), stationCode: seatStationCode(c.userId) });
     telem.applyMs.sum += (Date.now() - t0); telem.applyMs.count++; telem.applyMs.max = Math.max(telem.applyMs.max, Date.now() - t0);
     if (res && res.diff) {
       telem.ops.applied++;
@@ -2223,6 +2223,18 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
 
   /** The uid this seat holds, or null when stations are inert. For `welcome` and presence. */
   function seatStationUid(userId) { const s = seatStation(userId); return s && s.uid != null ? s.uid : null; }
+
+  /*
+   * R-254/R-326 (0751, E12f) — the CODE twin of seatStationUid, for the one path family
+   * (`shared/combat/declare/<stationCode>`) that is keyed by the plugin's own station CODE, not
+   * its uid. Reads the SAME registry already built at boot (line 648) — no plugin import, no new
+   * dependency; read at call time, never cached, exactly like seatStationUid itself.
+   */
+  function seatStationCode(userId) {
+    const uid = seatStationUid(userId);
+    const st = uid == null ? null : stationRegistry.get(uid);
+    return st ? st.stationCode : null;
+  }
 
   /**
    * The CORE GENERIC PLACEHOLDER (§6.1): what a station with no screen descriptor renders.
