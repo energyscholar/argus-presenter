@@ -97,6 +97,15 @@ export const DEFAULT_READ_POLICY = [
   // enters their snapshot or their diffs. A referee needs the whole picture, so gm reads all of it.
   { glob: 'private/{self}', roles: ['participant'], self: true },
   { glob: 'private', roles: ['gm'] },
+  /*
+   * R-270/R-273 (0800, E27s) — THE WHISPER SLICE: private from the GM too. `private`, just above,
+   * is gm-readable BY DESIGN ("a referee needs the whole picture") — R-270 says a directed message
+   * must NOT repeat that pattern: a GM handed every side conversation is handed WORK, not merely a
+   * secret. `{station}` is the SAME segment `station/{station}` already uses (matchesStationSegment,
+   * below matchGlob) — read-scoped to the seat it names. No `gm` role here, unlike every other
+   * block in this policy (`private`, `station`, `answers`, `gm`) — deliberate, not an omission.
+   */
+  { glob: 'whisper/{station}', roles: ['participant'] },
   // R-297 / R-326 (0780, E16s) — the published STATION VIEW, read-scoped per seat. `{station}`
   // (see matchesStationSegment, above matchGlob) matches only a participant's OWN stationUid; an
   // actor holding no seat matches nothing. The gm reads every station, exactly as it reads every
@@ -212,7 +221,18 @@ export function createPermissions(policy = DEFAULT_POLICY, readPolicy = DEFAULT_
    *  role AND its path (prefix/self). NO rule match ⇒ DENY (fail-closed, was open). */
   function canRead(actor, path) {
     const role = actor && actor.role;
-    if (OVERRIDE_ROLES.has(role)) return true;             // presenter/ai/system see all
+    /*
+     * R-273 (0800, E27s) — THE WHISPER PREFIX IS EXEMPT FROM THE CONTROLLER OVERRIDE. MEASURED
+     * 2026-09-06: `presenter`/`ai` bypassed this function unconditionally (the line below), so a
+     * GM connected at the control page (role `presenter` or `ai`, app/server.mjs CONTROL_ROLES)
+     * saw every whisper no matter what DEFAULT_READ_POLICY said — R-270 recorded but
+     * unenforceable. `system` is EXCLUDED from this exemption: it is the writer (every plugin
+     * dispatch and internal server op acts as role `system`, app/server.mjs) and must read back
+     * what it wrote. Scoped to this ONE prefix; every other override-gated path is untouched.
+     */
+    const whisperExempt = (role === 'presenter' || role === 'ai')
+      && (path === 'whisper' || path.startsWith('whisper/'));
+    if (OVERRIDE_ROLES.has(role) && !whisperExempt) return true;   // presenter/ai/system see all, except whisper for presenter/ai
     for (const r of readPolicy) {
       if (!r.roles.includes(role)) continue;
       if (readMatch(r.glob, path, actor)) return true;
