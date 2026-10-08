@@ -29,25 +29,30 @@ async function bareRegistry() {
   return { mod, reg, written };
 }
 
-test('t0575-05a — a WORLD and an EVA point are places, and they have NO stations', async () => {
+test('t0575-05a — a WORLD and an EVA point are places; they have no hull and offer NO stations unless their record declares some', async () => {
   if (!havePlaces) { expect(false, 'places.mjs is installed (run tools/install-system-plugins.sh)'); return; }
   const { mod, reg, written } = await bareRegistry();
-
+  /* ⛔ DECLARED TEST CHANGE (plan 0896, owner ruling 2026-10-08): the rule is no longer "a world never has
+     stations" but "a world offers ONLY the stations its place record declares — none by default". A station is
+     offered by a place, to a role; what never changes is that a non-ship place has no HULL. */
   const world = reg.register({ placeId: 'p-world', kind: 'world', label: 'A world' });
   const eva = reg.register({ placeId: 'p-eva', kind: 'eva', label: 'Outside' });
   const craft = reg.register({ placeId: 'p-craft', kind: 'craft', label: 'A small craft' });
+  const declared = reg.register({ placeId: 'p-port', kind: 'world', label: 'A world with a desk', stations: ['desk-1'] });
 
-  expect(world && world.kind === 'world' && world.hasStations === false,
-    'a world is a place and has no stations', JSON.stringify(world));
-  expect(eva && eva.kind === 'eva' && eva.hasStations === false,
-    'an EVA point is a place and has no stations', JSON.stringify(eva));
-  expect(craft && craft.hasStations === false, 'nor does a small craft', JSON.stringify(craft));
+  expect(world && world.kind === 'world' && world.hasHull === false && Array.isArray(world.offers) && world.offers.length === 0,
+    'a world is a place, has no hull, and offers no stations by default', JSON.stringify(world));
+  expect(eva && eva.kind === 'eva' && eva.hasHull === false && eva.offers.length === 0,
+    'an EVA point is a place and offers no stations', JSON.stringify(eva));
+  expect(craft && craft.hasHull === false && craft.offers.length === 0, 'nor does a small craft, by default', JSON.stringify(craft));
+  expect(declared && declared.offers.length === 1 && declared.offers[0] === 'desk-1',
+    'a world offers exactly the stations its record declares', JSON.stringify(declared));
 
   // ⭐ And a SHIP does — otherwise the assertions above would pass for a registry that simply
   //   never sets the flag, which is a test that can no longer fail.
   const ship = reg.register({ placeId: 'p-ship', kind: 'ship', label: 'A hull', hullClass: 'some-class' });
-  expect(ship && ship.hasStations === true && ship.hullClass === 'some-class',
-    'a ship is the kind that HAS stations, and carries its hull class', JSON.stringify(ship));
+  expect(ship && ship.hasStations === true && ship.hasHull === true && ship.hullClass === 'some-class',
+    'a ship is the kind that HAS a hull and stations, and carries its hull class', JSON.stringify(ship));
 
   // Each one landed at its own store path, under the single prefix the plugin allow-reads.
   expect(written.get(mod.placePath('p-world')) === world, 'the world was written to places/<placeId>',
@@ -55,13 +60,16 @@ test('t0575-05a — a WORLD and an EVA point are places, and they have NO statio
   expect(mod.placePath('p-eva') === 'places/p-eva', 'and the path is `places/<placeId>`', mod.placePath('p-eva'));
 });
 
-test('t0575-05b — a non-ship place cannot acquire stations or a hull class, whatever the file said', async () => {
+test('t0575-05b — a non-ship place cannot acquire a hull, a hull class or undeclared stations, whatever the file said', async () => {
   if (!havePlaces) { expect(false, 'places.mjs is installed'); return; }
   const { reg } = await bareRegistry();
   /* The deployment file is hand-edited. The failure guarded against is not a crash — it is a
-     BEACH that quietly grows stations, which phase 4's seat authority would then honour. */
-  const w = reg.register({ placeId: 'p-beach', kind: 'world', label: 'A beach', hullClass: 'battleship', hasStations: true });
-  expect(w && w.hasStations === false, 'hasStations is DERIVED from kind, never taken from the input', JSON.stringify(w));
+     BEACH that quietly grows stations, which phase 4's seat authority would then honour.
+     ⛔ DECLARED TEST CHANGE (plan 0896, owner ruling 2026-10-08): a `hasStations: true` in the input still buys
+     nothing — what a world offers is only its DECLARED station list (none here), and it never gains a hull. */
+  const w = reg.register({ placeId: 'p-beach', kind: 'world', label: 'A beach', hullClass: 'battleship', hasStations: true, hasHull: true });
+  expect(w && w.hasHull === false && Array.isArray(w.offers) && w.offers.length === 0,
+    'a world offers only declared stations (none) and has no hull, whatever the input claimed', JSON.stringify(w));
   expect(w && w.hullClass === null, 'and a world has no hull class', JSON.stringify(w));
 });
 

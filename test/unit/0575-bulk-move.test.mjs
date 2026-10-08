@@ -164,7 +164,9 @@ test('t0575-03d — ⭐ A PLACE WITHOUT STATIONS IS A VALID DESTINATION (this is
     /* ⭐ §2: "away parties, boarding and spacewalks need NO new machinery, only new place records."
        If this deployment declares no non-ship place, that is a DATA gap, not a code gap — and the
        test says which, rather than passing quietly. */
-    const nonShip = Object.values(server.store.get(placesMod.PLACES) || {}).find((p) => p && p.hasStations === false);
+    /* ⛔ DECLARED TEST CHANGE (plan 0896, owner ruling 2026-10-08): "a place without stations" is now a place with
+       no HULL that offers none (a world offers only the stations its record declares — none by default). */
+    const nonShip = Object.values(server.store.get(placesMod.PLACES) || {}).find((p) => p && p.hasHull === false && (p.offers || []).length === 0);
     /* ⛔ 0581 PHASE F — this used to `return` with `expect(true, '…reported')` when the deployment
        declared no non-ship place, and it DID exactly that on this box. The fixture fleet declares
        one, so the away party is exercised or this FAILS. */
