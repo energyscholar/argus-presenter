@@ -20,7 +20,7 @@ import { REAL_PLUGINS } from './_0514-fixtures.mjs';
 
 const PLUGIN = join(REAL_PLUGINS, 'starship-ops');
 const STATIONS = join(PLUGIN, 'stations');
-const CHART = join(PLUGIN, 'ship-chart.json');
+const CHART = join(PLUGIN, 'charts', 'ship.json');   // plan 0896: the chart moved (declared)
 const have = existsSync(STATIONS) && existsSync(CHART);
 
 const svgs = () => (have ? readdirSync(STATIONS).filter((f) => f.endsWith('.svg')).sort() : []);

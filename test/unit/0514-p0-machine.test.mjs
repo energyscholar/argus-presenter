@@ -693,7 +693,7 @@ test('t0514-46 — the machine writes as `system` (accepted); the same write as 
 
 test('t0514-28b — the chart is DATA: adding a region is a plugin edit, not a core edit', async () => {
   const mod = await loadMachineModule();
-  const chart = JSON.parse(readFileSync(join(REAL_PLUGINS, 'starship-ops', 'ship-chart.json'), 'utf8'));
+  const chart = JSON.parse(readFileSync(join(REAL_PLUGINS, 'starship-ops', 'charts', 'ship.json'), 'utf8'));
   chart.regions.hull = { initial: 'intact', states: { intact: {}, breached: {} } };
   chart.transitions.push({ on: 'hull-breach', region: 'hull', from: '*', to: 'breached' });
   const m = mod.createShipMachine(chart, {});

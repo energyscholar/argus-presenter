@@ -115,7 +115,7 @@ const shipEvent = async (server, event) => {
 async function chartAlert() {
   const { readFileSync } = await import('fs');
   const { REAL_PLUGINS } = await import('../unit/_0514-fixtures.mjs');
-  const j = JSON.parse(readFileSync(join(REAL_PLUGINS, 'starship-ops', 'ship-chart.json'), 'utf8'));
+  const j = JSON.parse(readFileSync(join(REAL_PLUGINS, 'starship-ops', 'charts', 'ship.json'), 'utf8'));
   return j.regions.alert.states;
 }
 

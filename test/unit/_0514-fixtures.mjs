@@ -137,7 +137,7 @@ export function loadShipPluginModule(file) {
  * ⚠ AND THE GATE THAT SHOULD HAVE CAUGHT IT DID NOT FAIL — it was simply not reported. 0571's run
  * named V1 and omitted V6, which read exactly like a pass. ⭐ AN ABSENT GATE IS INDISTINGUISHABLE
  * FROM A PASSED ONE, so this helper exists to make the right thing the easy thing: a test asks for
- * `'ship-chart.json'` and never learns where that is. `REAL_PLUGINS` is the one hop this repo is
+ * `'charts/ship.json'` and never learns where that is. `REAL_PLUGINS` is the one hop this repo is
  * allowed to know, and it lives HERE and nowhere else.
  */
 export function shipPluginFile(file) { return join(REAL_PLUGINS, 'starship-ops', file); }

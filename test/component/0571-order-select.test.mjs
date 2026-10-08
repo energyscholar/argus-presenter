@@ -33,7 +33,7 @@ import { shipPluginFile } from '../unit/_0514-fixtures.mjs';
  * GATE READS EXACTLY LIKE A PASSED GATE — which is why the fix is a helper (`shipPluginFile`) that
  * makes the right thing the easy thing, and not a note asking the next author to remember.
  */
-const CHART_PATH = shipPluginFile('ship-chart.json');
+const CHART_PATH = shipPluginFile('charts/ship.json');   // plan 0896: the chart moved (declared)
 const have = existsSync(CHART_PATH);
 const MANIFEST = have ? JSON.parse(readFileSync(shipPluginFile('plugin.json'), 'utf8')) : null;
 
