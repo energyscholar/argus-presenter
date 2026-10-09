@@ -11,6 +11,8 @@
  *   AP_ASR_STUB_TEXT        the transcript text (default "hello world")
  *   AP_ASR_STUB_MODE=bytes  answer "bytes:<pcm byte count>" — proves the WHOLE segment arrived
  *   AP_ASR_STUB_DELAY_MS    answer each request this many ms after it arrives (queue tests)
+ *   AP_ASR_STUB_LOAD_MS     simulate a slow model load: read nothing and announce nothing for this
+ *                           many ms after startup (requests wait in the pipe, as with a real engine)
  *   --die                   exit(3) on the first request (a crashing engine)
  *   --text=<t>              same as AP_ASR_STUB_TEXT
  *   --mode=bytes            same as AP_ASR_STUB_MODE=bytes
@@ -31,7 +33,13 @@ const TEXT = flag('text') || process.env.AP_ASR_STUB_TEXT || 'hello world';
 const MODE = flag('mode') || process.env.AP_ASR_STUB_MODE || 'text';
 const DELAY = parseInt(process.env.AP_ASR_STUB_DELAY_MS || '0', 10) || 0;
 const DIE = !!flag('die');
-process.stdout.write(JSON.stringify({ ready: true, recognizer: { side: 'server', engine: 'stub', model: 'none', quant: 'none', version: '1', backend: 'node' } }) + '\n');
+const LOAD = parseInt(process.env.AP_ASR_STUB_LOAD_MS || '0', 10) || 0;
+let loaded = false;
+function finishLoad() {
+  loaded = true;
+  process.stdout.write(JSON.stringify({ ready: true, recognizer: { side: 'server', engine: 'stub', model: 'none', quant: 'none', version: '1', backend: 'node' } }) + '\n');
+  drain();
+}
 
 let buf = Buffer.alloc(0);
 let want = null;   // { id, n } while reading a body
@@ -42,8 +50,8 @@ function answer(id, wav) {
   const out = () => process.stdout.write(JSON.stringify({ id, text, conf: 0.9 }) + '\n');
   if (DELAY) setTimeout(out, DELAY); else out();
 }
-process.stdin.on('data', (d) => {
-  buf = Buffer.concat([buf, d]);
+process.stdin.on('data', (d) => { buf = Buffer.concat([buf, d]); if (loaded) drain(); });
+function drain() {
   for (;;) {
     if (!want) {
       const nl = buf.indexOf(10); if (nl < 0) return;
@@ -57,5 +65,6 @@ process.stdin.on('data', (d) => {
     const id = want.id; want = null;
     answer(id, body);
   }
-});
+}
 process.stdin.on('end', () => process.exit(0));
+if (LOAD) setTimeout(finishLoad, LOAD); else finishLoad();

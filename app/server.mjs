@@ -3038,8 +3038,14 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     try { mkdirSync(TRANSCRIPT_DIR, { recursive: true }); appendFileSync(TRANSCRIPT_FILE, JSON.stringify({ ts: e.ts, kind: e.kind, userId: e.userId, userName: e.userName, role: e.role, trust: e.trust, seq: e.seq, text: e.text, conf: e.conf }) + '\n'); }
     catch (err) { log.warn('voice', 'transcript-persist-fail', { msg: String(err && err.message || err) }); }
   }
+  /* The recognizer never answered its warm-up request (no answer in time, or the worker died or said it
+   * cannot load). Reported on the fault channel and as voice_status; health() reads asr:'failed'. */
+  function asrWarmupFault(code, detail) {
+    emitVoiceFault(null, code, detail);
+    announceVoiceStatus({ ready: false, asr: 'failed', code });
+  }
   function ensureAsr() {
-    if (!asr) asr = createAsr({ cwd: join(__dirname, '..'), onReady: () => announceVoiceStatus({ ready: true }) });
+    if (!asr) asr = createAsr({ cwd: join(__dirname, '..'), onReady: () => announceVoiceStatus({ ready: true, asr: 'ready' }), onFault: asrWarmupFault });
     return asr;
   }
   /* ── Plan 0904 V1.8 — A FAILING ENGINE FALLS BACK, AND SAYS SO ─────────────────────────────
@@ -3057,7 +3063,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     if (!fb || asrOnFallback || asrConsecutiveFails < ASR_FALLBACK_AFTER) return;
     asrOnFallback = true; asrConsecutiveFails = 0;
     const old = asr;
-    asr = createAsr({ cmd: fb, cwd: join(__dirname, '..'), onReady: () => announceVoiceStatus({ ready: true, fallback: true }) });
+    asr = createAsr({ cmd: fb, cwd: join(__dirname, '..'), onReady: () => announceVoiceStatus({ ready: true, asr: 'ready', fallback: true }), onFault: asrWarmupFault });
     try { old && old.close(); } catch (e) {}
     log.warn('voice', 'asr-fallback', { failures: ASR_FALLBACK_AFTER });
     emitVoiceFault(c, 'asr-fallback', 'the recognizer failed ' + ASR_FALLBACK_AFTER + ' times in a row; switched to the fallback recognizer');

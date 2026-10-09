@@ -353,14 +353,14 @@ export const coreTools = [
   },
   {
     name: 'presenter_status',
-    description: 'Server URL + connected users (presence) + WHO HOLDS A SPOTLIGHT SHARE GRANT (spotlightHolders — Plan 0689 R4c, read-only; grant/revoke is presenter_spotlight) + PVS lifecycle state (Plan 0493: whether a Presenter Voice Session is open, its comms mode, and its namespaced delivery cursor) + PUBLIC INGRESS state (S220: whether the tunnel is up and whether the public url actually answers — the local bind says nothing about reachability).',
+    description: 'Server URL + connected users (presence) + WHO HOLDS A SPOTLIGHT SHARE GRANT (spotlightHolders — Plan 0689 R4c, read-only; grant/revoke is presenter_spotlight) + PVS lifecycle state (Plan 0493: whether a Presenter Voice Session is open, its comms mode, and its namespaced delivery cursor) + PUBLIC INGRESS state (S220: whether the tunnel is up and whether the public url actually answers — the local bind says nothing about reachability) + `asr`: the speech recognizer, off | loading | ready | failed (ready only once the worker has answered a warm-up request).',
     input: { type: 'object', properties: {} },
     handler: async () => (server
       // Plan 0689 R4c — spotlightHolders rides HERE, alongside the roster, exactly where the
       // coverage manifest said it was owed. Read-only, no new capability: grant/revoke has been
       // reachable via presenter_spotlight all along. What was missing was the ANSWER to "who holds
       // one right now", which an agent could previously only infer from its own memory of grants.
-      ? { running: true, url: server.url(), presence: server.presence(), spotlightHolders: server.spotlightHolders(), pvs: server.pvsState(), mode: server.commsMode().mode, auth: server.authPolicy(), tunnel: await tunnelStatus() }
+      ? { running: true, url: server.url(), presence: server.presence(), spotlightHolders: server.spotlightHolders(), pvs: server.pvsState(), asr: server.asrState(), mode: server.commsMode().mode, auth: server.authPolicy(), tunnel: await tunnelStatus() }
       : { running: false, tunnel: await tunnelStatus() })
   },
   {

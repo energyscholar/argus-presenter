@@ -244,6 +244,7 @@ export const API_COVERAGE = {
   pvsStart:            { tool: 'presenter_pvs_start' },
   pvsStop:             { tool: 'presenter_pvs_stop' },
   pvsState:            { tool: 'presenter_status' },
+  asrState:            { tool: 'presenter_status' },   // Plan 0904 — recognizer warm-up state
   // Plan 0687 R2 — the ack is an AGENT act (G5), so it needs an agent-reachable surface of its own.
   pvsAck:              { tool: 'presenter_pvs_ack' },
   pvsBacklog:          { tool: 'presenter_pvs_backlog' },

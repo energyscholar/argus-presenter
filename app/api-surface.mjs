@@ -362,6 +362,7 @@ export function createApiSurface(M) {
     _oidcAdapterForTest: M.oidcAdapter,
     voiceHealth: () => M.voiceHealthAll(),
     voicePairRegister: (spec = {}) => M.voicePairRegister(spec, 'api'),   // Plan 0904 R9a (MCP relay path)   // Plan 0904 V1.6 — per-person voice health (control/agent-facing)
+    asrState: () => (M.asr && M.asr.state ? M.asr.state() : 'off'),   // Plan 0904 — 'off' | 'loading' | 'ready' | 'failed'
     _voiceAsrPidForTest: () => (M.asr && M.asr.pid ? M.asr.pid() : null),   // Plan 0904 T0904-14 (kill the worker)
     _authCtxForTest: (req) => M.computeAuthCtx(req),
     _breakGlassForTest: M.bgAdapter,
@@ -621,7 +622,9 @@ export function createApiSurface(M) {
           malformed: o.malformed,
         };
         const faultCount = faults.renderErrors + faults.opApplyFailures + faults.frameErrors + faults.throttled + faults.malformed;
-        const status = (anyStale || faultCount > 0) ? 'degraded' : 'green';
+        // Plan 0904 — the recognizer's warm-up state. 'failed' means speech cannot be recognised: degraded.
+        const asr = (M.asr && M.asr.state) ? M.asr.state() : 'off';
+        const status = (anyStale || faultCount > 0 || asr === 'failed') ? 'degraded' : 'green';
         /*
          * ── Plan 0525 P2 (I1) — IS THIS SESSION BEING RECORDED? ─────────────────────────────────
          * The CLI banner has answered that since P16.2 ("session log: <dir>/<id>.p0.jsonl" or
@@ -650,7 +653,7 @@ export function createApiSurface(M) {
          */
         const slog = M.sessionLog.status();
         return {
-          status, connections,
+          status, asr, connections,
           opsApplied: o.applied, errorRate,
           faults, faultCount, denied: o.denied,   // denials REPORTED (visible) but never degrading
           stateVersion: M.store.version(), opLogSize: M.store.oplogSince(0).length,
