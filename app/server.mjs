@@ -174,17 +174,17 @@ const htmlHeaders = () => ({
 });
 // Serve a static-ish asset with a weak ETag (size + mtimeMs) + revalidation. On a
 // matching if-none-match → 304 (no body). Used for the branding SVG + shipped .mjs modules.
-function sendStatic(res, req, absPath, contentType) {
+function sendStatic(res, req, absPath, contentType, extraHeaders = null) {
   try {
     const st = statSync(absPath);
     const etag = 'W/"' + st.size + '-' + st.mtimeMs + '"';
-    if (req.headers['if-none-match'] === etag) { res.writeHead(304, { etag, 'cache-control': 'no-cache' }); res.end(); return; }
-    res.writeHead(200, { 'content-type': contentType, 'cache-control': 'no-cache', etag });
+    if (req.headers['if-none-match'] === etag) { res.writeHead(304, Object.assign({ etag, 'cache-control': 'no-cache' }, extraHeaders || {})); res.end(); return; }
+    res.writeHead(200, Object.assign({ 'content-type': contentType, 'cache-control': 'no-cache', etag }, extraHeaders || {}));
     res.end(readFileSync(absPath));
   } catch (e) { res.writeHead(404); res.end('not found'); }
 }
 
-export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null, profile = DEFAULT_PROFILE, settlingMs = null, queueMaxPending = null, queueTtlMs = null, perTurnBudgetMs = null, perTurnWrapMs = null, floorThresholds = null, sessionLogDir = null, enforceOAuth = undefined, allowPasswordCommandOnLAN = undefined, allowlist = null, oidc = null, oidcDeps = null, oidcSessionTtlMs = null, tailscale = null, tailscaleResolve = null, tailscaleWhois = null, breakGlass = null, breakGlassDeps = null, revokedNonceFile = null, sessionStoreFile = null, bindHosts = null, cursorDir = null, stateDir = null, statePaths = null, stateQuietMs = null, stateMaxMs = null, logRingMax = null, voiceBaselineMs = null } = {}) {
+export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null, profile = DEFAULT_PROFILE, settlingMs = null, queueMaxPending = null, queueTtlMs = null, perTurnBudgetMs = null, perTurnWrapMs = null, floorThresholds = null, sessionLogDir = null, enforceOAuth = undefined, allowPasswordCommandOnLAN = undefined, allowlist = null, oidc = null, oidcDeps = null, oidcSessionTtlMs = null, tailscale = null, tailscaleResolve = null, tailscaleWhois = null, breakGlass = null, breakGlassDeps = null, revokedNonceFile = null, sessionStoreFile = null, bindHosts = null, cursorDir = null, stateDir = null, statePaths = null, stateQuietMs = null, stateMaxMs = null, logRingMax = null, voiceBaselineMs = null, voiceClientOrigins = null } = {}) {
   // Plan 0543 P1 — the AUTH POLICY dial. Validated HERE (the single startup path shared by the CLI
   // self-run and presenter_start): an unknown enforceOAuth value THROWS rather than falling through
   // to a policy the deployer never chose. This slice is plumbing only — P3 makes the policy govern.
@@ -532,6 +532,17 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   else if (process.env.PRESENTER_LOG_RING_MAX) log.setRingMax(parseInt(process.env.PRESENTER_LOG_RING_MAX, 10));
   // Plan 0904 V1.6 — how long the floor-collapse detector learns a session's baseline level (test seam).
   const VOICE_BASELINE_MS = Number.isFinite(voiceBaselineMs) && voiceBaselineMs > 0 ? voiceBaselineMs : 60000;
+  /* Plan 0904 V1.9 / V4 — the ORIGINS of pages on another site that may load the voice client modules
+   * (CORS on /lib/voice-*) and, in V4, open a socket here. ONE list for both. Exact origins only
+   * (scheme://host[:port]); anything else is dropped at startup. */
+  const VOICE_CLIENT_ORIGINS = new Set((Array.isArray(voiceClientOrigins) ? voiceClientOrigins
+    : String(process.env.PRESENTER_VOICE_CLIENT_ORIGINS || '').split(',')).map((x) => String(x || '').trim().replace(/\/+$/, ''))
+    .filter((x) => /^https?:\/\/[^/\s]+$/i.test(x)));
+  function voiceCorsHeaders(req) {
+    const o = req && req.headers && req.headers.origin;
+    const vary = { vary: 'Origin' };
+    return (o && VOICE_CLIENT_ORIGINS.has(o)) ? Object.assign(vary, { 'access-control-allow-origin': o }) : vary;
+  }
   const conns = new Map();     // ws -> {id,userId,userName,role}
   // Plan 0482 A4 — userId -> Set<ws>. One PERSON may hold several sockets (phone + laptop, or a
   // reconnect race where the old socket has not yet been reaped). The old Map<userId,ws> OVERWROTE
@@ -993,7 +1004,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     htmlHeaders, httpControlAuthed, LIB, listModules, listModulesAdmin, listSeries,
     MODULE_STATUSES, moduleAdminOp, moduleCache, MODULES_DIR, moduleSummary, moduleWriteAuthed,
     pvsConsumerKey, readModuleFile, readSeriesFile, renderPresenterPage, ROLE_HASH, ROLE_SEED,
-    sendStatic, sessionLog, sessionLogReadAuthed, VOICE_ENABLED,
+    sendStatic, sessionLog, sessionLogReadAuthed, VOICE_ENABLED, voiceCorsHeaders,
     oidcAuth: oidcAdapter,   // Plan 0543 P2 — the OIDC login/callback/logout routes read this
     breakGlassAuth: bgAdapter,   // Plan 0650 §2b — POST /auth/break-glass redeems the recovery credential
     authState,               // Plan 0551 P3 — GET /api/auth-state reads this (state only; no email/sub/sid)

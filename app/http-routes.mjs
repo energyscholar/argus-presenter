@@ -207,14 +207,21 @@ export function createHttpHandler(ctx) {
         sendStatic(res, req, join(LIB, 'voice-stub.js'), 'text/javascript; charset=utf-8');
   });
 
-  exactRoutes.set("/lib/voice-capture.mjs", ({ req, res, LIB, sendStatic }) => {
+  // Plan 0904 V1.9 — these three are the voice CLIENT: a page on a listed other origin imports them
+  // from here (module scripts and worklets load in CORS mode), so there is ONE copy and no vendoring.
+  exactRoutes.set("/lib/voice-capture.mjs", ({ req, res, LIB, sendStatic, voiceCorsHeaders }) => {
         // Plan 0470 Tier 1 controller — served only when a client enable()s voice (T-LAZY).
-        sendStatic(res, req, join(LIB, 'voice-capture.mjs'), 'text/javascript; charset=utf-8');
+        sendStatic(res, req, join(LIB, 'voice-capture.mjs'), 'text/javascript; charset=utf-8', voiceCorsHeaders(req));
   });
 
-  exactRoutes.set("/lib/voice-worklet.js", ({ req, res, LIB, sendStatic }) => {
+  exactRoutes.set("/lib/voice-worklet.js", ({ req, res, LIB, sendStatic, voiceCorsHeaders }) => {
         // Plan 0470 Tier 1 DSP worklet (pure JS; loaded via audioWorklet.addModule).
-        sendStatic(res, req, join(LIB, 'voice-worklet.js'), 'text/javascript; charset=utf-8');
+        sendStatic(res, req, join(LIB, 'voice-worklet.js'), 'text/javascript; charset=utf-8', voiceCorsHeaders(req));
+  });
+
+  exactRoutes.set("/lib/voice-link.mjs", ({ req, res, LIB, sendStatic, voiceCorsHeaders }) => {
+        // Plan 0904 — the resumable voice connection (segment ring, replay, ping/pong) for voice clients.
+        sendStatic(res, req, join(LIB, 'voice-link.mjs'), 'text/javascript; charset=utf-8', voiceCorsHeaders(req));
   });
 
   exactRoutes.set("/branding/argus-presenter.svg", ({ req, res, BRANDING, sendStatic }) => {
