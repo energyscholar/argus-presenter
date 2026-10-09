@@ -425,7 +425,8 @@ export function createApiSurface(M) {
         const nonce = payload.nonce || ('g-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10));
         const exp = (typeof payload.exp === 'number') ? payload.exp : (Math.floor(Date.now() / 1000) + 3600);   // default 1h
         const scope = Array.isArray(payload.scope) ? payload.scope.filter((s) => typeof s === 'string') : ['speak', 'type'];
-        return mintCapability({ v: 1, sid: payload.sid != null ? payload.sid : M.SESSION_ID, role: 'participant', scope, name: payload.name || null, exp, nonce }, M.CAP_SECRET);
+        const ref = (typeof payload.ref === 'string' && payload.ref) ? payload.ref : undefined;   // Plan 0904 V1.2
+        return mintCapability({ v: 1, sid: payload.sid != null ? payload.sid : M.SESSION_ID, role: 'participant', scope, name: payload.name || null, exp, nonce, ...(ref ? { ref } : {}) }, M.CAP_SECRET);
       },
     revokeCap: (nonce) => {
         if (!nonce) return false;

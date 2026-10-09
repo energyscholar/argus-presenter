@@ -111,6 +111,15 @@ export function createWireActions(ctx) {
       // when no secret is configured. A cap NEVER bypasses the control gate below — it is a separate,
       // guest-only path.
       let capGrant = null;
+      /* ⛔ Plan 0904 R14 — A CAPABILITY IS A PUBLIC-ROUTE CREDENTIAL. The extra (private) binds are for
+         verified identities only; a cap presented there is refused by name and the socket closed, so a
+         link holder can never reach the private door with it. Non-cap sockets are unaffected. */
+      if (m.cap && req && req.apExtraBind) {
+        log.warn('cap', 'refused-on-private-bind', { socketId: c.id });
+        send(ws, { t: 'cap_refused', reason: 'capability links are accepted on the public route only' });
+        try { ws.close(4403, 'capability not accepted on this route'); } catch {}
+        return;
+      }
       if (m.cap) {
         if (CAP_SECRET) {
           try {
@@ -134,6 +143,8 @@ export function createWireActions(ctx) {
       c.userName = ident.userName;
       c.role = ident.role;
       if (ident.isGuest) { c.isGuest = true; c.capScope = ident.capScope; c.capNonce = ident.capNonce; }
+      // Plan 0904 V1.2 — the external seat reference rides the connection; identity, never authority.
+      c.extRef = (capGrant && typeof capGrant.ref === 'string') ? capGrant.ref : null;
       /* ⛔ Plan 0692 F3 — REMEMBER THAT THIS IDENTITY WAS DERIVED FROM A SEAT LINK. resolveIdentity
          returns a stationUid on exactly one branch: the one where userId = <stationCode>-<slug(userName)>.
          On that branch the name IS the key, so a rename would silently make this connection a
@@ -145,7 +156,10 @@ export function createWireActions(ctx) {
       const trustVerdict = deriveConnTrust(ident, capGrant, authCtx);
       c.trust = trustVerdict.trust;
       // ⭐ Decided ONCE, at hello, from the verified identity — never re-derived from a client claim.
-      c.voiceAllowed = voiceAllowedFor(req);
+      // Plan 0904 R1 — MINTING GRANTS THE MIC: a valid capability whose signed scope includes `speak`
+      // opens a microphone on any deployment, IdP or not. The mint is the authorisation act; the cap
+      // stays expiring and revocable, and its speech stays GUEST trust (deriveConnTrust, above).
+      c.voiceAllowed = voiceAllowedFor(req) || !!(capGrant && Array.isArray(capGrant.scope) && capGrant.scope.includes('speak'));
       c.trustReason = trustVerdict.reason || null;
       c.reauth = !!trustVerdict.reauth;
       bindUser(c.userId, ws);
@@ -574,7 +588,7 @@ export function createWireActions(ctx) {
           // only evidence either way is its absence. Both branches below answer.
           if (!body) { send(ws, { t: 'chat_private', ok: false, reason: 'empty', text: '' }); return; }
           const asideTs = Date.now();
-          emitInbox({ kind: 'text', userId: c.userId, userName: c.userName, role: c.role, text: body, conf: null, final: true, isGuest: !!c.isGuest, private: true, trust: c.trust });
+          emitInbox({ kind: 'text', userId: c.userId, userName: c.userName, role: c.role, text: body, conf: null, final: true, isGuest: !!c.isGuest, private: true, trust: c.trust, extRef: c.extRef || null });
           handleOp(c, { path: 'gm/asides/' + id, verb: 'set', value: { id, text: body, name: c.userName, userId: c.userId, ts: asideTs } },
             { userId: c.userId, role: 'system' });   // sender's id, lifted role — see handleOp
           // Plan 0539 P1.3 — the receipt now carries `id` + `ts`. THE SENDER IS THE ONLY PERSON
@@ -598,7 +612,7 @@ export function createWireActions(ctx) {
           if (!res.ok) send(ws, { t: 'roll_refused', reason: res.reason, text: '/roll <count>d<sides>[+mod] [target] [= total] [label]' });
           return;
         }
-        emitInbox({ kind: 'text', userId: c.userId, userName: c.userName, role: c.role, text: m.text, conf: null, final: true, isGuest: !!c.isGuest, trust: c.trust });
+        emitInbox({ kind: 'text', userId: c.userId, userName: c.userName, role: c.role, text: m.text, conf: null, final: true, isGuest: !!c.isGuest, trust: c.trust, extRef: c.extRef || null });
         // Plan 0539 P1.1 — `ts` and `userId` are ADDED to the record, and both are load-bearing for
         // the reader. `chat` is a keyed collection, not a list: a client rebuilding the log from a
         // snapshot gets an OBJECT, whose key order is an implementation detail and not a history.

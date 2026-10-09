@@ -950,6 +950,9 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         // ONE WebSocketServer for the whole room: hand the upgrade to the same wss so a tailnet
         // socket lands in the same `conns`, with the same gate and the same identity decision.
         extra.on('upgrade', (ureq, usock, head) => {
+          // Plan 0904 R14 — remember WHICH door this socket came through. A capability is a public-route
+          // credential only; the hello handler refuses one presented on an extra (private) bind.
+          try { ureq.apExtraBind = h; } catch {}
           try { wss.handleUpgrade(ureq, usock, head, (ws) => wss.emit('connection', ws, ureq)); }
           catch (e) { try { usock.destroy(); } catch {} }
         });
@@ -3011,7 +3014,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     };
   }
 
-  function emitInbox({ kind, userId, userName, role, text, conf = null, final = true, sessionId, isGuest = false, own = false, voiceId = null, voiceIdConf = null, speakerLabel = null, trust = null }) {
+  function emitInbox({ kind, userId, userName, role, text, conf = null, final = true, sessionId, isGuest = false, own = false, voiceId = null, voiceIdConf = null, speakerLabel = null, trust = null, extRef = null }) {
     const entry = {
       seq: ++inboxSeq, kind, userId, userName, role: role || null,
       // Plan 0473 P9 / 0543 P3: the SERVER-AUTHORITATIVE trust level. It is now the connection's
@@ -3027,6 +3030,8 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       // 16kHz segment is replayable) — never a sole credential. See project-presenter-biometric-voiceid.
       voiceId, voiceIdConf, speakerLabel,
       ts: Date.now(), sessionId: sessionId || SESSION_ID,
+      // Plan 0904 V1.2 — the capability's external seat reference (null when the speaker has none).
+      extRef: (typeof extRef === 'string' && extRef) ? extRef : null,
     };
     if (own === true) entry.own = true;   // Plan 0473 P13: the agent's OWN outbound reply (never fenced/queued/self-barged)
     // Plan 0493 Phase E — hygiene flags on inbound VOICE turns only (never the agent's own reply).
@@ -3058,8 +3063,8 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     return entry;
   }
   // Back-compat shim: voice-path callers still call emitTranscript(); it is kind:'voice' into the inbox.
-  function emitTranscript({ userId, userName, role, text, conf, isGuest = false, trust = null }) {
-    return emitInbox({ kind: 'voice', userId, userName, role, text, conf, final: true, isGuest, trust });
+  function emitTranscript({ userId, userName, role, text, conf, isGuest = false, trust = null, extRef = null }) {
+    return emitInbox({ kind: 'voice', userId, userName, role, text, conf, final: true, isGuest, trust, extRef });
   }
   function voiceArmTimeout(c, ws) {   // RT-14: an open segment starved of frames is flushed/discarded
     const v = c.voice; if (!v) return;
@@ -3134,7 +3139,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     try { unlinkSync(wavPath); } catch (e) {}
     log.info('voice', 'S10 asr-result', { socketId: c.id, seq, text: String((result && result.text) || '').slice(0, 60) });   // S206 tracer
     if (!result || !result.text) { log.info('voice', 'no-text', { socketId: c.id, seq }); return; }
-    emitTranscript({ userId: c.userId, userName: c.userName, role: c.role, text: result.text, conf: result.conf, isGuest: !!c.isGuest, trust: c.trust });
+    emitTranscript({ userId: c.userId, userName: c.userName, role: c.role, text: result.text, conf: result.conf, isGuest: !!c.isGuest, trust: c.trust, extRef: c.extRef || null });
     // Plan 0476 P4: echo the speaker's OWN recognized words back to THEIR client only (rendered as a
     // single line above the input field). Participants never see peers' voice, but seeing your own words
     // is your own data. voiceId hooks ride along (null until biometric ID lands).
