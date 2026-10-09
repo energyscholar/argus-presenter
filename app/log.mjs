@@ -10,13 +10,16 @@
  * is always visible — keep secrets OUT of `msg`.
  */
 const LEVELS = { error: 0, warn: 1, info: 2, debug: 3, trace: 4 };
-const RING_MAX = 500;
+let RING_MAX = 500;   // Plan 0904 V1.6: a server option now (logRingMax); a busy voice table overruns 500 in about a minute
 const ring = [];
 let threshold = LEVELS[process.env.AP_LOG] ?? LEVELS.info;
 
 export function setLevel(l) { if (l in LEVELS) threshold = LEVELS[l]; return getLevel(); }
 export function getLevel() { return Object.keys(LEVELS).find((k) => LEVELS[k] === threshold); }
 export function clear() { ring.length = 0; }
+/** Plan 0904 V1.6 — size the ring (createServer({logRingMax})). A non-integer or < 100 is ignored. */
+export function setRingMax(n) { if (Number.isInteger(n) && n >= 100) { RING_MAX = n; while (ring.length > RING_MAX) ring.shift(); } return RING_MAX; }
+export function ringMax() { return RING_MAX; }
 
 function fmt(e) { return JSON.stringify({ ts: e.ts, level: e.level, tag: e.tag, msg: e.msg, ...e.fields }); }
 

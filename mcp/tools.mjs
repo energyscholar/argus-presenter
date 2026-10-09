@@ -716,6 +716,8 @@ export const coreTools = [
         tailnet: tn,
         realPageMarkers: REAL_PAGE_MARKERS,
         rooms: out,
+        // Plan 0904 V1.6 — the in-process room's per-person voice health (null when none is running here).
+        voice: (server && typeof server.voiceHealth === 'function') ? server.voiceHealth() : null,
       };
     }
   },

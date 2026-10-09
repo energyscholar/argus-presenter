@@ -79,6 +79,7 @@ const VOICE_MAX_SESSIONS = 8;                  // RT-22: concurrent active voice
 const VOICE_BYTE_RATE_CAP = 64 * 1024;         // RT-7: sustained per-conn audio byte/s (PCM is 32 KB/s -> 2x headroom)
 const VOICE_SEG_MAX_MS = 30000;                // RT-8: hard segment length cap -> force-cut
 // RT-14 open-segment timeout is resolved PER createServer() (see segTimeoutMs) so tests can override it.
+const VOICE_RESUME_GRACE_MS = 60000;           // Plan 0904 V1.4: a person's voice state survives a close this long
 const VOICE_MIN_SEG_MS = 300;                  // RT-12: shorter than this -> drop (whisper hallucinates on blips)
 const VOICE_SEG_MAX_BYTES = Math.round(VOICE_SR * 2 * VOICE_SEG_MAX_MS / 1000);
 const VOICE_MIN_SEG_BYTES = Math.round(VOICE_SR * 2 * VOICE_MIN_SEG_MS / 1000);
@@ -183,7 +184,7 @@ function sendStatic(res, req, absPath, contentType) {
   } catch (e) { res.writeHead(404); res.end('not found'); }
 }
 
-export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null, profile = DEFAULT_PROFILE, settlingMs = null, queueMaxPending = null, queueTtlMs = null, perTurnBudgetMs = null, perTurnWrapMs = null, floorThresholds = null, sessionLogDir = null, enforceOAuth = undefined, allowPasswordCommandOnLAN = undefined, allowlist = null, oidc = null, oidcDeps = null, oidcSessionTtlMs = null, tailscale = null, tailscaleResolve = null, tailscaleWhois = null, breakGlass = null, breakGlassDeps = null, revokedNonceFile = null, sessionStoreFile = null, bindHosts = null, cursorDir = null, stateDir = null, statePaths = null, stateQuietMs = null, stateMaxMs = null } = {}) {
+export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null, profile = DEFAULT_PROFILE, settlingMs = null, queueMaxPending = null, queueTtlMs = null, perTurnBudgetMs = null, perTurnWrapMs = null, floorThresholds = null, sessionLogDir = null, enforceOAuth = undefined, allowPasswordCommandOnLAN = undefined, allowlist = null, oidc = null, oidcDeps = null, oidcSessionTtlMs = null, tailscale = null, tailscaleResolve = null, tailscaleWhois = null, breakGlass = null, breakGlassDeps = null, revokedNonceFile = null, sessionStoreFile = null, bindHosts = null, cursorDir = null, stateDir = null, statePaths = null, stateQuietMs = null, stateMaxMs = null, logRingMax = null, voiceBaselineMs = null } = {}) {
   // Plan 0543 P1 — the AUTH POLICY dial. Validated HERE (the single startup path shared by the CLI
   // self-run and presenter_start): an unknown enforceOAuth value THROWS rather than falling through
   // to a policy the deployer never chose. This slice is plumbing only — P3 makes the policy govern.
@@ -526,6 +527,11 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
    *   stands up many servers in one process. */
   const wireActions = new Map();
 
+  // Plan 0904 V1.6 — the log ring is sized per deployment (default 500; a voice table wants thousands).
+  if (logRingMax != null) log.setRingMax(Number(logRingMax));
+  else if (process.env.PRESENTER_LOG_RING_MAX) log.setRingMax(parseInt(process.env.PRESENTER_LOG_RING_MAX, 10));
+  // Plan 0904 V1.6 — how long the floor-collapse detector learns a session's baseline level (test seam).
+  const VOICE_BASELINE_MS = Number.isFinite(voiceBaselineMs) && voiceBaselineMs > 0 ? voiceBaselineMs : 60000;
   const conns = new Map();     // ws -> {id,userId,userName,role}
   // Plan 0482 A4 — userId -> Set<ws>. One PERSON may hold several sockets (phone + laptop, or a
   // reconnect race where the old socket has not yet been reaped). The old Map<userId,ws> OVERWROTE
@@ -1271,6 +1277,8 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // stale ⇒ RED within STALE_MS. Cleared in close() (INV-7). unref so it never keeps the loop alive.
   const heartbeat = setInterval(() => {
     const ts = Date.now();
+    // Plan 0904 V1.4 — a person's voice state outlives a socket by the resume grace, no longer.
+    for (const [uid, vu] of voiceUsers) if (vu.closedAt && ts - vu.closedAt > VOICE_RESUME_GRACE_MS && !socketsFor(uid).length) voiceUsers.delete(uid);
     for (const [ws] of conns) { if (ws.readyState === 1) { try { send(ws, { t: 'ping', ts }); } catch {} } }
   }, PING_MS);
   heartbeat.unref?.();
@@ -1325,7 +1333,8 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     /* Plan 0693 T5 — `self` says whether that connection holds COMMAND AUTHORITY. ⛔ A boolean and
      * nothing else: the principal that earned it never appears here, and presence is already a
      * control/agent-facing payload (presenter_status, presenter_stations, presenter_debug). */
-    return byPerson((c) => ({ userId: safeId(c.userId), userName: safeId(c.userName), role: c.role, self: c.trust === TRUST.SELF, eyesOn: c.eyesOn || null, stationUid: seatStationUid(c.userId) }))
+    // Plan 0904 V1.6 — `voice`: the person's voice health record, present only when they have one.
+    return byPerson((c) => { const vh = voiceUsers.has(c.userId) ? voiceHealthView(c.userId) : null; return Object.assign({ userId: safeId(c.userId), userName: safeId(c.userName), role: c.role, self: c.trust === TRUST.SELF, eyesOn: c.eyesOn || null, stationUid: seatStationUid(c.userId) }, vh ? { voice: vh } : {}); })
       .filter((r) => r.userId);
   }
   // Full presence (incl. IP + socketId + current display id) pushed to CONTROL roles only, for the GM user list.
@@ -1538,7 +1547,19 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       if (tsGate) { if (tsGate.timer) clearTimeout(tsGate.timer); tsGate.queue.length = 0; tsGate.open = true; }   // Plan 0650 — no timer, no buffer outlives the socket
       if (pvsSubscribers.has(ws)) { pvsSubscribers.delete(ws); log.info('pvs', 'unsubscribe-close', {}); }   // Plan 0493 D: socket close ends the watch (S12)
       const c = conns.get(ws);
-      if (c && c.voice && c.voice.active) { if (c.voice.timer) clearTimeout(c.voice.timer); c.voice.active = false; voiceSessions = Math.max(0, voiceSessions - 1); }   // RT-14: drop an orphaned open segment
+      if (c && c.voice && c.voice.active) {
+        if (c.voice.timer) clearTimeout(c.voice.timer); c.voice.active = false; voiceSessions = Math.max(0, voiceSessions - 1);   // RT-14: drop an orphaned open segment
+        // Plan 0904 V1.4 — the person's voice state keeps the interrupted segment for the resume grace,
+        // so a reconnect can report the hole (voice_gap cause 'resume') while the client replays it.
+        const vu = voiceUsers.get(c.userId);
+        if (vu) {
+          vu.interrupted = { seq: c.voice.seq, stream: c.voice.stream || null, fromTs: c.voice.startedAt, toTs: Date.now() };
+          // A replacement socket may already be live (it said hello before this one's close arrived):
+          // then nobody will ask to resume, so the hole is reported now rather than never.
+          if (socketsFor(c.userId).some((w) => w !== ws)) { emitVoiceGap(c, { fromTs: vu.interrupted.fromTs, toTs: vu.interrupted.toTs, cause: 'resume' }); vu.interrupted = null; }
+        }
+      }
+      if (c && c.userId) { const vu = voiceUsers.get(c.userId); if (vu) { if (vu.activeWs === ws) vu.activeWs = null; vu.closedAt = Date.now(); } }
       if (c) stagedByCaller.delete(callerKey(c));   // Plan 0522 P4: the controller is gone; its staging slot goes with it
       if (c && c.userId) unbindUser(c.userId, ws); conns.delete(ws); updateChatListeners();
       // Plan 0514 §4.2a — tell the plugin the seat is gone, but only when this PERSON has no
@@ -2981,6 +3002,81 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     return u;
   }
   function voiceHealthOf(c) { const u = voiceUserOf(c); return u ? u.health : null; }
+  /* ── Plan 0904 V1.6 — SILENCE vs BROKEN ───────────────────────────────────────────────────────
+   * Fed by the client's `voice_level` frames (every ~1.5 s: the window's raw and normalised peaks and
+   * the longest run of EXACT 0.0 input samples, in ms). Prior art: the Discord ear's "connected but zero
+   * PCM ⇒ dead" check; a session was once lost to exactly this silent failure.
+   *   silent-track    zeroRunMs ≥ 2000 — a live track delivering digital zeros (another app holds the mic)
+   *   floor-collapse  after the baseline window, a 5 s window whose peak is > 20 dB under the baseline
+   *                   AND under the noise floor (0.004) — so a quiet room with real room tone never fires
+   *   (stale)         no level frame for 3 s — the worklet or tab is gone; shown in the record, not guessed
+   * One fault per EPISODE: a detector re-arms only when its condition clears. */
+  const SILENT_TRACK_MS = 2000, LEVEL_STALE_MS = 3000, FLOOR_WINDOW_MS = 5000, NOISE_FLOOR = 0.004;
+  function voiceLevelIn(c, m) {
+    const h = voiceHealthOf(c); if (!h) return;
+    const now = Date.now();
+    const raw = Number.isFinite(m.raw) ? Math.max(0, m.raw) : 0;
+    const nrm = Number.isFinite(m.nrm) ? Math.max(0, m.nrm) : raw;
+    const zr = Number.isFinite(m.zeroRunMs) ? Math.max(0, m.zeroRunMs) : 0;
+    h.lastLevelTs = now; h.rawPeak = raw; h.nrmPeak = nrm;
+    if (h.firstLevelTs == null) h.firstLevelTs = now;
+    if (zr >= SILENT_TRACK_MS) {
+      if (!h.silentFaultOpen) { h.silentFaultOpen = true; h.zeroRuns++; emitVoiceFault(c, 'silent-track', 'the microphone track is delivering exact digital silence (' + Math.round(zr) + ' ms)'); }
+      return;   // zeros say nothing about the room level
+    }
+    if (raw > 0) h.silentFaultOpen = false;
+    if (now - h.firstLevelTs <= VOICE_BASELINE_MS) { h.baselineRms = ((h.baselineRms || 0) * h.baselineN + raw) / (h.baselineN + 1); h.baselineN++; return; }
+    const floorWindowMs = Math.min(FLOOR_WINDOW_MS, VOICE_BASELINE_MS);   // 5 s in a deployment; shorter only under the test seam
+    h.floorWindow.push({ ts: now, raw }); while (h.floorWindow.length && now - h.floorWindow[0].ts > floorWindowMs) h.floorWindow.shift();
+    const peak = Math.max(...h.floorWindow.map((w) => w.raw));
+    const spanMs = now - h.floorWindow[0].ts;
+    const collapsed = h.baselineRms > 0 && spanMs >= floorWindowMs * 0.5 && peak < h.baselineRms / 10 && peak < NOISE_FLOOR;
+    if (collapsed && !h.floorFaultOpen) { h.floorFaultOpen = true; emitVoiceFault(c, 'floor-collapse', 'input level fell more than 20 dB below this session\'s baseline'); }
+    else if (!collapsed && peak >= NOISE_FLOOR) h.floorFaultOpen = false;
+  }
+  const CLIENT_FAULT_CODES = new Set(['track-ended', 'wakelock-refused', 'ws-down', 'denied', 'evicted']);
+  function voiceClientFaultIn(c, m) {
+    const code = typeof m.code === 'string' ? m.code : '';
+    if (!CLIENT_FAULT_CODES.has(code)) { log.info('voice', 'client-fault-unknown', { socketId: c && c.id }); return; }
+    emitVoiceFault(c, code, typeof m.detail === 'string' ? m.detail : null);
+  }
+  const GAP_CAUSES = new Set(['reload', 'resume', 'evicted']);
+  function voiceGapIn(c, m) {
+    const cause = GAP_CAUSES.has(m.cause) ? m.cause : 'unknown';
+    emitVoiceGap(c, { fromTs: Number(m.fromTs), toTs: Number(m.toTs), cause });
+  }
+  function voiceSettingsIn(c, m) {
+    const h = voiceHealthOf(c); if (!h) return;
+    const b = (x) => (typeof x === 'boolean' ? x : null);
+    h.settings = { sampleRate: Number.isFinite(m.sampleRate) ? m.sampleRate : null, echoCancellation: b(m.echoCancellation), noiseSuppression: b(m.noiseSuppression),
+      autoGainControl: b(m.autoGainControl), label: typeof m.label === 'string' ? m.label.slice(0, 120) : null };
+  }
+  /** The record as a viewer reads it (control/agent-facing only). */
+  function voiceHealthView(userId) {
+    const u = voiceUsers.get(userId); if (!u) return null;
+    const h = u.health; const now = Date.now();
+    const anyC = socketsFor(userId).map((w) => conns.get(w)).find(Boolean);
+    return { userId, extRef: (anyC && anyC.extRef) || null, levelFresh: h.lastLevelTs != null && now - h.lastLevelTs <= LEVEL_STALE_MS,
+      levelAgeMs: h.lastLevelTs == null ? null : now - h.lastLevelTs, lastLevelTs: h.lastLevelTs, rawPeak: h.rawPeak, nrmPeak: h.nrmPeak, zeroRuns: h.zeroRuns,
+      segs: h.segs, bytes: h.bytes, text: h.text, tooShort: h.tooShort, dropped: h.dropped, empty: h.empty, failed: h.failed,
+      lastSegStartTs: h.lastSegStartTs, lastTextTs: h.lastTextTs, asrMsP50: h.asrMsP50, asrMsP95: h.asrMsP95,
+      gaps: h.gaps.slice(-5), lastFault: h.lastFault, settings: h.settings, connected: socketsFor(userId).length > 0 };
+  }
+  function voiceHealthAll() { return [...voiceUsers.keys()].map(voiceHealthView).filter(Boolean); }
+  /* Plan 0904 V1.4 — RESUME (the Gateway pattern, with the SEGMENT as the unit). Called from hello when
+   * the client sent `resume`. resumed:true iff this person's voice state is still held (a live socket,
+   * or a close within the grace). An interrupted segment is reported as a gap (cause 'resume'); the
+   * client then replays every segment it has no voice_result for, and dedup makes the replay safe. */
+  function voiceResume(c, resume) {
+    const vu = c && c.userId ? voiceUsers.get(c.userId) : null;
+    const held = !!(vu && (!vu.closedAt || Date.now() - vu.closedAt <= VOICE_RESUME_GRACE_MS));
+    if (held) {
+      vu.closedAt = null;
+      if (vu.interrupted) { emitVoiceGap(c, { fromTs: vu.interrupted.fromTs, toTs: Date.now(), cause: 'resume' }); vu.interrupted = null; }
+      log.info('voice', 'resumed', { userId: c.userId, lastAckedSeq: resume && Number.isFinite(resume.lastAckedSeq) ? resume.lastAckedSeq : null });
+    }
+    return held;
+  }
   function announceVoiceStatus(obj) {   // "recognizer ready" / status -> control roles only
     for (const [ws, c] of conns.entries()) if (c.role === 'presenter' || c.role === 'ai') send(ws, { t: 'voice_status', ...obj });
   }
@@ -3167,6 +3263,26 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     }
     ensureAsr();   // RT-25: warm the recognizer now, so the first utterance doesn't eat the model load
     v.active = true; v.seq = (typeof m.seq === 'number' ? m.seq : v.seq + 1); v.chunks = []; v.bytes = 0; v.startedAt = Date.now();
+    /* ── Plan 0904 V1.5 — TAKEOVER, keyed on the PERSON (userId), not the socket ────────────────────
+     * One identity may hold two devices (the same capability on a phone and in a browser). Only ONE of
+     * them is the microphone: the NEWER connection takes it, the older is told (`voice_moved`) and its
+     * segments are dropped BY NAME (status dropped, reason moved), so one utterance heard by both
+     * devices becomes exactly one transcript. A closed active socket is simply replaced. */
+    v.moved = false;
+    const vu = voiceUserOf(c);
+    if (vu) {
+      const cur = vu.activeWs;
+      const curC = cur && cur !== ws && cur.readyState === 1 ? conns.get(cur) : null;
+      if (!curC) vu.activeWs = ws;
+      else if (connOrdinal(c) > connOrdinal(curC)) {
+        vu.activeWs = ws;
+        send(cur, { t: 'voice_moved', to: 'another device' });
+        log.info('voice', 'moved', { userId: c.userId, from: curC.id, to: c.id });
+      } else {
+        v.moved = true;
+        send(ws, { t: 'voice_moved', to: 'another device' });
+      }
+    }
     // Plan 0904 V1.7/V1.4 — the client's own clock stamp (duration only; the server clock anchors it),
     // the declared codec (a hook: only pcm16 is accepted this round), and the client's stream id (the
     // dedup key for replay; absent ⇒ legacy behaviour, no dedup).
@@ -3273,8 +3389,10 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     if (ws && ws.readyState === 1) { send(ws, frame); return; }
     if (c && c.userId) for (const w of socketsFor(c.userId)) send(w, frame);
   }
+  function connOrdinal(c) { const n = parseInt(String((c && c.id) || '').replace(/^c/, ''), 10); return Number.isFinite(n) ? n : 0; }
   async function voiceSegFinalize(c, ws, { discard = false, reason, endedAt: clientEndedAt } = {}) {
     const v = c && c.voice; if (!v || !v.active) return;
+    if (v.moved && !discard) { discard = true; reason = 'moved'; }   // V1.5: the microphone is on another device
     if (v.timer) { clearTimeout(v.timer); v.timer = null; }
     v.active = false; voiceSessions = Math.max(0, voiceSessions - 1);
     evaluateFloor();   // Plan 0473 P6: a speaker yielding the floor lowers the load — reassess the floor
@@ -3772,7 +3890,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       get STALE_MS() { return STALE_MS; },
       get acks() { return acks; },
       get asr() { return asr; }, set asr(v) { asr = v; },
-      voiceUsers, voiceHealthOf,
+      voiceUsers, voiceHealthOf, voiceHealthView, voiceHealthAll,
       get beatDescriptor() { return beatDescriptor; },
       get bgAdapter() { return bgAdapter; },
       get buildSituation() { return buildSituation; },
@@ -3941,6 +4059,11 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     voiceSegStart,
     transcriptReaderOk,
     voiceTextIn,
+    voiceResume,
+    voiceLevelIn,
+    voiceClientFaultIn,
+    voiceGapIn,
+    voiceSettingsIn,
     entriesAfter,
     compactSpill,
     get seatResolver() { return seatResolver; },

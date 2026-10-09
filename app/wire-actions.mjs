@@ -51,7 +51,8 @@ export function createWireActions(ctx) {
     spotlight, spotlightLast, stationPlaceholder, stationRegistry, stationsActive,
     surfaceRegistry, surfacesActive, targets, telem, unbindUser,
     unpeekTo, updateChatListeners, verifyCapability, voiceAllowedFor, voiceSegFinalize,
-    voiceSegStart, transcriptReaderOk, voiceTextIn,
+    voiceSegStart, transcriptReaderOk, voiceTextIn, voiceResume,
+    voiceLevelIn, voiceClientFaultIn, voiceGapIn, voiceSettingsIn,
   } = ctx;
   const wireActions = new Map();
 
@@ -163,6 +164,8 @@ export function createWireActions(ctx) {
       c.trustReason = trustVerdict.reason || null;
       c.reauth = !!trustVerdict.reauth;
       bindUser(c.userId, ws);
+      // Plan 0904 V1.4 — a client that asks to resume learns whether its voice state was still held.
+      const resumed = (m.resume && typeof m.resume === 'object') ? voiceResume(c, m.resume) : undefined;
       // welcome.role = the EFFECTIVE granted role, so the client learns if it was
       // silently downgraded (wrong/absent password) and can surface feedback.
       // RT-26 consent surface: tell every client whether recognized speech is being written to
@@ -190,6 +193,7 @@ export function createWireActions(ctx) {
         // Plan 0904 V1.7 — the negotiation HOOK. Present only when the hello asked; the answer is fixed
         // this round (server recognition of PCM16) whatever the client offered.
         ...((m.voice && typeof m.voice === 'object') ? { voice: { mode: 'pcm', codec: 'pcm16', recognizers: [] } } : {}),
+        ...(resumed !== undefined ? { resumed } : {}),
         ...(stationsActive() ? {
           stationRegistry: stationRegistry.wire(),
           stationSelectorLabel: stationRegistry.selectorLabel,
@@ -551,10 +555,22 @@ export function createWireActions(ctx) {
       voiceTextIn(c, ws, m);
   });
 
+  /* Plan 0904 V1.6 — the HEALTH inputs. Each requires a connection that may open a microphone (the
+     same gate as a segment), so a stranger cannot raise faults about a seat. Never logged per frame:
+     a level frame updates the record and nothing else. */
+  const voiceOk = (c) => !!(c && c.userId && c.voiceAllowed === true);
+  wireActions.set("voice_level", ({ m, c }) => { if (voiceOk(c)) voiceLevelIn(c, m); });
+  wireActions.set("voice_settings", ({ m, c }) => { if (voiceOk(c)) voiceSettingsIn(c, m); });
+  wireActions.set("voice_client_fault", ({ m, c }) => { if (voiceOk(c)) voiceClientFaultIn(c, m); });
+  wireActions.set("voice_gap", ({ m, c }) => { if (voiceOk(c)) voiceGapIn(c, m); });
+
   wireActions.set("voicedbg", ({ m, c, ws, req }) => {
       // Plan 0476 P1: client voice stage-tracer (S1..S10 + level meter). Logs to the voice-debug ring
       // (visible via presenter_debug) — NEVER the inbox/transcript, so the transcript + echo line stay
       // clean. Untrusted client content is confined to a bounded log field.
+      // Plan 0904 V1.6 — the legacy level line feeds the health record instead of the log (it was ~240
+      // lines a minute at a six-mic table and pushed everything else out of the ring).
+      if (m && m.tag === 'L level' && m.data && typeof m.data === 'object') { if (voiceOk(c)) voiceLevelIn(c, { raw: m.data.raw, nrm: m.data.nrm }); return; }
       if (m && typeof m.tag === 'string') log.info('voicedbg', m.tag.slice(0, 48), { socketId: c && c.id, ...(m.data && typeof m.data === 'object' ? m.data : {}) });
   });
 
