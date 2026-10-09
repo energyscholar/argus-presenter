@@ -1,12 +1,12 @@
 /*
  * Plan 0904 V1.6 — the per-person voice HEALTH record, the silence-vs-broken detectors, and the
- * GM-only fault channel.
+ * operator-only fault channel.
  *
  *   T0904-18   exact digital zeros on a live track ⇒ lastLevelTs fresh, zeroRuns ≥ 1, a `silent-track`
  *              fault; levels stop ⇒ the record says the level is STALE; quiet-but-real noise ⇒ no fault;
  *              a floor collapse > 20 dB below the session baseline ⇒ `floor-collapse`; a client-reported
  *              ended track ⇒ `track-ended`.
- *   T0904-19   a player cap (no observe) never receives another seat's fault; the observe cap in the
+ *   T0904-19   a seat cap (no observe) never receives another seat's fault; the observe cap in the
  *              SAME world does; an observe cap in ANOTHER world does not; control roles do.
  *   T0904-18b  the record is exposed to control viewers (presence, attendance, api.voiceHealth) and
  *              never to a participant roster.
@@ -72,7 +72,7 @@ test('T0904-19 — faults reach control roles and same-world observe caps only',
     await until(() => faults(ctl).length, 'control got the fault');
     await wait(200);
     expect(faults(gm1)[0].ref === 'vtt:w1:p2' && framesOf(gm1, 'voice_gap')[0].cause === 'reload', 'same-world observer receives fault and gap', JSON.stringify(gm1.frames.filter((f) => /voice_/.test(f.t))));
-    expect(!faults(p1).length && !framesOf(p1, 'voice_gap').length, 'a player cap without observe receives nothing', JSON.stringify(p1.frames.map((f) => f.t)));
+    expect(!faults(p1).length && !framesOf(p1, 'voice_gap').length, 'a seat cap without observe receives nothing', JSON.stringify(p1.frames.map((f) => f.t)));
     expect(!faults(gm2).length && !framesOf(gm2, 'voice_gap').length, 'an observer in ANOTHER world receives nothing', JSON.stringify(gm2.frames.map((f) => f.t)));
     for (const c of [ctl, gm1, p1, gm2, p2]) c.ws.close();
   } finally { await s.close(); }

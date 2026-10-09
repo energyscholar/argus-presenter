@@ -112,7 +112,7 @@ test('T0904-12 — one token on two devices: the newer streams, the older is tol
   } finally { await s.close(); }
 });
 
-test('T0904-12b — two DIFFERENT capabilities for the SAME seat ref (a QR pairing and an in-VTT pairing): one mic, one transcript', async () => {
+test('T0904-12b — two DIFFERENT capabilities for the SAME seat ref (a QR pairing and an in-app pairing): one mic, one transcript', async () => {
   useStubAsr();
   const s = await createServer({ port: 0, voiceEnabled: true, capSecret: SECRET });
   try {

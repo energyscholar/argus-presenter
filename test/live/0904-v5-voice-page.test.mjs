@@ -1,5 +1,5 @@
 /*
- * Plan 0904 V5 — the phone page GET /voice (R5: the GM's primary path). Headless Chrome, a fake mic
+ * Plan 0904 V5 — the phone page GET /voice (R5: the primary path). Headless Chrome, a fake mic
  * (a WAV the browser loops), the stub ASR, a LOCAL server.
  *
  *   T0904-01  with a valid speak cap the page streams; the entry carries userName = the cap's name and
@@ -62,7 +62,7 @@ test('T0904-01 + T0904-05 — the page streams under a cap; mobile layout; cross
   } finally { await b.close(); await s.close(); try { unlinkSync(wav); } catch (e) {} }
 });
 
-test('T0904-02 — no cap, an expired cap, a type-only cap: FAULT on the page; the refusal reaches the GM', async () => {
+test('T0904-02 — no cap, an expired cap, a type-only cap: FAULT on the page; the refusal reaches the operator', async () => {
   useStubAsr();
   const wav = clip();
   const s = await createServer({ port: 0, voiceEnabled: true, capSecret: SECRET });

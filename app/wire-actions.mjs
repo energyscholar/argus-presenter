@@ -541,7 +541,7 @@ export function createWireActions(ctx) {
       if (!c || c.voiceAllowed !== true) {
         log.warn('voice', 'seg-start-denied', { socketId: c && c.id, userId: c && c.userId, trust: c && c.trust });
         send(ws, { t: 'voice_denied', reason: 'voice is granted per user, to signed-in accounts only' });
-        // Plan 0904 — a refused microphone is a FAULT the GM hears about, once per connection.
+        // Plan 0904 — a refused microphone is a FAULT the operator hears about, once per connection.
         if (c && !c.voiceDeniedReported) { c.voiceDeniedReported = true; ctx.emitVoiceFault(c, 'denied', 'this connection may not open a microphone'); }
       } else voiceSegStart(c, ws, m);
   });

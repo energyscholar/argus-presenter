@@ -231,7 +231,7 @@ export function createHttpHandler(ctx) {
 
   /* Plan 0904 R9a — device pairing. REGISTER is server-to-server: the control credential, and NO CORS
    * allowance ever (a browser origin cannot call it). REDEEM takes the secret C in a POST body and is
-   * callable cross-origin from a listed voice-client origin (Pattern A: the device's own VTT page). */
+   * callable cross-origin from a listed voice-client origin (Pattern A: the device's own page on another site). */
   function readJsonBody(req, res, cap, cb) {
     let body = '', over = false;
     req.on('data', (d) => { if (over) return; body += d; if (body.length > cap) { over = true; res.writeHead(413, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'too large' })); try { req.destroy(); } catch {} } });

@@ -1,5 +1,5 @@
 /*
- * Plan 0904 R9a — COMMIT-REVEAL DEVICE PAIRING (the device-code idea, adapted to a VTT that broadcasts
+ * Plan 0904 R9a — COMMIT-REVEAL DEVICE PAIRING (the device-code idea, adapted to a host app that broadcasts
  * everything). The device that will speak holds a random secret C; only H = SHA-256(C) travels through
  * the shared channel; a trusted relay registers H → seat with AP; the device redeems C once and receives
  * its capability. Anyone who saw H holds nothing usable.
@@ -34,13 +34,13 @@ test('T0904-R9a-1 — register H, redeem C once: a speak capability with the sea
   const s = await createServer({ port: 0, voiceEnabled: true, capSecret: SECRET, controlToken: TOKEN });
   try {
     const C = newC();
-    const reg = await register(s, sha(C), 'vtt:w1:u1', { name: 'Player One' });
+    const reg = await register(s, sha(C), 'vtt:w1:u1', { name: 'Seat One' });
     expect(reg.status === 200 && reg.body.ok === true, 'registration accepted', JSON.stringify(reg));
     const t0 = Math.floor(Date.now() / 1000);
     const red = await redeem(s, C);
     expect(red.status === 200 && typeof red.body.cap === 'string', 'redeem returns a capability', JSON.stringify(red));
     const v = verifyCapability(red.body.cap, SECRET);
-    expect(v.ok && v.payload.ref === 'vtt:w1:u1' && v.payload.scope.includes('speak') && v.payload.name === 'Player One', 'it carries the seat ref, speak, and the name', JSON.stringify(v.payload));
+    expect(v.ok && v.payload.ref === 'vtt:w1:u1' && v.payload.scope.includes('speak') && v.payload.name === 'Seat One', 'it carries the seat ref, speak, and the name', JSON.stringify(v.payload));
     const ttl = v.payload.exp - t0;
     expect(Math.abs(ttl - 8 * 3600) <= 5, 'the TTL is 8 hours', String(ttl));
     expect(red.body.ref === 'vtt:w1:u1' && typeof red.body.nonce === 'string' && red.body.exp === v.payload.exp, 'redeem echoes ref, nonce, exp', JSON.stringify(red.body));
@@ -117,7 +117,7 @@ test('T0904-R9a-6 — a pair-scoped capability registers for its own world only,
     gm.ws.send(JSON.stringify({ t: 'voice_pair_register', h: sha(C2), ref: 'vtt:w2:p1', name: 'X' }));
     pl.ws.send(JSON.stringify({ t: 'voice_pair_register', h: sha(C3), ref: 'vtt:w1:p9', name: 'Self' }));
     await until(() => gm.frames.filter((f) => f.t === 'voice_pair_registered').length >= 2, 'gm answers');
-    await until(() => frame(pl, (f) => f.t === 'voice_pair_registered'), 'player answer');
+    await until(() => frame(pl, (f) => f.t === 'voice_pair_registered'), 'seat answer');
     const answers = gm.frames.filter((f) => f.t === 'voice_pair_registered');
     expect(answers.find((a) => a.ref === 'vtt:w1:p1' && a.ok === true), 'same world: accepted', JSON.stringify(answers));
     expect(answers.find((a) => a.ref === 'vtt:w2:p1' && a.ok === false), 'another world: refused', JSON.stringify(answers));

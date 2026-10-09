@@ -1279,7 +1279,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
    * RULE: accepted when there is NO Origin (CLI / MCP / server clients send none — unchanged), when the
    * Origin is this server's own (its Host, or the host a proxy forwarded), or when it is a listed
    * voice-client origin (the same list the CORS headers use). Anything else: 403 at the upgrade. */
-  /* Plan 0904 R14 — a socket opened by a page on a LISTED OTHER origin (a VTT page) is a capability client and
+  /* Plan 0904 R14 — a socket opened by a page on a LISTED OTHER origin (e.g. a web app on another site) is a capability client and
    * nothing more. It never inherits the ambient sign-in: a SameSite=Lax cookie rides a same-site handshake, and a
    * tailnet peer address rides any; either would otherwise hand that page the operator's trust. */
   function foreignOrigin(req) {

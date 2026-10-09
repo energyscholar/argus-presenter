@@ -17,6 +17,7 @@
  *   Clips + any derived text stay in scratchpad — never commit private audio/transcripts.
  */
 import { spawn } from 'child_process';
+import { readFileSync } from 'fs';
 import { launchVoice } from './voice-browser.mjs';
 import { createServer } from '../app/server.mjs';
 
@@ -52,7 +53,8 @@ function transcribeClean(wavPath, model) {
       }
     });
     p.on('error', finish);
-    setTimeout(() => { p.stdin.write(wavPath + '\n'); }, 400);   // let the model load
+    // Plan 0904 V1.8 — the worker takes BYTES ("#<id> <n>\n" + the WAV), not a path.
+    setTimeout(() => { const wav = readFileSync(wavPath); p.stdin.write(`#1 ${wav.length}\n`); p.stdin.write(wav); }, 400);   // let the model load
     setTimeout(finish, 30000);
   });
 }
