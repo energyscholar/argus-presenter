@@ -1263,7 +1263,28 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     return { ok: false, reason: 'not-a-control-principal' };
   }
 
-  const wss = new WebSocketServer({ server: httpServer, maxPayload: MAX_PAYLOAD });
+  /* ── Plan 0904 V4 — THE ORIGIN CHECK AT THE UPGRADE ───────────────────────────────────────────
+   * WHY: the OIDC session cookie is SameSite=Lax (app/identity.mjs), so it rides a WebSocket handshake
+   * from any page on the SAME SITE, and a verified session is what voiceAllowedFor and the trust gate
+   * honour. This check is what protects that AMBIENT credential. A capability is not ambient (it is in
+   * the hello body) and needs no such protection.
+   * RULE: accepted when there is NO Origin (CLI / MCP / server clients send none — unchanged), when the
+   * Origin is this server's own (its Host, or the host a proxy forwarded), or when it is a listed
+   * voice-client origin (the same list the CORS headers use). Anything else: 403 at the upgrade. */
+  function upgradeOriginOk(req) {
+    const origin = req && req.headers && req.headers.origin;
+    if (!origin) return true;
+    if (VOICE_CLIENT_ORIGINS.has(origin)) return true;
+    let host = null; try { host = new URL(origin).host; } catch (e) { return false; }
+    const own = [req.headers.host, ...String(req.headers['x-forwarded-host'] || '').split(',')].map((x) => String(x || '').trim().toLowerCase()).filter(Boolean);
+    return own.includes(String(host).toLowerCase());
+  }
+  const wss = new WebSocketServer({ server: httpServer, maxPayload: MAX_PAYLOAD,
+    verifyClient: (info, cb) => {
+      if (upgradeOriginOk(info.req)) return cb(true);
+      try { log.warn('ws', 'origin-refused', { origin: String(info.req.headers.origin || '').slice(0, 120) }); } catch {}
+      return cb(false, 403, 'origin not allowed');
+    } });
   // Plan 0471 C1: a server-level socket error (bad handshake, etc.) must never reach
   // Node's default "Unhandled 'error'" path (which terminates the process).
   wss.on('error', (e) => { try { log.warn('wss', 'error', { err: String(e && e.message || e) }); } catch {} });
