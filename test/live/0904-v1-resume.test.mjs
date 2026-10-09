@@ -111,3 +111,21 @@ test('T0904-12 — one token on two devices: the newer streams, the older is tol
     older.ws.close(); newer.ws.close();
   } finally { await s.close(); }
 });
+
+test('T0904-12b — two DIFFERENT capabilities for the SAME seat ref (a QR pairing and an in-VTT pairing): one mic, one transcript', async () => {
+  useStubAsr();
+  const s = await createServer({ port: 0, voiceEnabled: true, capSecret: SECRET });
+  try {
+    const older = await connect(s.url(), { cap: mkCap({ ref: 'vtt:w1:u8', nonce: 'seat-a' }).token });
+    const newer = await connect(s.url(), { cap: mkCap({ ref: 'vtt:w1:u8', nonce: 'seat-b' }).token });
+    speak(older, 1); await until(() => resultFor(older, 1), 'older first');
+    speak(newer, 1); await until(() => resultFor(newer, 1), 'newer first');
+    await until(() => frame(older, (f) => f.t === 'voice_moved'), 'the older device is told');
+    const n0 = s.getInbox().items.filter((i) => i.extRef === 'vtt:w1:u8').length;
+    speak(older, 2); speak(newer, 2);
+    await until(() => resultFor(older, 2) && resultFor(newer, 2), 'both results');
+    await wait(150);
+    expect(s.getInbox().items.filter((i) => i.extRef === 'vtt:w1:u8').length === n0 + 1, 'exactly one entry for the seat', String(s.getInbox().items.filter((i) => i.extRef === 'vtt:w1:u8').length - n0));
+    older.ws.close(); newer.ws.close();
+  } finally { await s.close(); }
+});

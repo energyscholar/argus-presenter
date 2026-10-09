@@ -1592,7 +1592,8 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
           if (socketsFor(c.userId).some((w) => w !== ws)) { emitVoiceGap(c, { fromTs: vu.interrupted.fromTs, toTs: vu.interrupted.toTs, cause: 'resume' }); vu.interrupted = null; }
         }
       }
-      if (c && c.userId) { const vu = voiceUsers.get(c.userId); if (vu) { if (vu.activeWs === ws) vu.activeWs = null; vu.closedAt = Date.now(); } }
+      if (c && c.userId) { const vu = voiceUsers.get(c.userId); if (vu) vu.closedAt = Date.now(); }
+      if (c) { const seat = c.extRef || c.userId; if (seat && micHolders.get(seat) === ws) micHolders.delete(seat); }   // Plan 0904 V1.5
       if (c) stagedByCaller.delete(callerKey(c));   // Plan 0522 P4: the controller is gone; its staging slot goes with it
       if (c && c.userId) unbindUser(c.userId, ws); conns.delete(ws); updateChatListeners();
       // Plan 0514 §4.2a — tell the plugin the seat is gone, but only when this PERSON has no
@@ -3081,7 +3082,8 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   }
   /* Per-person voice state (keyed on userId, so it survives a socket and is shared by every device
    * holding the same identity): health record, result cache for replay dedup, the active device. */
-  const voiceUsers = new Map();   // userId -> { health, results: Map, order: [], inflight: Map, activeWs, closedAt }
+  const voiceUsers = new Map();   // userId -> { health, results: Map, order: [], inflight: Map, closedAt }
+  const micHolders = new Map();   // seat (extRef, else userId) -> the ws that holds the microphone (V1.5 takeover)
   const VOICE_RESULT_CACHE = 64;
   function voiceUserOf(c) {
     if (!c || !c.userId) return null;
@@ -3090,7 +3092,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       u = { health: { lastLevelTs: null, rawPeak: 0, nrmPeak: 0, zeroRuns: 0, segs: 0, bytes: 0, text: 0, tooShort: 0, dropped: 0, empty: 0, failed: 0,
               lastSegStartTs: null, lastTextTs: null, asrMs: [], asrMsP50: null, asrMsP95: null, gaps: [], faults: [], lastFault: null, settings: null,
               baselineRms: null, baselineN: 0, firstLevelTs: null, floorWindow: [], silentFaultOpen: false, floorFaultOpen: false },
-            results: new Map(), order: [], inflight: new Map(), activeWs: null, closedAt: null };
+            results: new Map(), order: [], inflight: new Map(), closedAt: null };
       voiceUsers.set(c.userId, u);
     }
     return u;
@@ -3414,21 +3416,23 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     }
     ensureAsr();   // RT-25: warm the recognizer now, so the first utterance doesn't eat the model load
     v.active = true; v.seq = (typeof m.seq === 'number' ? m.seq : v.seq + 1); v.chunks = []; v.bytes = 0; v.startedAt = Date.now();
-    /* ── Plan 0904 V1.5 — TAKEOVER, keyed on the PERSON (userId), not the socket ────────────────────
-     * One identity may hold two devices (the same capability on a phone and in a browser). Only ONE of
-     * them is the microphone: the NEWER connection takes it, the older is told (`voice_moved`) and its
-     * segments are dropped BY NAME (status dropped, reason moved), so one utterance heard by both
-     * devices becomes exactly one transcript. A closed active socket is simply replaced. */
+    /* ── Plan 0904 V1.5 — TAKEOVER, keyed on the SEAT, not the socket ───────────────────────────────
+     * One seat may hold two devices: the same capability on a phone and in a browser (same userId), or —
+     * since R9a mints a fresh capability per pairing — two capabilities carrying the same signed seat ref.
+     * The seat is therefore the ref when there is one, else the userId. Only ONE device per seat is the
+     * microphone: the NEWER connection takes it, the older is told (`voice_moved`) and its segments are
+     * dropped BY NAME (status dropped, reason moved), so one utterance heard by both devices becomes
+     * exactly one transcript. A closed holder is simply replaced. */
     v.moved = false;
-    const vu = voiceUserOf(c);
-    if (vu) {
-      const cur = vu.activeWs;
+    const seat = c.extRef || c.userId;
+    if (seat) {
+      const cur = micHolders.get(seat);
       const curC = cur && cur !== ws && cur.readyState === 1 ? conns.get(cur) : null;
-      if (!curC) vu.activeWs = ws;
+      if (!curC) micHolders.set(seat, ws);
       else if (connOrdinal(c) > connOrdinal(curC)) {
-        vu.activeWs = ws;
+        micHolders.set(seat, ws);
         send(cur, { t: 'voice_moved', to: 'another device' });
-        log.info('voice', 'moved', { userId: c.userId, from: curC.id, to: c.id });
+        log.info('voice', 'moved', { userId: c.userId, seat: c.extRef ? 'ref' : 'user', from: curC.id, to: c.id });
       } else {
         v.moved = true;
         send(ws, { t: 'voice_moved', to: 'another device' });
