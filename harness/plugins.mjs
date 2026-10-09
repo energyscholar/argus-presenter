@@ -126,10 +126,18 @@ function emptyRegistry() {
  * THROWS on: two declaring plugins, a duplicate uid/code/label, a malformed field, or a
  * `stationDefaultUid` that does not resolve.
  *
+ * ⛔ A row whose `domain` is in NON_SEAT_DOMAINS (plan 0894 F1: `place`, a station a PLACE offers to a role,
+ * served by another client) is VALIDATED like every row, so a collision with a seat still throws, but it is
+ * NOT A SEAT: it never enters `list`, never resolves through `get`, never reaches `wire()`, and cannot be the
+ * default.
+ *
  * `log` is optional and is used only for non-fatal reports (a `stationScreen.svgFile` that is
  * missing on disk degrades that ONE station to "no screen" — a missing artwork must never take
  * the server down).
  */
+/** Station-row domains that are rows of the manifest but never seats in this presenter (plan 0894 F1). */
+export const NON_SEAT_DOMAINS = Object.freeze(['place']);
+
 export function buildStationRegistry(manifests = loadManifests(), { log = null } = {}) {
   const declaring = Object.keys(manifests).filter((n) => manifests[n] && manifests[n].stations !== undefined);
   if (declaring.length === 0) return emptyRegistry();
@@ -143,6 +151,7 @@ export function buildStationRegistry(manifests = loadManifests(), { log = null }
   if (!rows.length) return emptyRegistry();
 
   const byUid = new Map();
+  const seenUids = new Set();                 // uids of validated NON-seat rows (collisions still throw)
   const codes = new Set();
   const labels = new Set();
   const list = [];
@@ -150,7 +159,7 @@ export function buildStationRegistry(manifests = loadManifests(), { log = null }
     if (!row || typeof row !== 'object') throw new Error('station registry: each station must be an object');
     const { stationUid, stationCode, stationLabel } = row;
     if (!Number.isInteger(stationUid) || stationUid < 1) throw new Error(`station registry: stationUid must be an integer >= 1 (got ${JSON.stringify(stationUid)})`);
-    if (byUid.has(stationUid)) throw new Error(`station registry: duplicate stationUid ${stationUid}`);
+    if (byUid.has(stationUid) || seenUids.has(stationUid)) throw new Error(`station registry: duplicate stationUid ${stationUid}`);
     if (typeof stationCode !== 'string' || !STATION_CODE_RE.test(stationCode)) throw new Error(`station registry: stationCode must match [a-z0-9-]+ (got ${JSON.stringify(stationCode)})`);
     if (codes.has(stationCode)) throw new Error(`station registry: duplicate stationCode ${stationCode}`);
     if (typeof stationLabel !== 'string' || !stationLabel.trim()) throw new Error(`station registry: stationLabel must be a non-empty string (uid ${stationUid})`);
@@ -168,8 +177,9 @@ export function buildStationRegistry(manifests = loadManifests(), { log = null }
       maxOccupants, sortOrder,
       stationScreen: resolveStationScreen(pluginName, row, log),
     };
-    byUid.set(stationUid, station);
     codes.add(stationCode); labels.add(stationLabel);
+    if (NON_SEAT_DOMAINS.includes(row.domain)) { seenUids.add(stationUid); continue; }
+    byUid.set(stationUid, station);
     list.push(station);
   }
   list.sort((a, b) => a.sortOrder - b.sortOrder || a.stationUid - b.stationUid);

@@ -14,6 +14,7 @@
  */
 import { test, expect } from '../../harness/test.mjs';
 import { createServer } from '../../app/server.mjs';
+import { NON_SEAT_DOMAINS } from '../../harness/plugins.mjs';
 import { WebSocket } from 'ws';
 import { readFileSync } from 'fs';
 import { join } from 'path';
@@ -61,7 +62,10 @@ test('t0514-13 — options carry value={stationUid}, grouped by `group`, ordered
   try {
     const c = await connect(WebSocket, url, { userId: 'u', userName: 'U' });
     const reg = last(c, 'welcome').stationRegistry;
-    expect(reg.length === MANIFEST.stations.length, 'every declared station is relayed', String(reg.length));
+    /* ⚠ DECLARED CHANGE (plan 0894 F1): a row whose domain is in NON_SEAT_DOMAINS (`place`) is validated but is never a
+       seat, so "every declared station" means every declared SEAT row. */
+    const seats = MANIFEST.stations.filter((st) => !NON_SEAT_DOMAINS.includes(st.domain));
+    expect(reg.length === seats.length, 'every declared seat station is relayed', `${reg.length} of ${seats.length}`);
     expect(reg.every((r, i) => i === 0 || reg[i - 1].sortOrder <= r.sortOrder), 'relayed in sortOrder', JSON.stringify(reg.map((r) => r.sortOrder)));
     expect(reg.every((r) => Number.isInteger(r.stationUid) && typeof r.stationLabel === 'string' && r.group), 'uid + label + group present');
     expect(last(c, 'welcome').stationSelectorLabel === MANIFEST.stationSelectorLabel,
