@@ -18,7 +18,7 @@ import http from 'http';
 import { createHash, randomInt, randomBytes } from 'node:crypto';
 import { readFileSync, readdirSync, statSync, existsSync, writeFileSync, watch, mkdirSync, unlinkSync, renameSync, appendFileSync, lstatSync } from 'fs';
 import { fileURLToPath, pathToFileURL } from 'url';
-import { dirname, join } from 'path';
+import { dirname, join, resolve as resolvePath } from 'path';
 import { tmpdir } from 'os';
 import { WebSocketServer } from 'ws';
 import { assemble, apMark, apPerfTake, apPerfReset } from '../harness/assemble.mjs';
@@ -184,7 +184,7 @@ function sendStatic(res, req, absPath, contentType, extraHeaders = null) {
   } catch (e) { res.writeHead(404); res.end('not found'); }
 }
 
-export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null, profile = DEFAULT_PROFILE, settlingMs = null, queueMaxPending = null, queueTtlMs = null, perTurnBudgetMs = null, perTurnWrapMs = null, floorThresholds = null, sessionLogDir = null, enforceOAuth = undefined, allowPasswordCommandOnLAN = undefined, allowlist = null, oidc = null, oidcDeps = null, oidcSessionTtlMs = null, tailscale = null, tailscaleResolve = null, tailscaleWhois = null, breakGlass = null, breakGlassDeps = null, revokedNonceFile = null, sessionStoreFile = null, bindHosts = null, cursorDir = null, stateDir = null, statePaths = null, stateQuietMs = null, stateMaxMs = null, logRingMax = null, voiceBaselineMs = null, voiceClientOrigins = null, voicePairRegistrationMs = null, voicePairTtlMs = null } = {}) {
+export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null, profile = DEFAULT_PROFILE, settlingMs = null, queueMaxPending = null, queueTtlMs = null, perTurnBudgetMs = null, perTurnWrapMs = null, floorThresholds = null, sessionLogDir = null, enforceOAuth = undefined, allowPasswordCommandOnLAN = undefined, allowlist = null, oidc = null, oidcDeps = null, oidcSessionTtlMs = null, tailscale = null, tailscaleResolve = null, tailscaleWhois = null, breakGlass = null, breakGlassDeps = null, revokedNonceFile = null, sessionStoreFile = null, bindHosts = null, cursorDir = null, stateDir = null, statePaths = null, stateQuietMs = null, stateMaxMs = null, logRingMax = null, voiceBaselineMs = null, voiceClientOrigins = null, voicePairRegistrationMs = null, voicePairTtlMs = null, record = null, transcriptDir = null, campaignId = null } = {}) {
   // Plan 0543 P1 — the AUTH POLICY dial. Validated HERE (the single startup path shared by the CLI
   // self-run and presenter_start): an unknown enforceOAuth value THROWS rather than falling through
   // to a policy the deployer never chose. This slice is plumbing only — P3 makes the policy govern.
@@ -2921,20 +2921,81 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   // appended to a STABLE file under PRESENTER_TRANSCRIPT_DIR (so a restart appends, not truncates).
   // Audio segment WAVs are ALWAYS deleted after ASR regardless of the flag — only text is ever
   // persistable. When ON, clients are TOLD (welcome.transcriptPersisting) — never save silently.
-  const TRANSCRIPT_PERSIST = /^(1|true|yes|on)$/i.test(process.env.PRESENTER_TRANSCRIPT_PERSIST || '');
-  // ⛔⛔ Plan 0684 R2 — THIS DEFAULT IS THE DEFECT, and it is left in place ON PURPOSE. It resolves
-  // INSIDE the release tree; the deploy pipeline keeps ten releases and prunes the rest, so
-  // recording here works visibly and is then deleted by a later prune. Phase 0b is INERT and may
-  // not change what is recorded or where, so the refusal lives one layer up: a ROOM that declares
-  // `record` other than "none" and names no `transcriptDir` (and has no $PRESENTER_TRANSCRIPT_DIR)
-  // is refused at startup — see assertRecordingIsDurable in lib/deployment-config.mjs. ⇒ When the
-  // phase that wires rooms to recording arrives, THIS LINE is what it replaces.
-  const TRANSCRIPT_DIR = process.env.PRESENTER_TRANSCRIPT_DIR || join(__dirname, '..', '.transcripts');
-  const TRANSCRIPT_FILE = join(TRANSCRIPT_DIR, 'transcripts.jsonl');
-  // RT-26 (Plan 0472: applies to TEXT too). Persist ONE JSONL line per inbox item — voice or text —
-  // only when PRESENTER_TRANSCRIPT_PERSIST is ON. Default OFF ⇒ nothing touches disk (ephemeral ring).
+  /* ── Plan 0904 V2 — THE ARCHIVE (R3 retention, R11 server disk only) ─────────────────────────
+   * The room's `record` ("none" | a retention like "30d") DRIVES persistence and `transcriptDir` is its
+   * home. One file per UTC day, `transcripts-YYYY-MM-DD.jsonl`; each line is the WHOLE inbox entry plus
+   * `campaignId` and, the first time a seat ref is archived after its consent sentence was shown,
+   * `consentShownTs`. A sweep at startup and daily deletes day files whose whole day is past the
+   * retention. ⛔ It never writes into the code tree: a transcriptDir inside it is refused at startup,
+   * and so is recording with no transcriptDir (the old fallback into the release tree is RETIRED).
+   * The env var PRESENTER_TRANSCRIPT_PERSIST survives as a TEST SEAM only (legacy single-file shape,
+   * and only with an explicit PRESENTER_TRANSCRIPT_DIR). welcome.transcriptPersisting is DERIVED from
+   * what is actually being written, so the consent surface cannot lie. */
+  const RECORD_RE = /^([1-9][0-9]*)([smhdw])$/;
+  const RECORD_UNIT_MS = { s: 1000, m: 60000, h: 3600000, d: 86400000, w: 604800000 };
+  if (record !== null && record !== undefined && !(record === 'none' || (typeof record === 'string' && RECORD_RE.test(record)))) {
+    throw new Error(`record must be "none" or a retention like "30d" (got ${JSON.stringify(record)}); the boolean true is not a retention policy`);
+  }
+  const ARCHIVE_ON = typeof record === 'string' && record !== 'none';
+  const CODE_TREE = resolvePath(__dirname, '..');
+  const ARCHIVE_DIR_T = ARCHIVE_ON ? (() => {
+    if (typeof transcriptDir !== 'string' || !transcriptDir.trim()) throw new Error(`record is "${record}" but no transcriptDir was given — a recording with nowhere durable to go is refused (the old default inside the release tree is retired)`);
+    const abs = resolvePath(transcriptDir.trim());
+    const rel = abs.startsWith(CODE_TREE + '/') || abs === CODE_TREE;
+    if (rel) throw new Error(`transcriptDir ${abs} is inside the code tree (release/repo) — transcripts never go into a repo or a release; choose a directory outside it`);
+    return abs;
+  })() : null;
+  const RETENTION_MS = ARCHIVE_ON ? Number(RECORD_RE.exec(record)[1]) * RECORD_UNIT_MS[RECORD_RE.exec(record)[2]] : null;
+  const CAMPAIGN_ID = (typeof campaignId === 'string' && campaignId.trim()) ? campaignId.trim() : null;
+  const LEGACY_PERSIST = !ARCHIVE_ON && /^(1|true|yes|on)$/i.test(process.env.PRESENTER_TRANSCRIPT_PERSIST || '') && !!process.env.PRESENTER_TRANSCRIPT_DIR;
+  if (!ARCHIVE_ON && /^(1|true|yes|on)$/i.test(process.env.PRESENTER_TRANSCRIPT_PERSIST || '') && !process.env.PRESENTER_TRANSCRIPT_DIR) {
+    log.warn('voice', 'transcript-persist-refused', { reason: 'PRESENTER_TRANSCRIPT_PERSIST without PRESENTER_TRANSCRIPT_DIR — the fallback inside the release tree is retired; nothing is written' });
+  }
+  const TRANSCRIPT_PERSIST = ARCHIVE_ON || LEGACY_PERSIST;   // what welcome.transcriptPersisting reports
+  const TRANSCRIPT_RETENTION = ARCHIVE_ON ? record : null;
+  const TRANSCRIPT_DIR = ARCHIVE_ON ? ARCHIVE_DIR_T : (process.env.PRESENTER_TRANSCRIPT_DIR || null);
+  const TRANSCRIPT_FILE = TRANSCRIPT_DIR ? join(TRANSCRIPT_DIR, 'transcripts.jsonl') : null;   // legacy seam only
+  const DAY_FILE_RE = /^transcripts-(\d{4}-\d{2}-\d{2})\.jsonl$/;
+  const consentShown = new Map();       // ref -> shownTs, reported by the client page that showed the sentence
+  const consentArchived = new Set();    // refs whose consentShownTs is already on disk (survives restart via consent.json)
+  if (ARCHIVE_ON) {
+    try { mkdirSync(TRANSCRIPT_DIR, { recursive: true }); } catch (e) { log.warn('voice', 'archive-mkdir-fail', { msg: String(e && e.message || e) }); }
+    try { const j = JSON.parse(readFileSync(join(TRANSCRIPT_DIR, 'consent.json'), 'utf8')); if (Array.isArray(j)) for (const r of j) if (typeof r === 'string') consentArchived.add(r); } catch (e) { /* first run */ }
+  }
+  function sweepArchive(now = Date.now()) {
+    if (!ARCHIVE_ON) return 0;
+    let removed = 0;
+    let names = []; try { names = readdirSync(TRANSCRIPT_DIR); } catch (e) { return 0; }
+    for (const n of names) {
+      const m = DAY_FILE_RE.exec(n); if (!m) continue;           // only OUR day files are ever touched
+      const dayStart = Date.parse(m[1] + 'T00:00:00Z'); if (!Number.isFinite(dayStart)) continue;
+      if (now - (dayStart + 86400000) > RETENTION_MS) { try { unlinkSync(join(TRANSCRIPT_DIR, n)); removed++; } catch (e) {} }
+    }
+    if (removed) log.info('voice', 'archive-swept', { removed, retention: record });
+    return removed;
+  }
+  sweepArchive();
+  const archiveSweepTimer = ARCHIVE_ON ? setInterval(() => sweepArchive(), 86400000) : null;
+  if (archiveSweepTimer && archiveSweepTimer.unref) archiveSweepTimer.unref();
+  function voiceConsentIn(c, m) {
+    const ref = c && c.extRef; if (!ref) return;
+    if (!consentShown.has(ref)) consentShown.set(ref, Number.isFinite(m.shownTs) ? m.shownTs : Date.now());
+  }
+  // RT-26 / Plan 0904 V2 — persist ONE line per inbox item (voice AND text) when the archive is on.
   function persistInboxItem(e) {
-    if (!TRANSCRIPT_PERSIST) return;   // default OFF: nothing touches disk
+    if (ARCHIVE_ON) {
+      const line = Object.assign({}, e, { campaignId: CAMPAIGN_ID });
+      if (e.extRef && !consentArchived.has(e.extRef) && consentShown.has(e.extRef)) {
+        line.consentShownTs = consentShown.get(e.extRef);
+        consentArchived.add(e.extRef);
+        try { writeFileSync(join(TRANSCRIPT_DIR, 'consent.json'), JSON.stringify([...consentArchived])); } catch (err) {}
+      }
+      const f = join(TRANSCRIPT_DIR, `transcripts-${new Date(e.ts || Date.now()).toISOString().slice(0, 10)}.jsonl`);
+      try { appendFileSync(f, JSON.stringify(line) + '\n'); }
+      catch (err) { log.warn('voice', 'transcript-persist-fail', { msg: String(err && err.message || err) }); }   // best effort (R11): reported, never blocks play
+      return;
+    }
+    if (!LEGACY_PERSIST) return;   // default OFF: nothing touches disk
     try { mkdirSync(TRANSCRIPT_DIR, { recursive: true }); appendFileSync(TRANSCRIPT_FILE, JSON.stringify({ ts: e.ts, kind: e.kind, userId: e.userId, userName: e.userName, role: e.role, trust: e.trust, seq: e.seq, text: e.text, conf: e.conf }) + '\n'); }
     catch (err) { log.warn('voice', 'transcript-persist-fail', { msg: String(err && err.message || err) }); }
   }
@@ -4123,6 +4184,8 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     voiceSegFinalize,
     voiceSegStart,
     transcriptReaderOk,
+    voiceConsentIn,
+    TRANSCRIPT_RETENTION,
     voicePairRegisterWs,
     voiceTextIn,
     voiceResume,
@@ -4243,6 +4306,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     // Plan 0650 — extra listen addresses (e.g. the tailnet interface), so a tailnet peer can reach
     // the server and be identified by `tailscale whois`. Absent ⇒ loopback only, unchanged.
     bindHosts: bindHostsConfig(),
+    /* Plan 0904 V2 — the ROOM's recording policy drives the archive: `record` and `transcriptDir`
+     * (with their documented env fallbacks, resolved by roomConfig) and the room's `campaignId`.
+     * A room that records with no durable transcriptDir was already refused by roomConfig(). */
+    ...(() => { try { const rc = roomConfig(); const cap = rc.capabilities || {}; return { record: cap.record || 'none', transcriptDir: cap.transcriptDir || null, campaignId: (rc.room && typeof rc.room.campaignId === 'string') ? rc.room.campaignId : null }; } catch (e) { return {}; } })(),
     /*
      * Plan 0720 RUN C (F18) — THE LIVE SESSION SURVIVES A RESTART, and the resolution happens HERE
      * rather than inside createServer() for exactly the reason the session log does: a bare

@@ -52,6 +52,7 @@ export function createWireActions(ctx) {
     surfaceRegistry, surfacesActive, targets, telem, unbindUser,
     unpeekTo, updateChatListeners, verifyCapability, voiceAllowedFor, voiceSegFinalize,
     voiceSegStart, transcriptReaderOk, voiceTextIn, voiceResume, voicePairRegisterWs,
+    voiceConsentIn, TRANSCRIPT_RETENTION,
     voiceLevelIn, voiceClientFaultIn, voiceGapIn, voiceSettingsIn,
   } = ctx;
   const wireActions = new Map();
@@ -183,7 +184,7 @@ export function createWireActions(ctx) {
       // Plan 0514 §8: the registry, this seat's station and its spotlight grant all ride the
       // welcome, so a client rebuilds its selector AND RESTORES ITS OWN STATE ON RECONNECT —
       // the 0508 D1 class of bug, designed out rather than patched.
-      send(ws, { t: 'welcome', userId: c.userId, userName: c.userName, socketId: c.id, role: c.role, transcriptPersisting: TRANSCRIPT_PERSIST,
+      send(ws, { t: 'welcome', userId: c.userId, userName: c.userName, socketId: c.id, role: c.role, transcriptPersisting: TRANSCRIPT_PERSIST, ...(TRANSCRIPT_RETENTION ? { transcriptRetention: TRANSCRIPT_RETENTION } : {}),
         // Plan 0543 P3 — the client learns its COMMAND-TRUST (distinct from role): whether its words
         // may become an instruction. `authReason` explains a fenced verdict ("signed in, not
         // authorized" — the E/C dead-end fix); `reauth:true` asks a lapsed session to re-authenticate
@@ -564,6 +565,8 @@ export function createWireActions(ctx) {
   wireActions.set("voice_client_fault", ({ m, c }) => { if (voiceOk(c)) voiceClientFaultIn(c, m); });
   wireActions.set("voice_gap", ({ m, c }) => { if (voiceOk(c)) voiceGapIn(c, m); });
 
+  // Plan 0904 V2/§4.11 — the page showed the consent sentence (once per seat ref, archived once).
+  wireActions.set("voice_consent", ({ m, c }) => { if (voiceOk(c)) voiceConsentIn(c, m); });
   // Plan 0904 R9a — a `pair`-scoped capability registers H for a seat in its own world.
   wireActions.set("voice_pair_register", ({ m, c, ws }) => { voicePairRegisterWs(c, ws, m); });
 

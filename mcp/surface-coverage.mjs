@@ -96,6 +96,9 @@ export const CONSTRUCTOR_COVERAGE = {
   voiceClientOrigins:        { declined: 'DEPLOYMENT CONFIG / SECURITY (Plan 0904 V1.9/V4) — which other-site origins may load the voice client modules and redeem a pairing. A security boundary the operator declares; an agent must not widen it mid-session.', deploymentOnly: false },
   voicePairRegistrationMs:   { declined: 'TEST SEAM (Plan 0904 R9a) — how long a pairing registration waits to be redeemed (10 min in a deployment). Driven low to prove expiry.', deploymentOnly: false },
   voicePairTtlMs:            { declined: 'DEPLOYMENT CONFIG (Plan 0904 R9a) — the lifetime of a paired device capability (8 h by ruling).', deploymentOnly: false },
+  record:                    { declined: 'DEPLOYMENT CONFIG / CONSENT (Plan 0904 V2, R3) — the room\'s recording policy ("none" | a retention). Declared in the deployment file; an agent must never start recording people mid-session.', deploymentOnly: false },
+  transcriptDir:             { declined: 'DEPLOYMENT CONFIG (Plan 0904 V2, R11) — where the archive lives: server disk outside the code tree, never a repo.', deploymentOnly: false },
+  campaignId:                { declined: 'DEPLOYMENT CONFIG (Plan 0904 V2, R3) — stamped on every archived line so campaign-end deletion is mechanical.', deploymentOnly: false },
 };
 
 // --- api surface ------------------------------------------------------------------------
