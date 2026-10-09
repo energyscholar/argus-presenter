@@ -91,6 +91,11 @@ export const CONSTRUCTOR_COVERAGE = {
   statePaths:                { declined: 'DEPLOYMENT CONFIG (Plan 0720 RUN C) — which top-level store prefixes are durable. An ALLOW list, so a volatile prefix added later is not persisted by accident. Deployment-shaped, not per-call: two servers on one deployment disagreeing about what survives a restart is the bug this prevents.', deploymentOnly: false },
   stateQuietMs:              { declined: 'TEST SEAM (Plan 0720 RUN C) — the debounce quiet period for the durable-state write, driven to a few ms so the suite can prove a write happens without waiting a real second. Not a session capability.', deploymentOnly: false },
   stateMaxMs:                { declined: 'TEST SEAM (Plan 0720 RUN C) — the debounce CEILING: the longest an unwritten change may sit while changes keep arriving. Driven low so the suite can prove a continuous drag does not starve the write forever. Not a session capability.', deploymentOnly: false },
+  logRingMax:                { declined: 'DEPLOYMENT CONFIG (Plan 0904 V1.6) — the size of the in-memory log ring presenter_debug reads. Set at startup (or PRESENTER_LOG_RING_MAX); not a session capability.', deploymentOnly: false },
+  voiceBaselineMs:           { declined: 'TEST SEAM (Plan 0904 V1.6) — how long the floor-collapse detector learns a session baseline (60 s in a deployment). Driven low so the suite can prove the detector without waiting a minute.', deploymentOnly: false },
+  voiceClientOrigins:        { declined: 'DEPLOYMENT CONFIG / SECURITY (Plan 0904 V1.9/V4) — which other-site origins may load the voice client modules and redeem a pairing. A security boundary the operator declares; an agent must not widen it mid-session.', deploymentOnly: false },
+  voicePairRegistrationMs:   { declined: 'TEST SEAM (Plan 0904 R9a) — how long a pairing registration waits to be redeemed (10 min in a deployment). Driven low to prove expiry.', deploymentOnly: false },
+  voicePairTtlMs:            { declined: 'DEPLOYMENT CONFIG (Plan 0904 R9a) — the lifetime of a paired device capability (8 h by ruling).', deploymentOnly: false },
 };
 
 // --- api surface ------------------------------------------------------------------------
@@ -277,6 +282,9 @@ export const API_COVERAGE = {
   mintCap:             { tool: 'mint_cap' },      // Plan 0543 P4 — guest seat links, sid = seat slug
   revokeCap:           { tool: 'revoke_cap' },    // Plan 0543 P4 — revoke by nonce, persisted across restart
   isCapRevoked:        { declined: INTERNAL },
+  voiceHealth:         { tool: 'presenter_health_deep' },   // Plan 0904 V1.6 — per-person voice health rides health_deep
+  voicePairRegister:   { tool: 'voice_pair_register' },     // Plan 0904 R9a — the assistant as the pairing relay
+  _voiceAsrPidForTest: { declined: 'test-only seam — the ASR worker pid, so a test can kill the engine and prove the failure is reported' },
 
   // --- moderation / floor
   muteParticipant:     { declined: 'NOT YET EXPOSED — owed; teaching profile needs it.' },

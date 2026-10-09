@@ -360,7 +360,8 @@ export function createApiSurface(M) {
     getPvsSubscriberCount: () => M.pvsSubscribers.size,
     _emitInboxForTest: (spec = {}) => { const e = M.emitInbox(spec); return annotateTrust(e, e.trust); },
     _oidcAdapterForTest: M.oidcAdapter,
-    voiceHealth: () => M.voiceHealthAll(),   // Plan 0904 V1.6 — per-person voice health (control/agent-facing)
+    voiceHealth: () => M.voiceHealthAll(),
+    voicePairRegister: (spec = {}) => M.voicePairRegister(spec, 'api'),   // Plan 0904 R9a (MCP relay path)   // Plan 0904 V1.6 — per-person voice health (control/agent-facing)
     _voiceAsrPidForTest: () => (M.asr && M.asr.pid ? M.asr.pid() : null),   // Plan 0904 T0904-14 (kill the worker)
     _authCtxForTest: (req) => M.computeAuthCtx(req),
     _breakGlassForTest: M.bgAdapter,

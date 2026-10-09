@@ -229,6 +229,39 @@ export function createHttpHandler(ctx) {
         sendStatic(res, req, BRANDING, 'image/svg+xml; charset=utf-8');
   });
 
+  /* Plan 0904 R9a — device pairing. REGISTER is server-to-server: the control credential, and NO CORS
+   * allowance ever (a browser origin cannot call it). REDEEM takes the secret C in a POST body and is
+   * callable cross-origin from a listed voice-client origin (Pattern A: the device's own VTT page). */
+  function readJsonBody(req, res, cap, cb) {
+    let body = '', over = false;
+    req.on('data', (d) => { if (over) return; body += d; if (body.length > cap) { over = true; res.writeHead(413, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: 'too large' })); try { req.destroy(); } catch {} } });
+    req.on('end', () => { if (over) return; let j = null; try { j = JSON.parse(body || '{}'); } catch (e) { j = null; } cb(j); });
+  }
+  const jsonOut = (res, code, obj, extra) => { res.writeHead(code, Object.assign({ 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }, extra || {})); res.end(JSON.stringify(obj)); };
+  pathRoutes.set("/api/voice/pair/register", ({ req, res, voicePairRegister, httpControlCredentialOk }) => {
+        if (req.method !== 'POST') { jsonOut(res, 405, { error: 'POST only' }, { allow: 'POST' }); return; }
+        // ⛔ FAIL-CLOSED: a server with no control credential cannot verify the relay, so it refuses.
+        if (!httpControlCredentialOk(req)) { jsonOut(res, 403, { error: 'forbidden' }); return; }
+        readJsonBody(req, res, 2048, (j) => {
+          if (!j || typeof j !== 'object') { jsonOut(res, 400, { error: 'JSON body required' }); return; }
+          const r = voicePairRegister({ h: j.h, ref: j.ref, name: j.name, scope: j.scope }, 'http');
+          jsonOut(res, r.ok ? 200 : (r.code || 400), r.ok ? { ok: true, expiresAt: r.expiresAt } : { ok: false, error: r.error });
+        });
+  });
+  pathRoutes.set("/api/voice/pair/redeem", ({ req, res, voicePairRedeem, VOICE_CLIENT_ORIGINS }) => {
+        const origin = req.headers.origin;
+        const cors = (origin && VOICE_CLIENT_ORIGINS.has(origin)) ? { 'access-control-allow-origin': origin, vary: 'Origin' } : { vary: 'Origin' };
+        if (req.method === 'OPTIONS') {
+          res.writeHead(204, Object.assign({ 'access-control-allow-methods': 'POST', 'access-control-allow-headers': 'content-type', 'access-control-max-age': '600' }, cors));
+          res.end(); return;
+        }
+        if (req.method !== 'POST') { jsonOut(res, 405, { error: 'POST only' }, Object.assign({ allow: 'POST' }, cors)); return; }
+        readJsonBody(req, res, 1024, (j) => {
+          const r = voicePairRedeem(j && j.c);
+          jsonOut(res, r.ok ? 200 : (r.code || 404), r.ok ? { ok: true, cap: r.cap, ref: r.ref, nonce: r.nonce, exp: r.exp, scope: r.scope, name: r.name } : { ok: false, error: r.error }, cors);
+        });
+  });
+
   pathRoutes.set("/api/auth", ({ req, res, CONTROL_TOKEN, ROLE_HASH, ROLE_SEED }) => {
         // AUTH-ROLE (P5.5): tell the client whether the presenter role is gated + the public
         // SALT it must hash with. NEVER returns ROLE_HASH, ROLE_PW, or CONTROL_TOKEN — only the

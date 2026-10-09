@@ -15,7 +15,7 @@
  *   on(event, cb)  events: 'presence','result','poll'
  */
 import http from 'http';
-import { createHash, randomInt } from 'node:crypto';
+import { createHash, randomInt, randomBytes } from 'node:crypto';
 import { readFileSync, readdirSync, statSync, existsSync, writeFileSync, watch, mkdirSync, unlinkSync, renameSync, appendFileSync, lstatSync } from 'fs';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { dirname, join } from 'path';
@@ -184,7 +184,7 @@ function sendStatic(res, req, absPath, contentType, extraHeaders = null) {
   } catch (e) { res.writeHead(404); res.end('not found'); }
 }
 
-export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null, profile = DEFAULT_PROFILE, settlingMs = null, queueMaxPending = null, queueTtlMs = null, perTurnBudgetMs = null, perTurnWrapMs = null, floorThresholds = null, sessionLogDir = null, enforceOAuth = undefined, allowPasswordCommandOnLAN = undefined, allowlist = null, oidc = null, oidcDeps = null, oidcSessionTtlMs = null, tailscale = null, tailscaleResolve = null, tailscaleWhois = null, breakGlass = null, breakGlassDeps = null, revokedNonceFile = null, sessionStoreFile = null, bindHosts = null, cursorDir = null, stateDir = null, statePaths = null, stateQuietMs = null, stateMaxMs = null, logRingMax = null, voiceBaselineMs = null, voiceClientOrigins = null } = {}) {
+export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null, profile = DEFAULT_PROFILE, settlingMs = null, queueMaxPending = null, queueTtlMs = null, perTurnBudgetMs = null, perTurnWrapMs = null, floorThresholds = null, sessionLogDir = null, enforceOAuth = undefined, allowPasswordCommandOnLAN = undefined, allowlist = null, oidc = null, oidcDeps = null, oidcSessionTtlMs = null, tailscale = null, tailscaleResolve = null, tailscaleWhois = null, breakGlass = null, breakGlassDeps = null, revokedNonceFile = null, sessionStoreFile = null, bindHosts = null, cursorDir = null, stateDir = null, statePaths = null, stateQuietMs = null, stateMaxMs = null, logRingMax = null, voiceBaselineMs = null, voiceClientOrigins = null, voicePairRegistrationMs = null, voicePairTtlMs = null } = {}) {
   // Plan 0543 P1 — the AUTH POLICY dial. Validated HERE (the single startup path shared by the CLI
   // self-run and presenter_start): an unknown enforceOAuth value THROWS rather than falling through
   // to a policy the deployer never chose. This slice is plumbing only — P3 makes the policy govern.
@@ -1005,6 +1005,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     MODULE_STATUSES, moduleAdminOp, moduleCache, MODULES_DIR, moduleSummary, moduleWriteAuthed,
     pvsConsumerKey, readModuleFile, readSeriesFile, renderPresenterPage, ROLE_HASH, ROLE_SEED,
     sendStatic, sessionLog, sessionLogReadAuthed, VOICE_ENABLED, voiceCorsHeaders,
+    voicePairRegister: (...a) => voicePairRegister(...a), voicePairRedeem: (...a) => voicePairRedeem(...a), httpControlCredentialOk: (...a) => httpControlCredentialOk(...a), VOICE_CLIENT_ORIGINS,
     oidcAuth: oidcAdapter,   // Plan 0543 P2 — the OIDC login/callback/logout routes read this
     breakGlassAuth: bgAdapter,   // Plan 0650 §2b — POST /auth/break-glass redeems the recovery credential
     authState,               // Plan 0551 P3 — GET /api/auth-state reads this (state only; no email/sub/sid)
@@ -3073,6 +3074,59 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       lastSegStartTs: h.lastSegStartTs, lastTextTs: h.lastTextTs, asrMsP50: h.asrMsP50, asrMsP95: h.asrMsP95,
       gaps: h.gaps.slice(-5), lastFault: h.lastFault, settings: h.settings, connected: socketsFor(userId).length > 0 };
   }
+  /* ── Plan 0904 R9a — COMMIT-REVEAL DEVICE PAIRING ─────────────────────────────────────────────
+   * The device that will speak generates a random secret C and shows it only to itself (inside a QR
+   * or its own page). Only H = SHA-256(C) crosses the shared channel. A TRUSTED relay registers
+   * {H → seat ref} here; the device then redeems C ONCE and receives its capability. Anyone who saw H
+   * holds nothing: H cannot be redeemed, and C cannot be recovered from it.
+   *   register: the control credential (HTTP) — or a capability whose signed scope includes `pair`,
+   *             over its own socket, for refs in ITS OWN world (same prefix) only
+   *   redeem:   C in a POST body; single use; registrations expire (10 min)
+   *   minted:   scope speak (+ what the registration asked of type/observe), ref, name, TTL 8 h
+   * Nothing here is ambient: a registration is useless without C, and C never reaches the server
+   * except at redeem. */
+  const PAIR_REG_MS = Number.isFinite(voicePairRegistrationMs) && voicePairRegistrationMs > 0 ? voicePairRegistrationMs : 10 * 60 * 1000;
+  const PAIR_TTL_MS = Number.isFinite(voicePairTtlMs) && voicePairTtlMs > 0 ? voicePairTtlMs : 8 * 3600 * 1000;
+  const PAIR_MAX = 256;
+  const pairings = new Map();   // H (hex) -> { ref, name, scope, exp }
+  const PAIR_SCOPES = new Set(['speak', 'type', 'observe']);
+  function sweepPairings(now = Date.now()) { for (const [h, p] of pairings) if (p.exp <= now) pairings.delete(h); }
+  function voicePairRegister({ h, ref, name, scope }, via) {
+    if (!CAP_SECRET) return { ok: false, code: 503, error: 'pairing needs a capability secret on this server' };
+    if (typeof h !== 'string' || !/^[0-9a-f]{64}$/.test(h)) return { ok: false, code: 400, error: 'h must be a 64-hex SHA-256' };
+    if (typeof ref !== 'string' || !ref.trim() || ref.length > 256) return { ok: false, code: 400, error: 'ref is required' };
+    sweepPairings();
+    if (pairings.size >= PAIR_MAX) return { ok: false, code: 429, error: 'too many pending pairings' };
+    const sc = ['speak', ...(Array.isArray(scope) ? scope.filter((x) => PAIR_SCOPES.has(x) && x !== 'speak') : [])];
+    const exp = Date.now() + PAIR_REG_MS;
+    pairings.set(h, { ref: ref.trim(), name: (typeof name === 'string' && name.trim()) ? name.trim().slice(0, 80) : null, scope: sc, exp });
+    log.info('pair', 'registered', { via, ref: ref.trim(), expiresInMs: PAIR_REG_MS });
+    return { ok: true, expiresAt: exp };
+  }
+  function voicePairRedeem(c) {
+    if (!CAP_SECRET) return { ok: false, code: 503, error: 'pairing needs a capability secret on this server' };
+    if (typeof c !== 'string' || c.length < 16 || c.length > 256) return { ok: false, code: 404, error: 'no such pairing' };
+    sweepPairings();
+    const h = createHash('sha256').update(c, 'utf8').digest('hex');
+    const p = pairings.get(h);
+    if (!p) { log.info('pair', 'redeem-miss', {}); return { ok: false, code: 404, error: 'no such pairing' }; }
+    pairings.delete(h);   // SINGLE USE — consumed before anything else can fail
+    const nonce = 'p-' + randomBytes(8).toString('hex');
+    const exp = Math.floor((Date.now() + PAIR_TTL_MS) / 1000);
+    const cap = mintCapability({ v: 1, sid: 'pair', role: 'participant', scope: p.scope, name: p.name, exp, nonce, ref: p.ref }, CAP_SECRET);
+    log.info('pair', 'redeemed', { ref: p.ref, nonce: nonce.slice(0, 6) });
+    return { ok: true, cap, ref: p.ref, nonce, exp, scope: p.scope, name: p.name };
+  }
+  // The socket path: a `pair`-scoped capability registers for refs in its own world (same prefix).
+  function voicePairRegisterWs(c, ws, m) {
+    const ref = typeof m.ref === 'string' ? m.ref : '';
+    const answer = (ok, error) => send(ws, { t: 'voice_pair_registered', ok, ref, ...(error ? { error } : {}) });
+    const pre = c && refPrefix(c.extRef);
+    if (!c || !c.isGuest || !(c.capScope || []).includes('pair') || !pre) return answer(false, 'not permitted');
+    if (!ref.startsWith(pre)) return answer(false, 'another world');
+    const r = voicePairRegister({ h: m.h, ref, name: m.name, scope: ref === c.extRef ? m.scope : ['type'] }, 'cap');
+    return answer(r.ok, r.ok ? null : r.error);
+  }
   function voiceHealthAll() { return [...voiceUsers.keys()].map(voiceHealthView).filter(Boolean); }
   /* Plan 0904 V1.4 — RESUME (the Gateway pattern, with the SEGMENT as the unit). Called from hello when
    * the client sent `resume`. resumed:true iff this person's voice state is still held (a live socket,
@@ -3901,7 +3955,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       get STALE_MS() { return STALE_MS; },
       get acks() { return acks; },
       get asr() { return asr; }, set asr(v) { asr = v; },
-      voiceUsers, voiceHealthOf, voiceHealthView, voiceHealthAll,
+      voiceUsers, voiceHealthOf, voiceHealthView, voiceHealthAll, voicePairRegister, voicePairRedeem,
       get beatDescriptor() { return beatDescriptor; },
       get bgAdapter() { return bgAdapter; },
       get buildSituation() { return buildSituation; },
@@ -4069,6 +4123,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     voiceSegFinalize,
     voiceSegStart,
     transcriptReaderOk,
+    voicePairRegisterWs,
     voiceTextIn,
     voiceResume,
     voiceLevelIn,

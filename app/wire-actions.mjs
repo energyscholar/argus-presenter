@@ -51,7 +51,7 @@ export function createWireActions(ctx) {
     spotlight, spotlightLast, stationPlaceholder, stationRegistry, stationsActive,
     surfaceRegistry, surfacesActive, targets, telem, unbindUser,
     unpeekTo, updateChatListeners, verifyCapability, voiceAllowedFor, voiceSegFinalize,
-    voiceSegStart, transcriptReaderOk, voiceTextIn, voiceResume,
+    voiceSegStart, transcriptReaderOk, voiceTextIn, voiceResume, voicePairRegisterWs,
     voiceLevelIn, voiceClientFaultIn, voiceGapIn, voiceSettingsIn,
   } = ctx;
   const wireActions = new Map();
@@ -563,6 +563,9 @@ export function createWireActions(ctx) {
   wireActions.set("voice_settings", ({ m, c }) => { if (voiceOk(c)) voiceSettingsIn(c, m); });
   wireActions.set("voice_client_fault", ({ m, c }) => { if (voiceOk(c)) voiceClientFaultIn(c, m); });
   wireActions.set("voice_gap", ({ m, c }) => { if (voiceOk(c)) voiceGapIn(c, m); });
+
+  // Plan 0904 R9a — a `pair`-scoped capability registers H for a seat in its own world.
+  wireActions.set("voice_pair_register", ({ m, c, ws }) => { voicePairRegisterWs(c, ws, m); });
 
   wireActions.set("voicedbg", ({ m, c, ws, req }) => {
       // Plan 0476 P1: client voice stage-tracer (S1..S10 + level meter). Logs to the voice-debug ring
