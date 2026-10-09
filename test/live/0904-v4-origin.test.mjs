@@ -34,3 +34,13 @@ test('T0904-08 — Origin allowlist at the upgrade', async () => {
     expect(!bad.ok && bad.status === 403, 'an unlisted origin is refused at the upgrade', JSON.stringify(bad));
   } finally { await s.close(); }
 });
+
+test('T0904-08b — a declared public origin counts as the presenter\'s own when a proxy rewrites Host', async () => {
+  const s = await createServer({ port: 0, publicOrigins: ['https://ap-public.example.invalid'] });
+  try {
+    const r = await tryUpgrade(s.url(), { origin: 'https://ap-public.example.invalid' });
+    expect(r.ok, 'the declared public origin is accepted', JSON.stringify(r));
+    const bad = await tryUpgrade(s.url(), { origin: 'https://other.example.invalid' });
+    expect(!bad.ok && bad.status === 403, 'others are still refused', JSON.stringify(bad));
+  } finally { await s.close(); }
+});

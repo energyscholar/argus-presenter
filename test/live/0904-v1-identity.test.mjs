@@ -157,3 +157,20 @@ test('T0904-R14c — a capability is refused on the private bind and accepted on
     for (const c of [priv, anon, pub]) try { c.ws.close(); } catch {}
   } finally { await s.close(); }
 });
+
+test('T0904-R14d — a socket from a listed OTHER origin never inherits the ambient sign-in (cookie): caps only', async () => {
+  useStubAsr();
+  const holder = {};
+  const vtt = 'https://vtt.example.invalid';
+  const s = await createServer({ port: 0, voiceEnabled: true, capSecret: SECRET, oidc: oidcConfig, oidcDeps: oidcDeps(holder), allowlist: { [OP]: { role: 'presenter', voice: true } }, voiceClientOrigins: [vtt] });
+  try {
+    const cookie = await oidcCookie(s, holder, OP);
+    const own = await connect(s.url(), { userId: 'op', userName: 'Op' }, { headers: { cookie, origin: 'http://' + new URL(s.url()).host } });
+    expect(own.welcome && own.welcome.trust === 'self', "on the presenter's own origin the signed-in session is trusted", JSON.stringify(own.welcome && own.welcome.trust));
+    const foreign = await connect(s.url(), { userId: 'op2', userName: 'Op' }, { headers: { cookie, origin: vtt } });
+    expect(foreign.welcome && foreign.welcome.trust !== 'self', 'from a listed other origin the same cookie earns NOTHING', JSON.stringify(foreign.welcome && foreign.welcome.trust));
+    foreign.ws.send(JSON.stringify({ t: 'voice_seg_start', seq: 1 }));
+    await until(() => frame(foreign, (f) => f.t === 'voice_denied'), 'no microphone from the cookie alone');
+    own.ws.close(); foreign.ws.close();
+  } finally { await s.close(); }
+});

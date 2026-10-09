@@ -29,7 +29,7 @@ import { ALL as ALL_READ_ROLES } from './permissions.mjs';
 import { validate, summarize } from './validate.mjs';
 import { createAsr } from './asr.mjs';
 import { verifyCapability, mintCapability } from '../lib/capability.mjs';
-import { presenterPort, authPolicy, normalizeAuthPolicy, identityConfig, identityServerOptions, identityStartupLine, bindHostsConfig, controlTokenConfig, roomConfig, roomStartupLine, installConfigReloader } from '../lib/deployment-config.mjs';
+import { presenterPort, authPolicy, normalizeAuthPolicy, identityConfig, identityServerOptions, identityStartupLine, bindHostsConfig, controlTokenConfig, roomConfig, roomStartupLine, installConfigReloader, voiceDeploymentOptions } from '../lib/deployment-config.mjs';
 import { makeAllowlist, makeOidcAdapter, makeTailscaleAdapter, defaultOidcDeps, makeTailscaleWhois, makeBreakGlassAdapter, isTailnetPeerAddress } from './identity.mjs';
 /* Plan 0650 §2a — how long a socket's first frames may wait for `tailscale whois`, and how many may
  * queue while they do. The deadline is the whois timeout plus slack: past it the peer is simply
@@ -184,7 +184,7 @@ function sendStatic(res, req, absPath, contentType, extraHeaders = null) {
   } catch (e) { res.writeHead(404); res.end('not found'); }
 }
 
-export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null, profile = DEFAULT_PROFILE, settlingMs = null, queueMaxPending = null, queueTtlMs = null, perTurnBudgetMs = null, perTurnWrapMs = null, floorThresholds = null, sessionLogDir = null, enforceOAuth = undefined, allowPasswordCommandOnLAN = undefined, allowlist = null, oidc = null, oidcDeps = null, oidcSessionTtlMs = null, tailscale = null, tailscaleResolve = null, tailscaleWhois = null, breakGlass = null, breakGlassDeps = null, revokedNonceFile = null, sessionStoreFile = null, bindHosts = null, cursorDir = null, stateDir = null, statePaths = null, stateQuietMs = null, stateMaxMs = null, logRingMax = null, voiceBaselineMs = null, voiceClientOrigins = null, voicePairRegistrationMs = null, voicePairTtlMs = null, record = null, transcriptDir = null, campaignId = null } = {}) {
+export function createServer({ port = 0, controlToken = null, rolePassword = null, roleSeed = null, voiceEnabled = undefined, capSecret = null, profile = DEFAULT_PROFILE, settlingMs = null, queueMaxPending = null, queueTtlMs = null, perTurnBudgetMs = null, perTurnWrapMs = null, floorThresholds = null, sessionLogDir = null, enforceOAuth = undefined, allowPasswordCommandOnLAN = undefined, allowlist = null, oidc = null, oidcDeps = null, oidcSessionTtlMs = null, tailscale = null, tailscaleResolve = null, tailscaleWhois = null, breakGlass = null, breakGlassDeps = null, revokedNonceFile = null, sessionStoreFile = null, bindHosts = null, cursorDir = null, stateDir = null, statePaths = null, stateQuietMs = null, stateMaxMs = null, logRingMax = null, voiceBaselineMs = null, voiceClientOrigins = null, voicePairRegistrationMs = null, voicePairTtlMs = null, record = null, transcriptDir = null, campaignId = null, publicOrigins = null } = {}) {
   // Plan 0543 P1 — the AUTH POLICY dial. Validated HERE (the single startup path shared by the CLI
   // self-run and presenter_start): an unknown enforceOAuth value THROWS rather than falling through
   // to a policy the deployer never chose. This slice is plumbing only — P3 makes the policy govern.
@@ -538,6 +538,14 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   const VOICE_CLIENT_ORIGINS = new Set((Array.isArray(voiceClientOrigins) ? voiceClientOrigins
     : String(process.env.PRESENTER_VOICE_CLIENT_ORIGINS || '').split(',')).map((x) => String(x || '').trim().replace(/\/+$/, ''))
     .filter((x) => /^https?:\/\/[^/\s]+$/i.test(x)));
+  /* Plan 0904 V4 — the presenter's OWN public origins. Normally the Host header (or a proxy's forwarded host)
+   * already says which origin a page came from; this list exists for a proxy that REWRITES Host, so the
+   * presenter's own page is never mistaken for a foreign one. */
+  const PUBLIC_HOSTS = new Set((Array.isArray(publicOrigins) ? publicOrigins : String(process.env.PRESENTER_PUBLIC_ORIGINS || '').split(','))
+    .map((x) => { try { return new URL(String(x).trim()).host.toLowerCase(); } catch (e) { return null; } }).filter(Boolean));
+  function ownHostsOf(req) {
+    return [req.headers.host, ...String(req.headers['x-forwarded-host'] || '').split(','), ...PUBLIC_HOSTS].map((x) => String(x || '').trim().toLowerCase()).filter(Boolean);
+  }
   function voiceCorsHeaders(req) {
     const o = req && req.headers && req.headers.origin;
     const vary = { vary: 'Origin' };
@@ -1257,7 +1265,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     if (credentialOk(m && m.token)) return { ok: true, via: 'token' };
     if (c && c.userId && CONTROL_ROLES.has(c.role)) return { ok: true, via: 'role' };
     let probe = null;
-    try { probe = resolveIdentity({ role: 'ai', token: m && m.token, userId: 'transcript-reader' }, null, c && c.id, computeAuthCtx(req)); }
+    try { probe = resolveIdentity({ role: 'ai', token: m && m.token, userId: 'transcript-reader' }, null, c && c.id, socketAuthCtx(req)); }
     catch (e) { probe = null; }
     if (probe && CONTROL_ROLES.has(probe.role)) return { ok: true, via: 'role-gate' };
     return { ok: false, reason: 'not-a-control-principal' };
@@ -1271,13 +1279,22 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
    * RULE: accepted when there is NO Origin (CLI / MCP / server clients send none — unchanged), when the
    * Origin is this server's own (its Host, or the host a proxy forwarded), or when it is a listed
    * voice-client origin (the same list the CORS headers use). Anything else: 403 at the upgrade. */
+  /* Plan 0904 R14 — a socket opened by a page on a LISTED OTHER origin (a VTT page) is a capability client and
+   * nothing more. It never inherits the ambient sign-in: a SameSite=Lax cookie rides a same-site handshake, and a
+   * tailnet peer address rides any; either would otherwise hand that page the operator's trust. */
+  function foreignOrigin(req) {
+    const origin = req && req.headers && req.headers.origin;
+    if (!origin) return false;
+    let host = null; try { host = new URL(origin).host.toLowerCase(); } catch (e) { return true; }
+    return !ownHostsOf(req).includes(host);
+  }
+  function socketAuthCtx(req) { return foreignOrigin(req) ? { verified: null, sessionExpired: false, foreign: true } : computeAuthCtx(req); }
   function upgradeOriginOk(req) {
     const origin = req && req.headers && req.headers.origin;
     if (!origin) return true;
     if (VOICE_CLIENT_ORIGINS.has(origin)) return true;
     let host = null; try { host = new URL(origin).host; } catch (e) { return false; }
-    const own = [req.headers.host, ...String(req.headers['x-forwarded-host'] || '').split(',')].map((x) => String(x || '').trim().toLowerCase()).filter(Boolean);
-    return own.includes(String(host).toLowerCase());
+    return ownHostsOf(req).includes(String(host).toLowerCase());
   }
   const wss = new WebSocketServer({ server: httpServer, maxPayload: MAX_PAYLOAD,
     verifyClient: (info, cb) => {
@@ -4213,6 +4230,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     voiceSegFinalize,
     voiceSegStart,
     transcriptReaderOk,
+    socketAuthCtx,
     emitVoiceFault,
     voiceConsentIn,
     TRANSCRIPT_RETENTION,
@@ -4339,7 +4357,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     /* Plan 0904 V2 — the ROOM's recording policy drives the archive: `record` and `transcriptDir`
      * (with their documented env fallbacks, resolved by roomConfig) and the room's `campaignId`.
      * A room that records with no durable transcriptDir was already refused by roomConfig(). */
-    ...(() => { try { const rc = roomConfig(); const cap = rc.capabilities || {}; return { record: cap.record || 'none', transcriptDir: cap.transcriptDir || null, campaignId: (rc.room && typeof rc.room.campaignId === 'string') ? rc.room.campaignId : null }; } catch (e) { return {}; } })(),
+    ...voiceDeploymentOptions(),   // ⛔ a bad value THROWS here, at startup, by name
     /*
      * Plan 0720 RUN C (F18) — THE LIVE SESSION SURVIVES A RESTART, and the resolution happens HERE
      * rather than inside createServer() for exactly the reason the session log does: a bare

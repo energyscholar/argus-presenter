@@ -51,7 +51,7 @@ export function createWireActions(ctx) {
     spotlight, spotlightLast, stationPlaceholder, stationRegistry, stationsActive,
     surfaceRegistry, surfacesActive, targets, telem, unbindUser,
     unpeekTo, updateChatListeners, verifyCapability, voiceAllowedFor, voiceSegFinalize,
-    voiceSegStart, transcriptReaderOk, voiceTextIn, voiceResume, voicePairRegisterWs,
+    voiceSegStart, transcriptReaderOk, voiceTextIn, voiceResume, voicePairRegisterWs, socketAuthCtx,
     voiceConsentIn, TRANSCRIPT_RETENTION,
     voiceLevelIn, voiceClientFaultIn, voiceGapIn, voiceSettingsIn,
   } = ctx;
@@ -139,7 +139,8 @@ export function createWireActions(ctx) {
       // Plan 0543 P3 — the AUTH CONTEXT (loopback verdict + any verified principal) is read from the
       // upgrade request `req`, then fed to BOTH decisions: resolveIdentity (the control-page ROLE)
       // and deriveConnTrust (command TRUST). This is where 0543 keeps "role" and "authority" separate.
-      const authCtx = computeAuthCtx(req);
+      // Plan 0904 R14: a socket from a listed OTHER origin carries no ambient identity (see socketAuthCtx).
+      const authCtx = socketAuthCtx(req);
       const ident = resolveIdentity(m, capGrant, c.id, authCtx);
       c.userId = ident.userId;
       c.userName = ident.userName;
@@ -161,7 +162,7 @@ export function createWireActions(ctx) {
       // Plan 0904 R1 — MINTING GRANTS THE MIC: a valid capability whose signed scope includes `speak`
       // opens a microphone on any deployment, IdP or not. The mint is the authorisation act; the cap
       // stays expiring and revocable, and its speech stays GUEST trust (deriveConnTrust, above).
-      c.voiceAllowed = voiceAllowedFor(req) || !!(capGrant && Array.isArray(capGrant.scope) && capGrant.scope.includes('speak'));
+      c.voiceAllowed = voiceAllowedFor(req, authCtx) || !!(capGrant && Array.isArray(capGrant.scope) && capGrant.scope.includes('speak'));
       c.trustReason = trustVerdict.reason || null;
       c.reauth = !!trustVerdict.reauth;
       bindUser(c.userId, ws);

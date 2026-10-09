@@ -7,7 +7,7 @@
 <title>Voice</title>
 <!--
   Plan 0904 V5 — the phone page: a microphone and nothing else.
-  ⛔ Neutral by construction: no room, campaign or person is named here; the page learns everything it
+  ⛔ Neutral by construction: no room or person is named here; the page learns everything it
   shows from the capability and the server's welcome.
   Flow: a pairing secret (?pair=) is redeemed once for a capability, or a capability (?cap=) is taken
   from the URL; either way it is moved into localStorage and STRIPPED from the address bar. The page then
@@ -93,14 +93,14 @@
     // ⛔ The bearer token never stays in the address bar, history or a screenshot.
     if (q.get('cap') || q.get('pair')) history.replaceState(null, '', location.pathname);
     if (!rec) { try { rec = JSON.parse(store.get(KEY) || 'null'); } catch (e) { rec = null; } }
-    if (!rec || !rec.token) { fault('No voice link on this device. Ask the GM for a pairing code.'); return null; }
-    if (rec.exp && rec.exp * 1000 <= Date.now()) { fault('This voice link has expired. Ask the GM for a new one.'); store.del(WAS); return null; }
+    if (!rec || !rec.token) { fault('No voice link on this device. Ask the session host for a pairing code.'); return null; }
+    if (rec.exp && rec.exp * 1000 <= Date.now()) { fault('This voice link has expired. Ask the session host for a new one.'); store.del(WAS); return null; }
     return rec;
   }
 
   function consentText(w) {
     if (!w) return '';
-    if (w.transcriptPersisting) return 'Your speech is recognised to text and kept by the GM until the campaign ends' + (w.transcriptRetention ? ' (at most ' + w.transcriptRetention + ').' : '.');
+    if (w.transcriptPersisting) return 'Your speech is recognised to text and kept by the session host' + (w.transcriptRetention ? ' for up to ' + w.transcriptRetention + '.' : '.');
     return 'Your speech is recognised to text. It is not saved.';
   }
 

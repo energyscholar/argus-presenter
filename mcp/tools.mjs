@@ -11,7 +11,7 @@ import { assemble } from '../harness/assemble.mjs';
 import { tunnelConfigured, tunnelStatus, tunnelUp, tunnelDown } from './tunnel.mjs';
 import { readFileSync, existsSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
-import { presenterPort, authPolicy, identityConfig, identityServerOptions, identityStartupLine, bindHostsConfig, controlTokenConfig } from '../lib/deployment-config.mjs';
+import { presenterPort, authPolicy, identityConfig, identityServerOptions, identityStartupLine, bindHostsConfig, controlTokenConfig, voiceDeploymentOptions } from '../lib/deployment-config.mjs';
 import { resolveSessionLogDir, defaultSessionLogDir } from '../lib/session-log.mjs';
 import { resolveStateDir, undeclaredStateReason } from '../lib/durable-state.mjs';
 import { srvRoot, currentRelease, enumerateReleases, unitStatus, staleUnit, roomTable, probe, tailnetAddress, REAL_PAGE_MARKERS } from '../lib/ops-status.mjs';
@@ -175,6 +175,9 @@ export const coreTools = [
        * ⛔ a wildcard (0.0.0.0 / :: / *) throws at the config boundary, by name.
        */
       opts.bindHosts = bindHostsConfig();
+      // Plan 0904 — voice origins, the room's recording policy and the log ring: deployment data, read by the
+      // SAME function the CLI uses, never from this tool's input (who may connect and whose words are kept).
+      Object.assign(opts, voiceDeploymentOptions());
       /*
        * ── Plan 0551 P2 — IDENTITY IS READ HERE, AND IS NOT ON THIS TOOL'S INPUT SCHEMA ─────────
        * `oidc` / `allowlist` / `tailscale` / `breakGlass` / `revokedNonceFile` are DEPLOYMENT data,
