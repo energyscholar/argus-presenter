@@ -3395,7 +3395,11 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     if (!c) return;
     // Plan 0472 P4: a GUEST may open a voice segment ONLY if its capability scope includes 'speak'
     // (token-signed; not client-widenable). Surface the refusal (never silent). Non-guests unaffected.
-    if (c.isGuest && !(c.capScope || []).includes('speak')) { log.warn('cap', 'speak-out-of-scope', { socketId: c.id }); send(ws, { t: 'voice_rejected', reason: 'not permitted' }); return; }
+    if (c.isGuest && !(c.capScope || []).includes('speak')) {
+      log.warn('cap', 'speak-out-of-scope', { socketId: c.id }); send(ws, { t: 'voice_rejected', reason: 'not permitted' });
+      if (!c.voiceDeniedReported) { c.voiceDeniedReported = true; emitVoiceFault(c, 'denied', 'this capability does not include the microphone'); }   // Plan 0904: reported once
+      return;
+    }
     // Plan 0473 P6 — PROACTIVE floor gate: under HOLD (overload) refuse a NEW segment AT THE SOURCE and
     // tell the speaker to hold, instead of accepting audio only to shed it downstream. No-op when the
     // floor is disabled (solo wearable) — so existing single-speaker voice behaviour is unchanged.
@@ -4205,6 +4209,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     voiceSegFinalize,
     voiceSegStart,
     transcriptReaderOk,
+    emitVoiceFault,
     voiceConsentIn,
     TRANSCRIPT_RETENTION,
     voicePairRegisterWs,

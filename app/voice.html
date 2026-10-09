@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Voice</title>
+<!--
+  Plan 0904 V5 — the phone page: a microphone and nothing else.
+  ⛔ Neutral by construction: no room, campaign or person is named here; the page learns everything it
+  shows from the capability and the server's welcome.
+  Flow: a pairing secret (?pair=) is redeemed once for a capability, or a capability (?cap=) is taken
+  from the URL; either way it is moved into localStorage and STRIPPED from the address bar. The page then
+  connects (lib/voice-link.mjs: resumable, answers ping), shows the consent sentence, and captures on
+  "Start listening". A reload with the mic on asks for ONE tap to resume and reports the hole as a gap.
+-->
+<style>
+  :root { --bg:#0e1116; --panel:#171b22; --ink:#e8ecf2; --mute:#9aa4b2; --ok:#3fb47a; --warn:#e0a83a; --bad:#e5484d; --accent:#4c8dff; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; padding:0; background:var(--bg); color:var(--ink); font:16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  body { min-height:100vh; min-height:100dvh; display:flex; flex-direction:column; padding:16px; gap:14px; overflow-x:hidden; }
+  h1 { font-size:18px; margin:0; font-weight:600; letter-spacing:.2px; }
+  .row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  #status { display:inline-flex; align-items:center; gap:8px; padding:6px 12px; border-radius:999px; background:var(--panel); font-weight:600; font-size:14px; }
+  #status .dot { width:10px; height:10px; border-radius:50%; background:var(--mute); }
+  #status[data-s="listening"] .dot { background:var(--ok); box-shadow:0 0 8px var(--ok); }
+  #status[data-s="reconnecting"] .dot, #status[data-s="paused"] .dot { background:var(--warn); }
+  #status[data-s="fault"] { background:#3a1517; } #status[data-s="fault"] .dot { background:var(--bad); }
+  #consent { background:var(--panel); padding:12px; border-radius:10px; color:var(--mute); font-size:14px; }
+  #start { min-height:64px; width:100%; border:0; border-radius:14px; font:600 19px system-ui, sans-serif; color:#fff; background:var(--accent); cursor:pointer; }
+  #start[data-on="1"] { background:#333b48; }
+  #start:disabled { opacity:.5; }
+  #meter { height:10px; background:var(--panel); border-radius:6px; overflow:hidden; }
+  #meter > i { display:block; height:100%; width:0; background:var(--ok); transition:width .25s; }
+  #last { min-height:3em; background:var(--panel); padding:12px; border-radius:10px; word-wrap:break-word; overflow-wrap:anywhere; }
+  #last small { color:var(--mute); display:block; }
+  #headset { background:var(--panel); padding:12px; border-radius:10px; font-size:14px; display:none; }
+  #headset label { display:flex; align-items:center; gap:10px; min-height:48px; }
+  #headset input { width:24px; height:24px; }
+  #fault { color:#ffb4b6; font-size:14px; min-height:1.2em; overflow-wrap:anywhere; }
+  #wake { color:var(--mute); font-size:13px; }
+  #resume { position:fixed; inset:0; background:rgba(8,10,14,.96); display:none; align-items:center; justify-content:center; z-index:10; }
+  #resume button { min-height:96px; min-width:min(320px, calc(100vw - 32px)); border:0; border-radius:18px; font:600 22px system-ui, sans-serif; color:#fff; background:var(--accent); }
+</style>
+</head>
+<body>
+  <div class="row"><h1>Voice</h1><span id="status" data-s="connecting" role="status" aria-live="polite"><span class="dot"></span><span id="statusText">connecting</span></span></div>
+  <div id="consent">Checking how your speech is handled…</div>
+  <button id="start" type="button" disabled>Start listening</button>
+  <div id="meter" aria-hidden="true"><i></i></div>
+  <div id="headset"><div id="inputLabel">Input: —</div><label><input type="checkbox" id="headsetOk"> I am wearing a headset (others' voices must not reach this mic)</label></div>
+  <div id="last"><small>Last result</small><span id="lastText">—</span></div>
+  <div id="wake"></div>
+  <div id="fault" role="alert"></div>
+  <div id="resume"><button id="resumeBtn" type="button">Tap to resume listening</button></div>
+<script type="module">
+  import { createVoiceLink } from '/lib/voice-link.mjs';
+
+  const $ = (id) => document.getElementById(id);
+  const KEY = 'ap.voice.cap', WAS = 'ap.voice.wasListening', ACTIVE = 'ap.voice.lastActiveTs';
+  const store = {
+    get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} },
+    del(k) { try { localStorage.removeItem(k); } catch (e) {} },
+  };
+  const state = { link: null, ctrl: null, wake: null, listening: false, welcome: null, cap: null, activeTimer: null, consentSent: false };
+  window.__voicePage = state;   // for tests and for a human with devtools; holds no secret beyond what localStorage already has
+
+  function setStatus(s, text) { $('status').dataset.s = s; $('statusText').textContent = text || s; }
+  function fault(msg) { $('fault').textContent = msg; setStatus('fault', 'FAULT'); try { navigator.vibrate && navigator.vibrate(200); } catch (e) {} }
+  function decodeCap(token) {
+    try { const p = token.split('.')[0].replace(/-/g, '+').replace(/_/g, '/'); return JSON.parse(atob(p + '==='.slice((p.length + 3) % 4))); } catch (e) { return null; }
+  }
+  function saveCap(token) {
+    const p = decodeCap(token) || {};
+    const rec = { token, exp: p.exp || null, nonce: p.nonce || null, ref: p.ref || null, name: p.name || null };
+    store.set(KEY, JSON.stringify(rec));
+    return rec;
+  }
+
+  async function obtainCap() {
+    const q = new URLSearchParams(location.search);
+    let rec = null;
+    if (q.get('pair')) {
+      // R9a — redeem the pairing secret ONCE. It never leaves this page except in this POST.
+      const r = await fetch('/api/voice/pair/redeem', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ c: q.get('pair') }) }).catch(() => null);
+      const j = r ? await r.json().catch(() => null) : null;
+      if (j && j.ok && j.cap) rec = saveCap(j.cap);
+      else { history.replaceState(null, '', location.pathname); fault('This pairing code is not valid (it may have been used already, or expired). Ask for a new one.'); return null; }
+    } else if (q.get('cap')) {
+      rec = saveCap(q.get('cap'));
+    }
+    // ⛔ The bearer token never stays in the address bar, history or a screenshot.
+    if (q.get('cap') || q.get('pair')) history.replaceState(null, '', location.pathname);
+    if (!rec) { try { rec = JSON.parse(store.get(KEY) || 'null'); } catch (e) { rec = null; } }
+    if (!rec || !rec.token) { fault('No voice link on this device. Ask the GM for a pairing code.'); return null; }
+    if (rec.exp && rec.exp * 1000 <= Date.now()) { fault('This voice link has expired. Ask the GM for a new one.'); store.del(WAS); return null; }
+    return rec;
+  }
+
+  function consentText(w) {
+    if (!w) return '';
+    if (w.transcriptPersisting) return 'Your speech is recognised to text and kept by the GM until the campaign ends' + (w.transcriptRetention ? ' (at most ' + w.transcriptRetention + ').' : '.');
+    return 'Your speech is recognised to text. It is not saved.';
+  }
+
+  async function wakeLock() {
+    if (!('wakeLock' in navigator)) { $('wake').textContent = 'Screen lock: not supported on this browser — keep the screen on.'; return; }
+    try {
+      state.wake = await navigator.wakeLock.request('screen');
+      $('wake').textContent = 'Screen kept awake while listening.';
+      state.wake.addEventListener && state.wake.addEventListener('release', () => { if (state.listening) $('wake').textContent = 'Screen lock released — it will be re-requested when this page is visible.'; });
+    } catch (e) {
+      $('wake').textContent = 'Screen lock refused: ' + (e && e.message || e) + ' — keep the screen on.';
+      state.link && state.link.sendFault('wakelock-refused', String(e && e.message || e));
+    }
+  }
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && state.listening) wakeLock(); });
+
+  async function start({ resumedFromReload = false } = {}) {
+    if (state.listening || !state.link) return;
+    $('fault').textContent = '';
+    try {
+      const { startCapture } = await import('/lib/voice-capture.mjs');
+      state.ctrl = await startCapture({ sink: wrapSink(state.link.sink()), badge: false, workletUrl: '/lib/voice-worklet.js' });
+    } catch (e) { fault('Microphone unavailable: ' + (e && e.message || e)); return; }
+    state.listening = true;
+    store.set(WAS, '1');
+    $('start').textContent = 'Stop listening'; $('start').dataset.on = '1';
+    setStatus(state.link.state === 'live' ? 'listening' : 'reconnecting', state.link.state === 'live' ? 'listening' : 'reconnecting');
+    const tr = state.ctrl.track;
+    $('headset').style.display = 'block';
+    $('inputLabel').textContent = 'Input: ' + ((tr && tr.label) || 'unknown') + (state.ctrl.context ? ' · ' + state.ctrl.context.sampleRate + ' Hz' : '');
+    if (resumedFromReload) {
+      const from = Number(store.get(ACTIVE)) || null;
+      state.link.sendGap({ fromTs: from, toTs: Date.now(), cause: 'reload' });
+    }
+    clearInterval(state.activeTimer);
+    state.activeTimer = setInterval(() => store.set(ACTIVE, String(Date.now())), 2000);
+    store.set(ACTIVE, String(Date.now()));
+    wakeLock();
+  }
+  function stop({ keepWas = false, why = '' } = {}) {
+    if (state.ctrl) { try { state.ctrl.stop(); } catch (e) {} state.ctrl = null; }
+    state.listening = false;
+    clearInterval(state.activeTimer);
+    if (!keepWas) store.del(WAS);
+    try { state.wake && state.wake.release && state.wake.release(); } catch (e) {} state.wake = null;
+    $('start').textContent = 'Start listening'; $('start').dataset.on = '0';
+    if ($('status').dataset.s !== 'fault') setStatus('paused', why || 'paused');
+  }
+  function wrapSink(inner) {
+    // The page's own view of the capture: the level meter and the track state; everything else goes to the link.
+    return Object.assign({}, inner, {
+      onLevel(l) { inner.onLevel(l); $('meter').firstElementChild.style.width = Math.min(100, Math.round((l.nrm || 0) * 600)) + '%'; },
+      onTrackState(t) { inner.onTrackState(t); if (t.state === 'ended') { fault('The microphone stopped (track ended).'); stop({ keepWas: true }); } },
+    });
+  }
+
+  $('start').addEventListener('click', () => { if (state.listening) stop(); else start(); });
+  $('resumeBtn').addEventListener('click', () => { $('resume').style.display = 'none'; start({ resumedFromReload: true }); });
+
+  (async () => {
+    const rec = await obtainCap();
+    if (!rec) { $('start').disabled = true; return; }
+    state.cap = rec;
+    const wsUrl = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/';
+    state.link = createVoiceLink({ wsUrl, cap: rec.token,
+      onState: (s) => {
+        if (s === 'live') { if (state.listening) setStatus('listening', 'listening'); else if ($('status').dataset.s !== 'fault') setStatus('paused', 'ready'); }
+        else if (s === 'reconnecting') setStatus('reconnecting', 'reconnecting');
+      },
+      onWelcome: (w) => {
+        state.welcome = w;
+        if (!w.guest) { fault('This voice link was not accepted (it may be revoked or expired).'); $('start').disabled = true; return; }
+        $('consent').textContent = consentText(w);
+        // The sentence is on screen now: tell the server once per connection (archived once per seat).
+        state.consentShownTs = state.consentShownTs || Date.now();
+        state.link.send({ t: 'voice_consent', shownTs: state.consentShownTs });
+        $('start').disabled = false;
+      },
+      onResult: (r) => {
+        const t = r.status === 'text' ? r.text : ('(' + r.status + (r.reason ? ': ' + r.reason : '') + ')');
+        $('lastText').textContent = t;
+        if (r.status === 'failed') fault('Recognition failed for one utterance (' + (r.reason || 'unknown') + ').');
+      },
+      onFault: (f) => {
+        if (f.t === 'voice_denied' || f.t === 'voice_rejected') { fault('This link may not use the microphone (' + (f.reason || f.t) + ').'); stop({ keepWas: false }); }
+        else if (f.t === 'cap_refused') fault('This link cannot be used on this address.');
+        else if (f.t === 'voice_fault' && f.code) fault('Microphone problem: ' + f.code + (f.detail ? ' — ' + f.detail : ''));
+      },
+      onMoved: () => { stop({ why: 'mic moved to another device' }); setStatus('paused', 'moved to another device'); },
+    });
+    if (store.get(WAS) === '1') { $('resume').style.display = 'flex'; }
+  })();
+</script>
+</body>
+</html>

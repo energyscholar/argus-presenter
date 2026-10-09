@@ -262,6 +262,14 @@ export function createHttpHandler(ctx) {
         });
   });
 
+  /* Plan 0904 V5 — the phone page. CROSS-ORIGIN ISOLATED on this route only (COOP + COEP), so a later
+   * client recogniser can use threads; the WebSocket is unaffected. Served whether or not this server's
+   * own page has voice on: the capability decides who may speak, and the page says so when it may not. */
+  pathRoutes.set("/voice", ({ req, res, htmlHeaders, CONTROL }) => {
+        res.writeHead(200, Object.assign(htmlHeaders(), { 'cross-origin-opener-policy': 'same-origin', 'cross-origin-embedder-policy': 'require-corp', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' }));
+        res.end(readFileSync(CONTROL.replace(/control\.html$/, 'voice.html'), 'utf8'));
+  });
+
   pathRoutes.set("/api/auth", ({ req, res, CONTROL_TOKEN, ROLE_HASH, ROLE_SEED }) => {
         // AUTH-ROLE (P5.5): tell the client whether the presenter role is gated + the public
         // SALT it must hash with. NEVER returns ROLE_HASH, ROLE_PW, or CONTROL_TOKEN — only the
