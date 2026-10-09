@@ -51,7 +51,7 @@ export function createWireActions(ctx) {
     spotlight, spotlightLast, stationPlaceholder, stationRegistry, stationsActive,
     surfaceRegistry, surfacesActive, targets, telem, unbindUser,
     unpeekTo, updateChatListeners, verifyCapability, voiceAllowedFor, voiceSegFinalize,
-    voiceSegStart,
+    voiceSegStart, transcriptReaderOk,
   } = ctx;
   const wireActions = new Map();
 
@@ -60,6 +60,15 @@ export function createWireActions(ctx) {
       // send ops). Share the namespaced delivery cursor (R2); replay the unread backlog from it (R1),
       // then stream live. If no PVS baseline exists yet, baseline at the live seq (don't flood).
       const key = pvsConsumerKey(m.consumer || 'argusmon');
+      // ⛔ Plan 0904 R13 — FAIL-CLOSED. A reader of the transcript feed must be a control principal
+      // (control token, or a control role granted by the one role gate). A refused socket stays a
+      // participant-in-waiting: it is NOT removed from `conns`, receives no turn, and cannot ack.
+      const gate = transcriptReaderOk(m, c, req);
+      if (!gate.ok) {
+        log.warn('pvs', 'subscribe-refused', { socketId: c && c.id, reason: gate.reason });
+        send(ws, { t: 'pvs_refused', reason: 'a control credential is required to read the transcript feed' });
+        return;
+      }
       const cc = conns.get(ws); if (cc && cc.userId) unbindUser(cc.userId, ws);
       conns.delete(ws); updateChatListeners(); emit('presence', presence()); evaluateFloor();
       // ⛔ Plan 0687 R2 (G5) — REPLAY IS FROM `acked`, NOT FROM `sent`. A previous attach may have

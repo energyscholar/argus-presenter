@@ -36,10 +36,11 @@ export const ACK_POLICIES = ['explicit', 'never', 'onFrame'];
  * @param {number} [opts.listenMs]     how long to listen before finishing
  * @param {string} [opts.ack]          one of ACK_POLICIES
  * @param {number|null} [opts.truncateAfter]  hang up after this many turn frames, without acking
+ * @param {string|null} [opts.token]  the control credential (Plan 0904 R13: required on a gated server)
  * @returns {Promise<{ok:boolean, consumer:string|null, resumeCursor:number|null, sentCursor:number|null,
  *                    turns:object[], acked:number|null, truncated:boolean, frames:object[]}>}
  */
-export async function runScriptedAgent({ url, consumer = 'scripted-agent', listenMs = 500, ack = 'explicit', truncateAfter = null } = {}) {
+export async function runScriptedAgent({ url, consumer = 'scripted-agent', listenMs = 500, ack = 'explicit', truncateAfter = null, token = null } = {}) {
   if (!url) throw new Error('runScriptedAgent: url is required');
   if (!ACK_POLICIES.includes(ack)) throw new Error(`runScriptedAgent: unknown ack policy "${ack}" — one of ${ACK_POLICIES.join(', ')}`);
   const ws = new WebSocket(url.replace(/^http/, 'ws'));
@@ -62,7 +63,9 @@ export async function runScriptedAgent({ url, consumer = 'scripted-agent', liste
   });
 
   await new Promise((res, rej) => { ws.on('open', res); ws.on('error', rej); });
-  ws.send(JSON.stringify({ t: 'pvs_subscribe', consumer }));
+  // Plan 0904 R13 — the feed is a control-principal read: on a gated server the control token rides
+  // the subscribe frame (the same credential /api/situation takes). Absent ⇒ only an ungated server answers.
+  ws.send(JSON.stringify(Object.assign({ t: 'pvs_subscribe', consumer }, token ? { token } : {})));
   await sleep(listenMs);
 
   let acked = null;
@@ -76,9 +79,11 @@ export async function runScriptedAgent({ url, consumer = 'scripted-agent', liste
   }
 
   const sub = frames.find((f) => f.t === 'pvs_subscribed');
+  const refused = frames.find((f) => f.t === 'pvs_refused');
   try { ws.close(); } catch (e) { /* already gone in the truncate case */ }
   return {
-    ok: true,
+    ok: !refused,
+    refused: refused ? refused.reason : null,
     consumer: (sub && sub.consumer) || null,
     resumeCursor: sub ? sub.resumeCursor : null,     // the ACKED position it resumed from
     sentCursor: sub ? sub.sentCursor : null,         // what had merely been handed over before
@@ -92,7 +97,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const argv = process.argv.slice(2);
   const url = argv[0];
   if (!url || url.startsWith('-')) {
-    console.error('usage: node tools/scripted-agent.mjs <url> [--consumer ID] [--listen MS] [--ack explicit|never|onFrame] [--truncate-after N]');
+    console.error('usage: node tools/scripted-agent.mjs <url> [--consumer ID] [--listen MS] [--ack explicit|never|onFrame] [--truncate-after N] [--token T | $PRESENTER_CONTROL_TOKEN]');
     process.exit(2);
   }
   const flag = (n) => { const i = argv.indexOf('--' + n); return i > -1 ? argv[i + 1] : null; };
@@ -102,6 +107,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     listenMs: parseInt(flag('listen') || '500', 10),
     ack: flag('ack') || 'explicit',
     truncateAfter: flag('truncate-after') ? parseInt(flag('truncate-after'), 10) : null,
+    token: flag('token') || process.env.PRESENTER_CONTROL_TOKEN || null,
   });
   console.log(JSON.stringify({ consumer: r.consumer, resumeCursor: r.resumeCursor, sentCursor: r.sentCursor, acked: r.acked, truncated: r.truncated, turns: r.turns }, null, 2));
 }

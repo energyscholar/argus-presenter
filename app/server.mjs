@@ -1220,6 +1220,28 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     return { userId, userName, role: 'gm', isGuest: false };
   }
 
+  /*
+   * ── Plan 0904 R13 — MAY THIS SOCKET READ THE TRANSCRIPT FEED? ───────────────────────────────
+   * The feed carries every participant's words, so its reader is a CONTROL principal and nothing
+   * less. ⛔ FAIL-CLOSED: the answer is "no" unless one of these holds —
+   *   1. the frame carries the control credential (the same token /api/situation accepts), or
+   *   2. this socket said `hello` and the role gate GRANTED it presenter/ai, or
+   *   3. the role gate would grant this socket a control role right now (resolveIdentity, asked
+   *      for 'ai' — the SAME function, so there is no second policy to drift).
+   * A capability holder is a GUEST and is never a reader, whatever else it presents.
+   * Returns { ok, via } on grant, { ok:false, reason } on refusal (the reason is for the log only).
+   */
+  function transcriptReaderOk(m, c, req) {
+    if (c && c.isGuest) return { ok: false, reason: 'guest' };
+    if (credentialOk(m && m.token)) return { ok: true, via: 'token' };
+    if (c && c.userId && CONTROL_ROLES.has(c.role)) return { ok: true, via: 'role' };
+    let probe = null;
+    try { probe = resolveIdentity({ role: 'ai', token: m && m.token, userId: 'transcript-reader' }, null, c && c.id, computeAuthCtx(req)); }
+    catch (e) { probe = null; }
+    if (probe && CONTROL_ROLES.has(probe.role)) return { ok: true, via: 'role-gate' };
+    return { ok: false, reason: 'not-a-control-principal' };
+  }
+
   const wss = new WebSocketServer({ server: httpServer, maxPayload: MAX_PAYLOAD });
   // Plan 0471 C1: a server-level socket error (bad handshake, etc.) must never reach
   // Node's default "Unhandled 'error'" path (which terminates the process).
@@ -3752,6 +3774,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     voiceAllowedFor,
     voiceSegFinalize,
     voiceSegStart,
+    transcriptReaderOk,
     entriesAfter,
     compactSpill,
     get seatResolver() { return seatResolver; },
