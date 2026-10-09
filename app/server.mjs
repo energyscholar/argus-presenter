@@ -705,7 +705,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   const lastResults = {};      // PRIM-results: promptId -> { userId -> {type,value} } (last beat result per user)
   const lastResultsOrder = []; // Plan 0471 M3: FIFO of promptIds for LRU eviction of lastResults
   const LAST_RESULTS_MAX = 500;// Plan 0471 M3: bound distinct promptIds retained
-  const listeners = { presence: [], result: [], poll: [], transcript: [], inbox: [], turnComplete: [], barge_in: [] };
+  const listeners = { presence: [], result: [], poll: [], transcript: [], inbox: [], turnComplete: [], barge_in: [], voice_fault: [], voice_gap: [] };   // Plan 0904: voice_fault + voice_gap
   const emit = (ev, data) => listeners[ev].forEach((cb) => { try { cb(data); } catch (e) {} });
 
   const CONTROL = join(__dirname, 'control.html');
@@ -2909,6 +2909,78 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     if (!asr) asr = createAsr({ cwd: join(__dirname, '..'), onReady: () => announceVoiceStatus({ ready: true }) });
     return asr;
   }
+  /* ── Plan 0904 V1.8 — A FAILING ENGINE FALLS BACK, AND SAYS SO ─────────────────────────────
+   * PRESENTER_ASR_FALLBACK_CMD (optional) names a second worker command (e.g. one that runs the
+   * same engine on another host over ssh). After ASR_FALLBACK_AFTER consecutive FAILED results the
+   * server switches to it ONCE and reports `voice_fault code:'asr-fallback'` on the fault channel.
+   * A switch is never silent; without a fallback configured, failures stay failures (reported). */
+  const ASR_FALLBACK_AFTER = 3;
+  let asrConsecutiveFails = 0;
+  let asrOnFallback = false;
+  function noteAsrOutcome(ok, c) {
+    if (ok) { asrConsecutiveFails = 0; return; }
+    asrConsecutiveFails++;
+    const fb = (process.env.PRESENTER_ASR_FALLBACK_CMD || '').trim();
+    if (!fb || asrOnFallback || asrConsecutiveFails < ASR_FALLBACK_AFTER) return;
+    asrOnFallback = true; asrConsecutiveFails = 0;
+    const old = asr;
+    asr = createAsr({ cmd: fb, cwd: join(__dirname, '..'), onReady: () => announceVoiceStatus({ ready: true, fallback: true }) });
+    try { old && old.close(); } catch (e) {}
+    log.warn('voice', 'asr-fallback', { failures: ASR_FALLBACK_AFTER });
+    emitVoiceFault(c, 'asr-fallback', 'the recognizer failed ' + ASR_FALLBACK_AFTER + ' times in a row; switched to the fallback recognizer');
+  }
+  /* ── Plan 0904 V1.6 — THE FAULT CHANNEL ───────────────────────────────────────────────────────
+   * A voice fault or gap is delivered to (a) the control roles (presenter/ai) and (b) every capability
+   * connection whose signed scope includes `observe` AND whose extRef shares the faulting extRef's
+   * prefix (everything up to and including its last ':'), i.e. the same world. A cap without
+   * `observe` never receives another seat's fault. Nothing here is a document or a broadcast. */
+  function refPrefix(ref) { if (typeof ref !== 'string') return null; const i = ref.lastIndexOf(':'); return i > 0 ? ref.slice(0, i + 1) : null; }
+  function faultRecipients(ref) {
+    const pre = refPrefix(ref);
+    const out = [];
+    for (const [ws, cc] of conns.entries()) {
+      if (cc.role === 'presenter' || cc.role === 'ai') { out.push(ws); continue; }
+      if (pre && cc.isGuest && Array.isArray(cc.capScope) && cc.capScope.includes('observe') && typeof cc.extRef === 'string' && cc.extRef.startsWith(pre)) out.push(ws);
+    }
+    return out;
+  }
+  function emitVoiceFault(c, code, detail) {
+    const ref = (c && c.extRef) || null;
+    const frame = { t: 'voice_fault', ref, userId: (c && c.userId) || null, userName: (c && c.userName) || null, code, ts: Date.now(), detail: detail == null ? null : String(detail).slice(0, 300) };
+    const h = c && voiceHealthOf(c);
+    if (h) { h.faults.push({ code, ts: frame.ts }); while (h.faults.length > 20) h.faults.shift(); h.lastFault = { code, ts: frame.ts }; }
+    log.warn('voice', 'fault', { userId: frame.userId, ref, code });
+    for (const w of faultRecipients(ref)) send(w, frame);
+    emit('voice_fault', frame);
+    return frame;
+  }
+  function emitVoiceGap(c, { fromTs, toTs, cause }) {
+    const ref = (c && c.extRef) || null;
+    const frame = { t: 'voice_gap', ref, userId: (c && c.userId) || null, userName: (c && c.userName) || null, fromTs: Number.isFinite(fromTs) ? fromTs : null, toTs: Number.isFinite(toTs) ? toTs : Date.now(), cause: String(cause || 'unknown').slice(0, 24) };
+    const h = c && voiceHealthOf(c);
+    if (h) { h.gaps.push({ fromTs: frame.fromTs, toTs: frame.toTs, cause: frame.cause }); while (h.gaps.length > 20) h.gaps.shift(); }
+    log.warn('voice', 'gap', { userId: frame.userId, ref, cause: frame.cause, fromTs: frame.fromTs, toTs: frame.toTs });
+    for (const w of faultRecipients(ref)) send(w, frame);
+    emit('voice_gap', frame);
+    return frame;
+  }
+  /* Per-person voice state (keyed on userId, so it survives a socket and is shared by every device
+   * holding the same identity): health record, result cache for replay dedup, the active device. */
+  const voiceUsers = new Map();   // userId -> { health, results: Map, order: [], inflight: Map, activeWs, closedAt }
+  const VOICE_RESULT_CACHE = 64;
+  function voiceUserOf(c) {
+    if (!c || !c.userId) return null;
+    let u = voiceUsers.get(c.userId);
+    if (!u) {
+      u = { health: { lastLevelTs: null, rawPeak: 0, nrmPeak: 0, zeroRuns: 0, segs: 0, bytes: 0, text: 0, tooShort: 0, dropped: 0, empty: 0, failed: 0,
+              lastSegStartTs: null, lastTextTs: null, asrMs: [], asrMsP50: null, asrMsP95: null, gaps: [], faults: [], lastFault: null, settings: null,
+              baselineRms: null, baselineN: 0, firstLevelTs: null, floorWindow: [], silentFaultOpen: false, floorFaultOpen: false },
+            results: new Map(), order: [], inflight: new Map(), activeWs: null, closedAt: null };
+      voiceUsers.set(c.userId, u);
+    }
+    return u;
+  }
+  function voiceHealthOf(c) { const u = voiceUserOf(c); return u ? u.health : null; }
   function announceVoiceStatus(obj) {   // "recognizer ready" / status -> control roles only
     for (const [ws, c] of conns.entries()) if (c.role === 'presenter' || c.role === 'ai') send(ws, { t: 'voice_status', ...obj });
   }
@@ -3014,7 +3086,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     };
   }
 
-  function emitInbox({ kind, userId, userName, role, text, conf = null, final = true, sessionId, isGuest = false, own = false, voiceId = null, voiceIdConf = null, speakerLabel = null, trust = null, extRef = null }) {
+  function emitInbox({ kind, userId, userName, role, text, conf = null, final = true, sessionId, isGuest = false, own = false, voiceId = null, voiceIdConf = null, speakerLabel = null, trust = null, extRef = null, voiceMeta = null }) {
     const entry = {
       seq: ++inboxSeq, kind, userId, userName, role: role || null,
       // Plan 0473 P9 / 0543 P3: the SERVER-AUTHORITATIVE trust level. It is now the connection's
@@ -3033,6 +3105,10 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       // Plan 0904 V1.2 — the capability's external seat reference (null when the speaker has none).
       extRef: (typeof extRef === 'string' && extRef) ? extRef : null,
     };
+    // Plan 0904 V1.7 — a recognised segment carries its timing and its recognizer (voice entries only).
+    if (voiceMeta && typeof voiceMeta === 'object') {
+      for (const k of ['startedAt', 'endedAt', 'durationMs', 'asrMs', 'recognizer', 'codec', 'source']) if (voiceMeta[k] !== undefined) entry[k] = voiceMeta[k];
+    }
     if (own === true) entry.own = true;   // Plan 0473 P13: the agent's OWN outbound reply (never fenced/queued/self-barged)
     // Plan 0493 Phase E — hygiene flags on inbound VOICE turns only (never the agent's own reply).
     // echo:true ⇒ a TTS loopback; it is NOT delivered as a Bruce turn (E1). suspectHallucination is
@@ -3091,9 +3167,16 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     }
     ensureAsr();   // RT-25: warm the recognizer now, so the first utterance doesn't eat the model load
     v.active = true; v.seq = (typeof m.seq === 'number' ? m.seq : v.seq + 1); v.chunks = []; v.bytes = 0; v.startedAt = Date.now();
+    // Plan 0904 V1.7/V1.4 — the client's own clock stamp (duration only; the server clock anchors it),
+    // the declared codec (a hook: only pcm16 is accepted this round), and the client's stream id (the
+    // dedup key for replay; absent ⇒ legacy behaviour, no dedup).
+    v.clientStartedAt = Number.isFinite(m.startedAt) ? m.startedAt : null;
+    v.codec = (typeof m.codec === 'string' && m.codec) ? m.codec.slice(0, 16) : 'pcm16';
+    v.stream = (typeof m.stream === 'string' && m.stream) ? m.stream.slice(0, 64) : null;
     v.tokens = VOICE_TB_CAPACITY; v.lastRefill = Date.now();   // F1: full-capacity bucket per segment
     voiceSessions++;
     voiceArmTimeout(c, ws);
+    const h = voiceHealthOf(c); if (h) h.lastSegStartTs = v.startedAt;
     evaluateFloor();   // Plan 0473 P6: a new active speaker changes the load — reassess the floor
     // Plan 0473 P13: BARGE-IN at the SOURCE — a user OPENING a voice segment while the agent's TTS reply
     // is playing is an interruption. Fire the duck/stop cue + clear speaking now (before the utterance is
@@ -3115,35 +3198,111 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     v.lastRefill = now;
     if (v.tokens < buf.length) { log.warn('voice', 'rate-drop', { socketId: c.id, seq: v.seq }); send(ws, { t: 'voice_dropped', seq: v.seq, reason: 'rate' }); return; }
     v.tokens -= buf.length;
-    if (v.bytes === 0) log.info('voice', 'S6 srv-binary-first', { socketId: c.id, seq: v.seq, bytes: buf.length });   // S206 tracer: first PCM frame of a segment reached the server
     v.chunks.push(Buffer.from(buf)); v.bytes += buf.length;
     voiceArmTimeout(c, ws);
     if (v.bytes >= VOICE_SEG_MAX_BYTES) { log.warn('voice', 'seg-forcecut', { socketId: c.id, bytes: v.bytes }); voiceSegFinalize(c, ws, {}); }   // RT-8
   }
-  async function voiceSegFinalize(c, ws, { discard = false, reason } = {}) {
+  /* ── Plan 0904 V1.7 — SEGMENT TIMING, ONE RULE ────────────────────────────────────────────────
+   * The duration comes from the client's two stamps when it sent both (one clock, so skew cancels),
+   * otherwise from the PCM itself (16 kHz mono PCM16 ⇒ 32 bytes per ms). The SERVER clock anchors it:
+   * endedAt = when seg_end arrived; startedAt = endedAt − durationMs. The ms caps are applied to that
+   * duration; the byte caps stay for PCM. Ordering by startedAt is therefore on one clock (the server's). */
+  function segmentTiming({ pcmBytes, clientStartedAt, clientEndedAt, serverEndedAt }) {
+    const declared = (Number.isFinite(clientStartedAt) && Number.isFinite(clientEndedAt) && clientEndedAt >= clientStartedAt) ? (clientEndedAt - clientStartedAt) : null;
+    const raw = declared != null ? Math.round(declared) : Math.round(pcmBytes / (VOICE_SR * 2 / 1000));
+    const durationMs = Math.min(raw, VOICE_SEG_MAX_MS);
+    return { startedAt: serverEndedAt - durationMs, endedAt: serverEndedAt, durationMs, cut: raw > VOICE_SEG_MAX_MS ? 'max-ms' : null, declared: declared != null };
+  }
+  function recognizerInfo() { const r = (asr && asr.recognizer && asr.recognizer()) || {}; return Object.assign({ engine: 'unknown' }, r, { side: 'server' }); }
+  function percentile(arr, p) { if (!arr.length) return null; const a = [...arr].sort((x, y) => x - y); return a[Math.min(a.length - 1, Math.floor(p * (a.length - 1) + 0.5))]; }
+  function noteResultInHealth(c, r) {
+    const h = voiceHealthOf(c); if (!h) return;
+    const k = { text: 'text', empty: 'empty', 'too-short': 'tooShort', dropped: 'dropped', failed: 'failed' }[r.status];
+    if (k) h[k] = (h[k] || 0) + 1;
+    if (r.status === 'text') h.lastTextTs = Date.now();
+    if (typeof r.asrMs === 'number') { h.asrMs.push(r.asrMs); while (h.asrMs.length > 100) h.asrMs.shift(); h.asrMsP50 = percentile(h.asrMs, 0.5); h.asrMsP95 = percentile(h.asrMs, 0.95); }
+  }
+  /* ── Plan 0904 V1.8 — THE INGEST SEAM ─────────────────────────────────────────────────────────
+   * voiceIngest.segment() is the ONE entry from a finished segment to a result: recognise → emitInbox
+   * → (archive). Today's WebSocket path calls it; a future transport (another media path, a client
+   * recogniser's text) calls the same function. It ALWAYS returns exactly one result value:
+   *   { seq, status:'text'|'empty'|'too-short'|'dropped'|'failed', reason?, text?, conf?, asrMs,
+   *     startedAt, endedAt, durationMs, cut? }
+   * Replay dedup (V1.4): when the client names its stream, (userId, stream, seq) is recognised at
+   * most once; a replay of a finished segment returns the cached result, never a second transcript. */
+  const voiceIngest = {
+    async segment({ conn: c, seq, stream = null, pcm = null, text = null, codec = 'pcm16', clientStartedAt = null, clientEndedAt = null, serverEndedAt = Date.now() }) {
+      const u = voiceUserOf(c);
+      const key = (stream && u) ? stream + '|' + seq : null;
+      if (key && u.results.has(key)) return Object.assign({}, u.results.get(key), { replayed: true });
+      if (key && u.inflight.has(key)) { const r = await u.inflight.get(key); return Object.assign({}, r, { replayed: true }); }
+      const work = (async () => {
+        const pcmBytes = pcm ? pcm.length : 0;
+        const tm = segmentTiming({ pcmBytes, clientStartedAt, clientEndedAt, serverEndedAt });
+        const base = { seq, asrMs: 0, startedAt: tm.startedAt, endedAt: tm.endedAt, durationMs: tm.durationMs, ...(tm.cut ? { cut: tm.cut } : {}) };
+        if (text != null || !pcm) return Object.assign(base, { status: 'failed', reason: 'mode' });   // V1.7: client-side recognition is a hook, refused this round
+        if (codec !== 'pcm16') return Object.assign(base, { status: 'failed', reason: 'codec' });
+        if (pcmBytes < VOICE_MIN_SEG_BYTES || tm.durationMs < VOICE_MIN_SEG_MS) { log.info('voice', 'seg-too-short', { socketId: c.id, seq, bytes: pcmBytes, ms: tm.durationMs }); return Object.assign(base, { status: 'too-short' }); }   // RT-12
+        const t0 = Date.now();
+        const res = await ensureAsr().recognize(pcm16ToWav(pcm), seq);
+        base.asrMs = Date.now() - t0;
+        if (!res || res.ok !== true) {
+          const reason = (res && res.reason) || 'no-worker';
+          noteAsrOutcome(false, c);
+          if (reason === 'queue') return Object.assign(base, { status: 'dropped', reason });
+          emitVoiceFault(c, 'asr-failed', reason);
+          return Object.assign(base, { status: 'failed', reason });
+        }
+        noteAsrOutcome(true, c);
+        const said = String(res.text || '').trim();
+        if (!said) return Object.assign(base, { status: 'empty', conf: res.conf });
+        emitInbox({ kind: 'voice', userId: c.userId, userName: c.userName, role: c.role, text: said, conf: res.conf, final: true, isGuest: !!c.isGuest, trust: c.trust, extRef: c.extRef || null,
+          voiceMeta: { startedAt: tm.startedAt, endedAt: tm.endedAt, durationMs: tm.durationMs, asrMs: base.asrMs, recognizer: recognizerInfo(), codec, source: 'tap' } });
+        return Object.assign(base, { status: 'text', text: said, conf: res.conf });
+      })();
+      if (key) u.inflight.set(key, work);
+      let r;
+      try { r = await work; } finally { if (key) u.inflight.delete(key); }
+      if (key) { u.results.set(key, r); u.order.push(key); while (u.order.length > VOICE_RESULT_CACHE) u.results.delete(u.order.shift()); }
+      return r;
+    },
+  };
+  // Deliver a result to the speaker: the socket that sent it if still open, else that person's live sockets.
+  function sendVoiceResult(c, ws, r) {
+    const frame = Object.assign({ t: 'voice_result' }, r);
+    if (ws && ws.readyState === 1) { send(ws, frame); return; }
+    if (c && c.userId) for (const w of socketsFor(c.userId)) send(w, frame);
+  }
+  async function voiceSegFinalize(c, ws, { discard = false, reason, endedAt: clientEndedAt } = {}) {
     const v = c && c.voice; if (!v || !v.active) return;
     if (v.timer) { clearTimeout(v.timer); v.timer = null; }
     v.active = false; voiceSessions = Math.max(0, voiceSessions - 1);
     evaluateFloor();   // Plan 0473 P6: a speaker yielding the floor lowers the load — reassess the floor
     const pcm = Buffer.concat(v.chunks, v.bytes); const seq = v.seq;
     v.chunks = []; v.bytes = 0;
+    const serverEndedAt = Date.now();
     log.info('voice', 'seg-final', { socketId: c.id, seq, bytes: pcm.length });   // F1: byte-integrity trace (utterance must arrive whole)
-    if (discard) { log.info('voice', 'seg-discard', { socketId: c.id, seq, reason }); return; }
-    if (pcm.length < VOICE_MIN_SEG_BYTES) { log.info('voice', 'seg-too-short', { socketId: c.id, seq, bytes: pcm.length }); return; }   // RT-12
-    const wavDir = join(tmpdir(), 'ap-asr'); try { mkdirSync(wavDir, { recursive: true }); } catch (e) {}
-    const wavPath = join(wavDir, `seg-${c.id}-${seq}-${Date.now()}.wav`);
-    try { writeFileSync(wavPath, pcm16ToWav(pcm)); } catch (e) { log.warn('voice', 'wav-fail', { msg: String(e && e.message || e) }); return; }
-    log.info('voice', 'S8 wav-written', { socketId: c.id, seq, bytes: pcm.length });   // S206 tracer
-    log.info('voice', 'S9 asr-call', { socketId: c.id, seq });                          // S206 tracer
-    const result = await ensureAsr().recognize(wavPath, seq);
-    try { unlinkSync(wavPath); } catch (e) {}
-    log.info('voice', 'S10 asr-result', { socketId: c.id, seq, text: String((result && result.text) || '').slice(0, 60) });   // S206 tracer
-    if (!result || !result.text) { log.info('voice', 'no-text', { socketId: c.id, seq }); return; }
-    emitTranscript({ userId: c.userId, userName: c.userName, role: c.role, text: result.text, conf: result.conf, isGuest: !!c.isGuest, trust: c.trust, extRef: c.extRef || null });
-    // Plan 0476 P4: echo the speaker's OWN recognized words back to THEIR client only (rendered as a
-    // single line above the input field). Participants never see peers' voice, but seeing your own words
-    // is your own data. voiceId hooks ride along (null until biometric ID lands).
-    send(ws, { t: 'echo', text: result.text, conf: result.conf, voiceId: null, voiceIdConf: null, speakerLabel: null });
+    const h = voiceHealthOf(c); if (h) { h.segs++; h.bytes += pcm.length; }
+    if (discard) {
+      log.info('voice', 'seg-discard', { socketId: c.id, seq, reason });
+      const r = { seq, status: 'dropped', reason: String(reason || 'discard'), asrMs: 0, startedAt: serverEndedAt, endedAt: serverEndedAt, durationMs: 0 };
+      noteResultInHealth(c, r); sendVoiceResult(c, ws, r); return;
+    }
+    const r = await voiceIngest.segment({ conn: c, seq, stream: v.stream, pcm, codec: v.codec, clientStartedAt: v.clientStartedAt, clientEndedAt: Number.isFinite(clientEndedAt) ? clientEndedAt : null, serverEndedAt });
+    if (!r.replayed) noteResultInHealth(c, r);
+    // ⭐ ONE summary line per segment (Plan 0904 V1.6): the old S6/S8/S9/S10 tracer lines collapse here.
+    log.info('voice', 'seg', { socketId: c.id, userId: c.userId, seq, bytes: pcm.length, status: r.status, reason: r.reason || null, asrMs: r.asrMs, durationMs: r.durationMs, replayed: !!r.replayed });
+    sendVoiceResult(c, ws, r);
+    // Plan 0476 P4: echo the speaker's OWN recognized words back to THEIR client only. Kept for
+    // back-compat beside voice_result (which is the per-segment ack the new clients read).
+    if (r.status === 'text' && !r.replayed) send(ws, { t: 'echo', text: r.text, conf: r.conf, voiceId: null, voiceIdConf: null, speakerLabel: null });
+  }
+  // Plan 0904 V1.7 — a client-recognised segment. The frame exists so the shape is fixed; this round it
+  // is refused BY NAME on every deployment (client recognition is a later, benched plan).
+  async function voiceTextIn(c, ws, m) {
+    const seq = Number.isFinite(m.seq) ? m.seq : null;
+    const r = await voiceIngest.segment({ conn: c, seq, stream: null, text: typeof m.text === 'string' ? m.text : '', clientStartedAt: m.startedAt, clientEndedAt: m.endedAt, serverEndedAt: Date.now() });
+    sendVoiceResult(c, ws, r);
   }
 
   // ---- Plan 0473 P3: BOUNDED SITUATION (the working set) + SERVER-HELD per-consumer cursor ----
@@ -3613,6 +3772,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       get STALE_MS() { return STALE_MS; },
       get acks() { return acks; },
       get asr() { return asr; }, set asr(v) { asr = v; },
+      voiceUsers, voiceHealthOf,
       get beatDescriptor() { return beatDescriptor; },
       get bgAdapter() { return bgAdapter; },
       get buildSituation() { return buildSituation; },
@@ -3780,6 +3940,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     voiceSegFinalize,
     voiceSegStart,
     transcriptReaderOk,
+    voiceTextIn,
     entriesAfter,
     compactSpill,
     get seatResolver() { return seatResolver; },

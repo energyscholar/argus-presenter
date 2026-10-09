@@ -7,12 +7,14 @@ then serves many segments. The process stays alive across utterances — it is N
 re-spawned per segment. Argus Presenter (app/asr.mjs) supervises it and watchdog-restarts
 it on crash.
 
-Line protocol (matches app/asr.mjs):
-    stdin : one absolute WAV path per line (16 kHz mono PCM16, produced by the server)
-    stdout: one JSON result line per request, in order:
-              {"text": "...", "conf": 0.0..1.0, "seq": null}
+Protocol (matches app/asr.mjs; Plan 0904 V1.8 — BYTES, NOT A PATH):
+    stdin : "#<id> <n>\n" followed by exactly <n> bytes of WAV (16 kHz mono PCM16)
+    stdout: one JSON result line per request:
+              {"id": <id>, "text": "...", "conf": 0.0..1.0}
             plus a one-time readiness marker on startup:
-              {"ready": true}
+              {"ready": true, "recognizer": {...}}
+    No file is read or written: the worker can run on another host behind any command that
+    carries stdin/stdout (e.g. `ssh <host> python3 asr-whisper.py`).
 
 Swap engines via PRESENTER_ASR_CMD (this file is only the default). Keep the model-load
 OUTSIDE the per-request loop or you reintroduce the cold-start latency this design forbids.
@@ -31,7 +33,9 @@ Hallucination filtering (RT-12) is applied server-side AND here (short/blank gua
 """
 import sys
 import os
+import io
 import json
+import math
 
 # Known whisper hallucination strings on near-silent input (RT-12).
 _HALLUCINATIONS = {"you", "thank you.", "thanks for watching!", "thank you very much.", ""}
@@ -40,6 +44,27 @@ _HALLUCINATIONS = {"you", "thank you.", "thanks for watching!", "thank you very 
 def _emit(obj):
     sys.stdout.write(json.dumps(obj) + "\n")
     sys.stdout.flush()
+
+
+def _requests():
+    """Yield (id, wav_bytes) for each "#<id> <n>\\n<n bytes>" request on stdin, until EOF."""
+    rd = sys.stdin.buffer
+    while True:
+        head = rd.readline()
+        if not head:
+            return
+        head = head.decode("utf-8", "replace").strip()
+        if not head.startswith("#"):
+            continue
+        try:
+            rid_s, n_s = head[1:].split(" ", 1)
+            rid, n = int(rid_s), int(n_s)
+        except ValueError:
+            continue
+        body = rd.read(n)
+        if body is None or len(body) < n:
+            return
+        yield rid, body
 
 
 def main():
@@ -52,35 +77,36 @@ def main():
     except Exception as e:  # noqa: BLE001
         _emit({"ready": False, "error": "faster-whisper not installed: %s" % e})
         # Stay alive but answer every request with empty text so the server never hangs.
-        for _ in sys.stdin:
-            _emit({"text": "", "conf": 0.0, "seq": None})
+        for rid, _wav in _requests():
+            _emit({"id": rid, "text": "", "conf": 0.0, "error": "no-engine"})
         return
 
     # WARM: load the model ONCE here, before the request loop.
     model = WhisperModel(model_name, device=device, compute_type=compute)
-    _emit({"ready": True})
+    try:
+        import faster_whisper
+        version = getattr(faster_whisper, "__version__", None)
+    except Exception:  # noqa: BLE001
+        version = None
+    _emit({"ready": True, "recognizer": {"side": "server", "engine": "faster-whisper", "model": model_name,
+                                          "quant": compute, "version": version, "backend": "ct2"}})
 
-    for line in sys.stdin:
-        wav = line.strip()
-        if not wav:
-            continue
+    for rid, wav in _requests():
         try:
-            segments, _info = model.transcribe(wav, language="en", vad_filter=True)
+            segments, _info = model.transcribe(io.BytesIO(wav), language="en", vad_filter=True)
             parts, confs = [], []
             for seg in segments:
                 parts.append(seg.text)
                 # avg_logprob -> a rough 0..1 confidence
                 if getattr(seg, "avg_logprob", None) is not None:
-                    import math
                     confs.append(max(0.0, min(1.0, math.exp(seg.avg_logprob))))
             text = " ".join(p.strip() for p in parts).strip()
             conf = sum(confs) / len(confs) if confs else None
             if text.lower() in _HALLUCINATIONS:
                 text = ""
-            _emit({"text": text, "conf": conf, "seq": None})
+            _emit({"id": rid, "text": text, "conf": conf})
         except Exception as e:  # noqa: BLE001
-            _emit({"text": "", "conf": 0.0, "seq": None, "error": str(e)})
-
+            _emit({"id": rid, "text": "", "conf": 0.0, "error": str(e)})
 
 if __name__ == "__main__":
     main()

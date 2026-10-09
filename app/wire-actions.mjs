@@ -51,7 +51,7 @@ export function createWireActions(ctx) {
     spotlight, spotlightLast, stationPlaceholder, stationRegistry, stationsActive,
     surfaceRegistry, surfacesActive, targets, telem, unbindUser,
     unpeekTo, updateChatListeners, verifyCapability, voiceAllowedFor, voiceSegFinalize,
-    voiceSegStart, transcriptReaderOk,
+    voiceSegStart, transcriptReaderOk, voiceTextIn,
   } = ctx;
   const wireActions = new Map();
 
@@ -187,6 +187,9 @@ export function createWireActions(ctx) {
         // rather than being silently downgraded (the A fix).
         trust: c.trust, ...(c.trustReason ? { authReason: c.trustReason } : {}), ...(c.reauth ? { reauth: true } : {}),
         ...(c.isGuest ? { guest: true, scope: c.capScope } : {}),
+        // Plan 0904 V1.7 — the negotiation HOOK. Present only when the hello asked; the answer is fixed
+        // this round (server recognition of PCM16) whatever the client offered.
+        ...((m.voice && typeof m.voice === 'object') ? { voice: { mode: 'pcm', codec: 'pcm16', recognizers: [] } } : {}),
         ...(stationsActive() ? {
           stationRegistry: stationRegistry.wire(),
           stationSelectorLabel: stationRegistry.selectorLabel,
@@ -536,7 +539,16 @@ export function createWireActions(ctx) {
   });
 
   wireActions.set("voice_seg_end", ({ m, c, ws, req }) => {
-      voiceSegFinalize(c, ws, {});   // finalize -> WAV -> WARM ASR -> transcript out
+      // finalize -> WARM ASR -> transcript out -> exactly one voice_result. Plan 0904 V1.7: the client's
+      // own end stamp rides along (duration only; the server clock anchors the timing).
+      voiceSegFinalize(c, ws, { endedAt: Number.isFinite(m.endedAt) ? m.endedAt : undefined });
+  });
+
+  wireActions.set("voice_text", ({ m, c, ws, req }) => {
+      // Plan 0904 V1.7 — a client-recognised segment: the frame and its refusal exist so the shape is
+      // fixed. Same mic gate as a PCM segment; past it, refused by name (reason 'mode') this round.
+      if (!c || c.voiceAllowed !== true) { send(ws, { t: 'voice_denied', reason: 'voice is not granted to this connection' }); return; }
+      voiceTextIn(c, ws, m);
   });
 
   wireActions.set("voicedbg", ({ m, c, ws, req }) => {
