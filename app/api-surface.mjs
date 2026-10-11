@@ -452,7 +452,12 @@ export function createApiSurface(M) {
     speak: (text, target = 'all') => {
         const clamped = String(text || '').slice(0, 300);
         M.recordSpeak(clamped);   // Plan 0493 E1: remember what we said so its mic loopback can be deduped
-        return M.targets(target).map((ws) => M.send(ws, { t: 'speak', text: clamped })).length;
+        // Plan 0941 §2 — a CAPABILITY holder hears speech only when its signed scope includes `observe`.
+        // Measured before this line existed: every capability link in `targets()` received speech,
+        // including a speak-only one. A connection with no capability is unchanged. Speech only; the
+        // chime, acks and every other push keep their own audience.
+        const hears = (c) => !!c && (!c.isGuest || (Array.isArray(c.capScope) && c.capScope.includes('observe')));
+        return M.targets(target).filter((ws) => hears(M.conns.get(ws))).map((ws) => M.send(ws, { t: 'speak', text: clamped })).length;
       },
     getAck: (ackId = 'ready') => {
         const a = M.acks.get(ackId);
