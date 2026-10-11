@@ -20,6 +20,10 @@ import { dirname, join } from 'path';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const capture = readFileSync(join(ROOT, 'lib', 'voice-capture.mjs'), 'utf8');
 const page = readFileSync(join(ROOT, 'app', 'presenter.html'), 'utf8');
+// Plan 0941 §1 (declared test edit, Auditor ruling A1): the utterance lifecycle and the duck moved from
+// presenter.html into the ONE shared speech module. The obligations below are unchanged; they are now read
+// where the implementation lives, and the page is held to IMPORTING it and handing it the duck hook.
+const speak = readFileSync(join(ROOT, 'lib', 'speak.mjs'), 'utf8');
 
 test('T-0685-CONSTRAINT — the capture graph asks for NO browser echo cancellation', () => {
   expect(/echoCancellation:\s*false/.test(capture), 'getUserMedia asks for echoCancellation:false');
@@ -34,11 +38,13 @@ test('T-0685-ORDER — ⛔ the flag may only be OFF while the capture-side duck 
   if (!flagOff) return;   // the flag is back on; the ordering obligation does not apply
   expect(/ctrl\.duckWhilePlaying\s*=/.test(capture), 'the controller still exposes duckWhilePlaying');
   expect(/duckWhilePlaying\(on\)/.test(page), 'the page CALLS duckWhilePlaying — it is not dead code again');
-  expect(/u\.onstart\s*=[^;]*apDuck\(/.test(page), 'the duck is applied on utterance start');
-  expect(/u\.onend\s*=[^;]*apUnduck\(/.test(page), 'the duck is lifted on end');
-  expect(/u\.onerror\s*=[^;]*apUnduck\(/.test(page), 'the duck is lifted on error');
-  expect(/apUnduck\(\);[^\n]*\n\s*speechSynthesis\.cancel\(\)/.test(page), 'the duck is lifted BEFORE the cancel() that precedes every utterance');
-  expect(/apDuckTimer\s*=\s*setTimeout\(/.test(page), 'an absolute watchdog lifts the duck regardless of platform events');
+  expect(/import\(\s*'\/lib\/speak\.mjs'\s*\)/.test(page), 'the page imports the shared speech module');
+  expect(/createSpeaker\(\{\s*duck:\s*apDuckCapture\s*\}\)/.test(page), 'the page hands the module its capture-side duck hook');
+  expect(/u\.onstart\s*=[^;]*duckFor\(/.test(speak), 'the duck is applied on utterance start');
+  expect(/u\.onend\s*=[^;]*unduck\(/.test(speak), 'the duck is lifted on end');
+  expect(/u\.onerror\s*=[^;]*unduck\(/.test(speak), 'the duck is lifted on error');
+  expect(/unduck\(\);[^\n]*\n\s*S\.cancel\(\)/.test(speak), 'the duck is lifted BEFORE the cancel() that precedes every utterance');
+  expect(/duckTimer\s*=\s*setTimeout\(/.test(speak), 'an absolute watchdog lifts the duck regardless of platform events');
 });
 
 test('T-0685-CAPTURE-SIDE — ducking touches no track, no stream and no getUserMedia', () => {

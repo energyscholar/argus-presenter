@@ -33,7 +33,9 @@
   #meter { height:10px; background:var(--panel); border-radius:6px; overflow:hidden; }
   #meter > i { display:block; height:100%; width:0; background:var(--ok); transition:width .25s; }
   #last { min-height:3em; background:var(--panel); padding:12px; border-radius:10px; word-wrap:break-word; overflow-wrap:anywhere; }
-  #last small { color:var(--mute); display:block; }
+  #last small, #heard small { color:var(--mute); display:block; }
+  #heard { background:var(--panel); padding:12px; border-radius:10px; word-wrap:break-word; overflow-wrap:anywhere; }
+  #heard[data-spoken="0"] #heardText { color:var(--warn); }
   #headset { background:var(--panel); padding:12px; border-radius:10px; font-size:14px; display:none; }
   #headset label { display:flex; align-items:center; gap:10px; min-height:48px; }
   #headset input { width:24px; height:24px; }
@@ -50,11 +52,13 @@
   <div id="meter" aria-hidden="true"><i></i></div>
   <div id="headset"><div id="inputLabel">Input: —</div><label><input type="checkbox" id="headsetOk"> I am wearing a headset (others' voices must not reach this mic)</label></div>
   <div id="last"><small>Last result</small><span id="lastText">—</span></div>
+  <div id="heard" data-spoken=""><small>Spoken to this device</small><span id="heardText">—</span></div>
   <div id="wake"></div>
   <div id="fault" role="alert"></div>
   <div id="resume"><button id="resumeBtn" type="button">Tap to resume listening</button></div>
 <script type="module">
   import { createVoiceLink } from '/lib/voice-link.mjs';
+  import { createSpeaker } from '/lib/speak.mjs';
 
   const $ = (id) => document.getElementById(id);
   const KEY = 'ap.voice.cap', WAS = 'ap.voice.wasListening', ACTIVE = 'ap.voice.lastActiveTs';
@@ -64,7 +68,18 @@
     del(k) { try { localStorage.removeItem(k); } catch (e) {} },
   };
   const state = { link: null, ctrl: null, wake: null, listening: false, welcome: null, cap: null, activeTimer: null, consentSent: false };
-  window.__voicePage = state;   // for tests and for a human with devtools; holds no secret beyond what localStorage already has
+  window.__voicePage = state;
+  // Plan 0941 — speech OUT through the ONE shared module. The server sends {t:'speak'} only to a link whose
+  // capability includes `observe`. Every line is SHOWN, spoken or not: a dropped one says why (no silent drop).
+  // The duck is capture-side only (Plan 0685): the mic is never released while the device speaks.
+  const DROP_WHY = { 'no-local-voice': 'not spoken: this device has no local voice', 'no-synthesis': 'not spoken: this browser cannot speak', empty: 'not spoken: empty line' };
+  state.speaker = createSpeaker({ duck: (on) => { try { state.ctrl && state.ctrl.duckWhilePlaying && state.ctrl.duckWhilePlaying(on); } catch (e) {} } });
+  function heard(text) {
+    const o = state.speaker.speak(text);
+    state.lastSpoken = o;
+    $('heard').dataset.spoken = o.spoken ? '1' : '0';
+    $('heardText').textContent = o.spoken ? o.text : '(' + (DROP_WHY[o.reason] || ('not spoken: ' + o.reason)) + ') ' + o.text;
+  }   // for tests and for a human with devtools; holds no secret beyond what localStorage already has
 
   function setStatus(s, text) { $('status').dataset.s = s; $('statusText').textContent = text || s; }
   function fault(msg) { $('fault').textContent = msg; setStatus('fault', 'FAULT'); try { navigator.vibrate && navigator.vibrate(200); } catch (e) {} }
@@ -157,8 +172,9 @@
     });
   }
 
-  $('start').addEventListener('click', () => { if (state.listening) stop(); else start(); });
-  $('resumeBtn').addEventListener('click', () => { $('resume').style.display = 'none'; start({ resumedFromReload: true }); });
+  // Each tap is a user gesture: prime speech output on it (iOS needs one before the first utterance).
+  $('start').addEventListener('click', () => { state.speaker.prime(); if (state.listening) stop(); else start(); });
+  $('resumeBtn').addEventListener('click', () => { state.speaker.prime(); $('resume').style.display = 'none'; start({ resumedFromReload: true }); });
 
   (async () => {
     const rec = await obtainCap();
@@ -190,6 +206,7 @@
         else if (f.t === 'voice_fault' && f.code) fault('Microphone problem: ' + f.code + (f.detail ? ' — ' + f.detail : ''));
       },
       onMoved: () => { stop({ why: 'mic moved to another device' }); setStatus('paused', 'moved to another device'); },
+      onFrame: (m) => { if (m.t === 'speak') heard(m.text); },
     });
     if (store.get(WAS) === '1') { $('resume').style.display = 'flex'; }
   })();

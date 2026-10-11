@@ -224,6 +224,12 @@ export function createHttpHandler(ctx) {
         sendStatic(res, req, join(LIB, 'voice-link.mjs'), 'text/javascript; charset=utf-8', voiceCorsHeaders(req));
   });
 
+  exactRoutes.set("/lib/speak.mjs", ({ req, res, LIB, sendStatic, voiceCorsHeaders }) => {
+        // Plan 0941 — the ONE on-device speech-out module (presenter page, /voice, a listed other origin).
+        // Not named voice-*: it is audio OUT, and a voice-OFF page may load it on its first spoken line.
+        sendStatic(res, req, join(LIB, 'speak.mjs'), 'text/javascript; charset=utf-8', voiceCorsHeaders(req));
+  });
+
   exactRoutes.set("/branding/argus-presenter.svg", ({ req, res, BRANDING, sendStatic }) => {
         // Default idle branding art (self-contained animated SVG; no external dep).
         sendStatic(res, req, BRANDING, 'image/svg+xml; charset=utf-8');
