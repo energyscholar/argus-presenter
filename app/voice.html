@@ -10,7 +10,9 @@
   ⛔ Neutral by construction: no room or person is named here; the page learns everything it
   shows from the capability and the server's welcome.
   Flow: a pairing secret (?pair=) is redeemed once for a capability, or a capability (?cap=) is taken
-  from the URL; either way it is moved into localStorage and STRIPPED from the address bar. The page then
+  from the URL; either way it is moved into localStorage and STRIPPED from the address bar. With neither
+  and no usable stored capability, the page asks for the pairing CODE (Plan 0904 A152: a short hash of the
+  same secret, typed instead of scanned) and redeems it the same way. The page then
   connects (lib/voice-link.mjs: resumable, answers ping), shows the consent sentence, and captures on
   "Start listening". A reload with the mic on asks for ONE tap to resume and reports the hole as a gap.
 -->
@@ -42,11 +44,16 @@
   #fault { color:#ffb4b6; font-size:14px; min-height:1.2em; overflow-wrap:anywhere; }
   #wake { color:var(--mute); font-size:13px; }
   #resume { position:fixed; inset:0; background:rgba(8,10,14,.96); display:none; align-items:center; justify-content:center; z-index:10; }
+  #pairForm { background:var(--panel); padding:12px; border-radius:10px; display:none; flex-direction:column; gap:10px; }
+  #pairForm label { font-weight:600; }
+  #pairCode { min-height:56px; font:600 26px ui-monospace, monospace; letter-spacing:4px; text-transform:uppercase; padding:8px 12px; border-radius:10px; border:1px solid #333b48; background:var(--bg); color:var(--ink); width:100%; }
+  #pairGo { min-height:56px; border:0; border-radius:12px; font:600 18px system-ui, sans-serif; color:#fff; background:var(--accent); }
   #resume button { min-height:96px; min-width:min(320px, calc(100vw - 32px)); border:0; border-radius:18px; font:600 22px system-ui, sans-serif; color:#fff; background:var(--accent); }
 </style>
 </head>
 <body>
   <div class="row"><h1>Voice</h1><span id="status" data-s="connecting" role="status" aria-live="polite"><span class="dot"></span><span id="statusText">connecting</span></span></div>
+  <form id="pairForm" autocomplete="off"><label for="pairCode">Pairing code</label><input id="pairCode" name="code" inputmode="text" autocapitalize="characters" spellcheck="false" maxlength="9" placeholder="XXX-XXX"><button id="pairGo" type="submit">Pair this device</button></form>
   <div id="consent">Checking how your speech is handled…</div>
   <button id="start" type="button" disabled>Start listening</button>
   <div id="meter" aria-hidden="true"><i></i></div>
@@ -93,6 +100,28 @@
     return rec;
   }
 
+  const MISS = 'This pairing code is not valid (it may have been used already, or expired). Ask for a new one.';
+  // A152 — no secret in the URL and nothing stored: ask for the short code and redeem it ONCE, exactly like ?pair=.
+  // Every string is set as text, never as HTML.
+  function askCode(why) {
+    return new Promise((resolve) => {
+      const form = $('pairForm');
+      form.style.display = 'flex';
+      fault(why);   // still a FAULT until a code redeems: this device has no voice link
+      form.addEventListener('submit', async (ev) => {
+        ev.preventDefault();
+        const code = $('pairCode').value;
+        if (!code.trim()) return;
+        $('pairGo').disabled = true; $('fault').textContent = '';
+        const r = await fetch('/api/voice/pair/redeem', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code }) }).catch(() => null);
+        const j = r ? await r.json().catch(() => null) : null;
+        $('pairGo').disabled = false;
+        if (j && j.ok && j.cap) { form.style.display = 'none'; $('fault').textContent = ''; setStatus('connecting', 'connecting'); $('consent').textContent = 'Checking how your speech is handled…'; resolve(saveCap(j.cap)); return; }
+        fault(r && r.status === 429 ? 'Too many tries. Wait a minute, then try again.' : MISS);
+      });
+    });
+  }
+
   async function obtainCap() {
     const q = new URLSearchParams(location.search);
     let rec = null;
@@ -101,15 +130,15 @@
       const r = await fetch('/api/voice/pair/redeem', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ c: q.get('pair') }) }).catch(() => null);
       const j = r ? await r.json().catch(() => null) : null;
       if (j && j.ok && j.cap) rec = saveCap(j.cap);
-      else { history.replaceState(null, '', location.pathname); fault('This pairing code is not valid (it may have been used already, or expired). Ask for a new one.'); return null; }
+      else { history.replaceState(null, '', location.pathname); fault(MISS); return null; }
     } else if (q.get('cap')) {
       rec = saveCap(q.get('cap'));
     }
     // ⛔ The bearer token never stays in the address bar, history or a screenshot.
     if (q.get('cap') || q.get('pair')) history.replaceState(null, '', location.pathname);
     if (!rec) { try { rec = JSON.parse(store.get(KEY) || 'null'); } catch (e) { rec = null; } }
-    if (!rec || !rec.token) { fault('No voice link on this device. Ask the session host for a pairing code.'); return null; }
-    if (rec.exp && rec.exp * 1000 <= Date.now()) { fault('This voice link has expired. Ask the session host for a new one.'); store.del(WAS); return null; }
+    if (!rec || !rec.token) return askCode('No voice link on this device. Type the pairing code shown with the QR, or ask the session host for one.');
+    if (rec.exp && rec.exp * 1000 <= Date.now()) { store.del(WAS); return askCode('This voice link has expired. Type a new pairing code, or ask the session host for one.'); }
     return rec;
   }
 
