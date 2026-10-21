@@ -58,6 +58,6 @@ test('1149-T2d: turnComplete is unchanged by conf/suspect (V0473-turn-coalesce +
     expect('open turn ⇒ turnComplete:false', (await turns(s))[0].turnComplete === false, '');
     await new Promise((r) => setTimeout(r, 500));
     const t = await turns(s);
-    expect('settled turn ⇒ turnComplete:true, conf kept', t[0].turnComplete === true && t[0].conf === 0.9, JSON.stringify(t[0]));
+    expect('settled turn ⇒ turnComplete:true, conf kept', t[0].turnComplete === true && t[0].conf === 0.9 && t[0].suspect === false, JSON.stringify(t[0]));
   } finally { await s.close(); }
 });
