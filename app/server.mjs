@@ -3165,6 +3165,8 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   }
   // Group the (bounded) inbox ring into coalesced TURNS (consecutive items sharing a turnId), newest
   // last, verbatim; return the last `n`. Per-turn text is length-capped (bounded-in-the-large).
+  // Plan 1149 P2: a turn's `conf` is the MINIMUM of its items' conf; null is the value for "no item has one".
+  const minConf = (a, b) => (a == null ? (b == null ? null : b) : (b == null ? a : Math.min(a, b)));
   function coalesceTurns(items, n = RECENT_TURNS_N) {
     const turns = [];
     let cur = null;
@@ -3173,6 +3175,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
         cur.text = (cur.text + (it.text ? (cur.text ? ' ' : '') + it.text : '')).slice(0, MAX_TURN_TEXT);
         cur.count++; cur.lastSeq = it.seq; cur.ts = it.ts;
         cur.turnComplete = it.turnComplete === true; cur.kind = it.kind;
+        cur.conf = minConf(cur.conf, it.conf); cur.suspect = cur.suspect || it.suspectHallucination === true;
       } else {
         cur = {
           turnId: it.turnId || null, userId: it.userId, userName: it.userName, role: it.role || null,
@@ -3180,6 +3183,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
           // speaker-change closes the turn), so every item in a turn shares one trust level.
           trust: it.trust, kind: it.kind, text: (it.text || '').slice(0, MAX_TURN_TEXT), count: 1,
           firstSeq: it.seq, lastSeq: it.seq, ts: it.ts, turnComplete: it.turnComplete === true,
+          conf: minConf(null, it.conf), suspect: it.suspectHallucination === true,
         };
         turns.push(cur);
       }
