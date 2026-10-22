@@ -27,6 +27,7 @@ import { join } from 'path';
 import * as log from './log.mjs';
 import { validate, summarize } from './validate.mjs';
 import { createStoreRoute } from './store-route.mjs';
+import { isLoopbackPeer } from './identity.mjs';
 
 /**
  * Build the node `http` request listener.
@@ -255,9 +256,14 @@ export function createHttpHandler(ctx) {
         });
   });
   // Plan 0904 A152 — {c} (the QR's secret) OR {code} (its short code, typed); both at once is a malformed request.
-  // The address for the code path's rate limit: the proxy's client header when one is present, else the socket
-  // peer. A claimed address only splits the per-address budget; the server-wide budget still bounds every attempt.
-  const clientAddr = (req) => String(req.headers['cf-connecting-ip'] || String(req.headers['x-forwarded-for'] || '').split(',')[0].trim() || (req.socket && req.socket.remoteAddress) || '?');
+  // The address for the code path's rate limit. The proxy's client headers are believed ONLY when the socket peer is
+  // loopback (the tunnel connects from there); a direct peer is limited by its own address and its headers are ignored.
+  // Even so the server-wide budget is the real bound.
+  const clientAddr = (req) => {
+    const peer = (req.socket && req.socket.remoteAddress) || '?';
+    if (!isLoopbackPeer(req)) return String(peer);
+    return String(req.headers['cf-connecting-ip'] || String(req.headers['x-forwarded-for'] || '').split(',')[0].trim() || peer);
+  };
   pathRoutes.set("/api/voice/pair/redeem", ({ req, res, voicePairRedeem, voicePairRedeemCode, VOICE_CLIENT_ORIGINS }) => {
         const origin = req.headers.origin;
         const cors = (origin && VOICE_CLIENT_ORIGINS.has(origin)) ? { 'access-control-allow-origin': origin, vary: 'Origin' } : { vary: 'Origin' };

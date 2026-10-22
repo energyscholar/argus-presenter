@@ -11,6 +11,7 @@ import { test, expect } from '../../harness/test.mjs';
 import { createServer } from '../../app/server.mjs';
 import { launchVoice } from '../../harness/voice-browser.mjs';
 import { createHash, randomBytes, pbkdf2Sync } from 'node:crypto';
+import http from 'node:http';
 import { useStubAsr, SECRET } from './_0904-voice.mjs';
 
 const TOKEN = 'ctl-0904-a152-fu';
@@ -28,6 +29,16 @@ async function post(url, body, headers = {}) {
   const r = await fetch(url, { method: 'POST', headers: Object.assign({ 'content-type': 'application/json' }, headers), body: JSON.stringify(body) });
   let j = null; try { j = await r.json(); } catch {}
   return { status: r.status, body: j };
+}
+/** POST from a chosen SOURCE address, so the server sees a socket peer that is not 127.0.0.1 (a direct, non-tunnel peer). */
+function postFrom(localAddress, url, body, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url), data = JSON.stringify(body);
+    const req = http.request({ host: u.hostname, port: u.port, path: u.pathname, method: 'POST', localAddress, headers: Object.assign({ 'content-type': 'application/json', 'content-length': Buffer.byteLength(data) }, headers) }, (res) => {
+      let b = ''; res.on('data', (d) => { b += d; }); res.on('end', () => { let j = null; try { j = JSON.parse(b); } catch {} resolve({ status: res.statusCode, body: j }); });
+    });
+    req.on('error', reject); req.end(data);
+  });
 }
 const srv = (extra = {}) => createServer(Object.assign({ port: 0, voiceEnabled: true, capSecret: SECRET, controlToken: TOKEN }, extra));
 async function pairFor(s, ref) {
@@ -56,5 +67,26 @@ test('A152-D1 — the 17th k-registration evicts the oldest; one attempt runs at
     const evictedC = await post(s.url() + '/api/voice/pair/redeem', { c: all[0].C });
     expect(evictedC.status === 404, 'the evicted registration is gone for C as well', JSON.stringify(evictedC));
   } finally { await s.close(); }
+});
+
+test('A152-D2 — address headers count only from a loopback peer; a direct peer is limited by its own address', async () => {
+  const s = await srv();
+  try {
+    await pairFor(s, 'vtt:w1:d2');
+    let last = null;
+    for (let i = 0; i < 11; i++) last = await postFrom('127.0.0.2', s.url() + '/api/voice/pair/redeem', { code: 'ZZZZZ1' }, { 'cf-connecting-ip': '203.0.113.' + (i + 1), 'x-forwarded-for': '198.51.100.' + (i + 1) });
+    expect(last.status === 429, 'a direct peer forging a new address each time is limited on the 11th', JSON.stringify(last));
+  } finally { await s.close(); }
+  const t = await srv();
+  try {
+    await pairFor(t, 'vtt:w1:d2t');
+    let r = null;
+    for (let i = 0; i < 10; i++) r = await byCode(t, 'ZZZZZ1', { 'cf-connecting-ip': '203.0.113.9' });
+    expect(r.status === 404, 'through the tunnel (loopback peer) the 10th attempt of one client is still a miss', JSON.stringify(r));
+    const over = await byCode(t, 'ZZZZZ1', { 'cf-connecting-ip': '203.0.113.9' });
+    expect(over.status === 429, 'the 11th of that client ⇒ 429', JSON.stringify(over));
+    const other = await byCode(t, 'ZZZZZ1', { 'cf-connecting-ip': '203.0.113.10' });
+    expect(other.status === 404, 'a different tunnel client has its own budget', JSON.stringify(other));
+  } finally { await t.close(); }
 });
 
