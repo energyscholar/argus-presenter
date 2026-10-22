@@ -90,3 +90,43 @@ test('A152-D2 — address headers count only from a loopback peer; a direct peer
   } finally { await t.close(); }
 });
 
+const faultText = (page) => page.evaluate(() => document.getElementById('fault').textContent);
+const formShown = (page) => page.evaluate(() => getComputedStyle(document.getElementById('pairForm')).display !== 'none');
+
+test('A152-D3 — a failed ?pair= offers the code form', async () => {
+  useStubAsr();
+  const s = await srv();
+  const b = await launchVoice({});
+  try {
+    const page = await b.newPage();
+    await page.goto(s.url() + '/voice?pair=' + newC(), { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => /not valid/.test(document.getElementById('fault').textContent), { timeout: 8000 });
+    expect(await formShown(page), 'a missed ?pair= shows the code form');
+    expect(!/pair=/.test(page.url()), 'and the secret is stripped from the URL', page.url());
+  } finally { await b.close(); await s.close(); }
+});
+
+test('A152-G1 — /voice with no capability pairs by a typed code', async () => {
+  useStubAsr();
+  const s = await srv();
+  const b = await launchVoice({});
+  try {
+    const { code } = await pairFor(s, 'vtt:w1:g1');
+    const p2 = await b.newPage();
+    await p2.goto(s.url() + '/voice', { waitUntil: 'domcontentloaded' });
+    await p2.waitForFunction(() => getComputedStyle(document.getElementById('pairForm')).display !== 'none', { timeout: 8000 });
+    expect(await p2.evaluate(() => document.getElementById('status').dataset.s) === 'fault', 'no capability ⇒ status FAULT until a code redeems');
+    await p2.type('#pairCode', 'ZZZ-ZZZ');
+    await p2.click('#pairGo');
+    await p2.waitForFunction(() => /not valid/.test(document.getElementById('fault').textContent), { timeout: 8000 });
+    expect(await formShown(p2), 'a wrong code keeps the form');
+    await p2.click('#pairCode', { clickCount: 3 });
+    await p2.type('#pairCode', (code.slice(0, 3) + '-' + code.slice(3)).toLowerCase());
+    await p2.click('#pairGo');
+    await p2.waitForFunction(() => getComputedStyle(document.getElementById('pairForm')).display === 'none', { timeout: 8000 });
+    expect(await faultText(p2) === '', 'the right code clears the fault');
+    expect(await p2.evaluate(() => document.getElementById('status').dataset.s) !== 'fault', 'and the status leaves FAULT');
+    const again = await byCode(s, code);
+    expect(again.status === 404, 'the code was consumed', JSON.stringify(again));
+  } finally { await b.close(); await s.close(); }
+});

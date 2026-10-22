@@ -130,7 +130,7 @@
       const r = await fetch('/api/voice/pair/redeem', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ c: q.get('pair') }) }).catch(() => null);
       const j = r ? await r.json().catch(() => null) : null;
       if (j && j.ok && j.cap) rec = saveCap(j.cap);
-      else { history.replaceState(null, '', location.pathname); fault(MISS); return null; }
+      else { history.replaceState(null, '', location.pathname); return askCode(MISS); }
     } else if (q.get('cap')) {
       rec = saveCap(q.get('cap'));
     }
