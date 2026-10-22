@@ -3201,6 +3201,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
   const PAIR_REG_MS = Number.isFinite(voicePairRegistrationMs) && voicePairRegistrationMs > 0 ? voicePairRegistrationMs : 10 * 60 * 1000;
   const PAIR_TTL_MS = Number.isFinite(voicePairTtlMs) && voicePairTtlMs > 0 ? voicePairTtlMs : 8 * 3600 * 1000;
   const PAIR_MAX = 256;
+  const PAIR_K_MAX = 16;   // pending registrations that carry a k: one typed-code attempt runs at most this many PBKDF2
   const pairings = new Map();   // H (hex) -> { ref, name, scope, exp, k }   (k: optional, A152)
   const PAIR_SCOPES = new Set(['speak', 'type', 'observe']);
   function sweepPairings(now = Date.now()) { for (const [h, p] of pairings) if (p.exp <= now) pairings.delete(h); }
@@ -3210,6 +3211,12 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     if (k !== undefined && (typeof k !== 'string' || !/^[0-9a-f]{64}$/.test(k))) return { ok: false, code: 400, error: 'k must be a 64-hex PBKDF2-SHA256' };
     if (typeof ref !== 'string' || !ref.trim() || ref.length > 256) return { ok: false, code: 400, error: 'ref is required' };
     sweepPairings();
+    if (k !== undefined) {
+      // Evict the OLDEST k-registrations (Map order is insertion order) so the pending set stays at PAIR_K_MAX.
+      pairings.delete(h);
+      const withK = [...pairings].filter(([, q]) => q.k);
+      for (const [oh] of withK.slice(0, Math.max(0, withK.length - (PAIR_K_MAX - 1)))) pairings.delete(oh);
+    }
     if (pairings.size >= PAIR_MAX) return { ok: false, code: 429, error: 'too many pending pairings' };
     const sc = ['speak', ...(Array.isArray(scope) ? scope.filter((x) => PAIR_SCOPES.has(x) && x !== 'speak') : [])];
     const exp = Date.now() + PAIR_REG_MS;
@@ -3262,7 +3269,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     const miss = () => { log.info('pair', 'redeem-miss', { via: 'code' }); return { ok: false, code: 404, error: 'no such pairing' }; };
     if (!PAIR_CODE_RE.test(n)) return miss();
     sweepPairings();
-    // The work per attempt is bounded by the pending registrations that carry a k (at most PAIR_MAX). One at a time,
+    // The work per attempt is bounded by the pending registrations that carry a k (at most PAIR_K_MAX = 16; the oldest is evicted). One at a time,
     // on the async pool: never the sync form on a request path, and never the whole pool for one attempt.
     for (const [h, p] of [...pairings].filter(([, q]) => q.k)) {
       const got = await pbkdf2Buf(n, h);
