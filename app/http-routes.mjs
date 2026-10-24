@@ -27,6 +27,7 @@ import { join } from 'path';
 import * as log from './log.mjs';
 import { validate, summarize } from './validate.mjs';
 import { createStoreRoute } from './store-route.mjs';
+import { isLoopbackPeer } from './identity.mjs';
 
 /**
  * Build the node `http` request listener.
@@ -250,11 +251,20 @@ export function createHttpHandler(ctx) {
         if (!httpControlCredentialOk(req)) { jsonOut(res, 403, { error: 'forbidden' }); return; }
         readJsonBody(req, res, 2048, (j) => {
           if (!j || typeof j !== 'object') { jsonOut(res, 400, { error: 'JSON body required' }); return; }
-          const r = voicePairRegister({ h: j.h, ref: j.ref, name: j.name, scope: j.scope }, 'http');
+          const r = voicePairRegister({ h: j.h, ref: j.ref, name: j.name, scope: j.scope, k: j.k }, 'http');
           jsonOut(res, r.ok ? 200 : (r.code || 400), r.ok ? { ok: true, expiresAt: r.expiresAt } : { ok: false, error: r.error });
         });
   });
-  pathRoutes.set("/api/voice/pair/redeem", ({ req, res, voicePairRedeem, VOICE_CLIENT_ORIGINS }) => {
+  // Plan 0904 A152 — {c} (the QR's secret) OR {code} (its short code, typed); both at once is a malformed request.
+  // The address for the code path's rate limit. The proxy's client headers are believed ONLY when the socket peer is
+  // loopback (the tunnel connects from there); a direct peer is limited by its own address and its headers are ignored.
+  // Even so the server-wide budget is the real bound.
+  const clientAddr = (req) => {
+    const peer = (req.socket && req.socket.remoteAddress) || '?';
+    if (!isLoopbackPeer(req)) return String(peer);
+    return String(req.headers['cf-connecting-ip'] || String(req.headers['x-forwarded-for'] || '').split(',')[0].trim() || peer);
+  };
+  pathRoutes.set("/api/voice/pair/redeem", ({ req, res, voicePairRedeem, voicePairRedeemCode, VOICE_CLIENT_ORIGINS }) => {
         const origin = req.headers.origin;
         const cors = (origin && VOICE_CLIENT_ORIGINS.has(origin)) ? { 'access-control-allow-origin': origin, vary: 'Origin' } : { vary: 'Origin' };
         if (req.method === 'OPTIONS') {
@@ -263,8 +273,11 @@ export function createHttpHandler(ctx) {
         }
         if (req.method !== 'POST') { jsonOut(res, 405, { error: 'POST only' }, Object.assign({ allow: 'POST' }, cors)); return; }
         readJsonBody(req, res, 1024, (j) => {
-          const r = voicePairRedeem(j && j.c);
-          jsonOut(res, r.ok ? 200 : (r.code || 404), r.ok ? { ok: true, cap: r.cap, ref: r.ref, nonce: r.nonce, exp: r.exp, scope: r.scope, name: r.name } : { ok: false, error: r.error }, cors);
+          const out = (r) => jsonOut(res, r.ok ? 200 : (r.code || 404), r.ok ? { ok: true, cap: r.cap, ref: r.ref, nonce: r.nonce, exp: r.exp, scope: r.scope, name: r.name } : { ok: false, error: r.error }, cors);
+          const hasC = !!j && j.c !== undefined, hasCode = !!j && j.code !== undefined;
+          if (hasC && hasCode) { jsonOut(res, 400, { ok: false, error: 'send c or code, not both' }, cors); return; }
+          if (hasCode) { voicePairRedeemCode(j.code, clientAddr(req)).then(out, () => jsonOut(res, 500, { ok: false, error: 'pairing check failed' }, cors)); return; }
+          out(voicePairRedeem(j && j.c));
         });
   });
 

@@ -363,6 +363,7 @@ export function createApiSurface(M) {
     voiceHealth: () => M.voiceHealthAll(),
     voicePairRegister: (spec = {}) => M.voicePairRegister(spec, 'api'),   // Plan 0904 R9a (MCP relay path)   // Plan 0904 V1.6 — per-person voice health (control/agent-facing)
     asrState: () => (M.asr && M.asr.state ? M.asr.state() : 'off'),   // Plan 0904 — 'off' | 'loading' | 'ready' | 'failed'
+    _voicePairCodeStatsForTest: () => M.voicePairCodeStats(),   // Plan 0904 A152-5 (the PBKDF2 spy behind the rate limit)
     _voiceAsrPidForTest: () => (M.asr && M.asr.pid ? M.asr.pid() : null),   // Plan 0904 T0904-14 (kill the worker)
     _authCtxForTest: (req) => M.computeAuthCtx(req),
     _breakGlassForTest: M.bgAdapter,
