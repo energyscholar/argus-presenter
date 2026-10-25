@@ -40,12 +40,6 @@ export function hasForwardingHeader(req) {
   return false;
 }
 
-/** True iff the SOCKET peer is loopback, whatever headers came with it (the tunnel's proxy connects from here). */
-export function isLoopbackPeer(req) {
-  const peer = req && req.socket && req.socket.remoteAddress;
-  return typeof peer === 'string' && LOOPBACK_PEERS.has(peer.trim());
-}
-
 /** True iff the request is a TRUE loopback connection: loopback socket peer AND no forwarding header. */
 export function isTrueLoopback(req) {
   if (!req) return false;

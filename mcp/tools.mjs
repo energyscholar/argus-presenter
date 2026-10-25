@@ -1033,9 +1033,8 @@ export const coreTools = [
       ref: { type: 'string', description: 'The seat reference the capability will carry (e.g. "<system>:<world>:<user>").' },
       name: { type: 'string', description: 'Display name for the seat.' },
       scope: { type: 'array', items: { type: 'string' }, description: 'Extra scope beyond speak: any of "type","observe".' },
-      k: { type: 'string', description: 'Optional 64-hex short-code commitment: PBKDF2-SHA256(code, salt = h, 200000 iterations, 32 bytes), where the 6-character code is derived from C on the device. Lets the device type the code at /voice instead of scanning; same registration, same window, same single use.' },
     } },
-    handler: async ({ h, ref, name, scope, k } = {}) => { const r = need().voicePairRegister({ h, ref, name, scope, k }); return r.ok ? { ok: true, expiresAt: r.expiresAt } : { ok: false, error: r.error }; }
+    handler: async ({ h, ref, name, scope } = {}) => { const r = need().voicePairRegister({ h, ref, name, scope }); return r.ok ? { ok: true, expiresAt: r.expiresAt } : { ok: false, error: r.error }; }
   },
   {
     // Plan 0543 P4 — revoke by nonce; the revocation is PERSISTED so it survives a restart.

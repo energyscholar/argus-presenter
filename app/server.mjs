@@ -15,7 +15,7 @@
  *   on(event, cb)  events: 'presence','result','poll'
  */
 import http from 'http';
-import { createHash, randomInt, randomBytes, pbkdf2, timingSafeEqual } from 'node:crypto';
+import { createHash, randomInt, randomBytes } from 'node:crypto';
 import { readFileSync, readdirSync, statSync, existsSync, writeFileSync, watch, mkdirSync, unlinkSync, renameSync, appendFileSync, lstatSync } from 'fs';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { dirname, join, resolve as resolvePath } from 'path';
@@ -1013,7 +1013,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     MODULE_STATUSES, moduleAdminOp, moduleCache, MODULES_DIR, moduleSummary, moduleWriteAuthed,
     pvsConsumerKey, readModuleFile, readSeriesFile, renderPresenterPage, ROLE_HASH, ROLE_SEED,
     sendStatic, sessionLog, sessionLogReadAuthed, VOICE_ENABLED, voiceCorsHeaders,
-    voicePairRegister: (...a) => voicePairRegister(...a), voicePairRedeem: (...a) => voicePairRedeem(...a), voicePairRedeemCode: (...a) => voicePairRedeemCode(...a), httpControlCredentialOk: (...a) => httpControlCredentialOk(...a), VOICE_CLIENT_ORIGINS,
+    voicePairRegister: (...a) => voicePairRegister(...a), voicePairRedeem: (...a) => voicePairRedeem(...a), httpControlCredentialOk: (...a) => httpControlCredentialOk(...a), VOICE_CLIENT_ORIGINS,
     oidcAuth: oidcAdapter,   // Plan 0543 P2 — the OIDC login/callback/logout routes read this
     breakGlassAuth: bgAdapter,   // Plan 0650 §2b — POST /auth/break-glass redeems the recovery credential
     authState,               // Plan 0551 P3 — GET /api/auth-state reads this (state only; no email/sub/sid)
@@ -3191,37 +3191,23 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
    *   redeem:   C in a POST body; single use; registrations expire (10 min)
    *   minted:   scope speak (+ what the registration asked of type/observe), ref, name, TTL 8 h
    * Nothing here is ambient: a registration is useless without C, and C never reaches the server
-   * except at redeem.
-   * Plan 0904 A152 — THE SHORT CODE, for a device that cannot scan. code = CROCKFORD32(SHA-256(tag + C))[0..6)
-   * is computed from C on the device; the registration may carry only k = PBKDF2-SHA256(code, salt = H,
-   * PAIR_CODE_ITER). H and k are public in the shared channel, so k is SLOW: an observer faces ~2^30 codes ×
-   * PAIR_CODE_ITER inside the window. A typed code is checked by recomputing k for each pending registration
-   * that has one (async, constant-time compare), is rate-limited per address and server-wide, and consumes
-   * that SAME registration (one registration, one use, one window: no second code, TTL or map). */
+   * except at redeem. */
   const PAIR_REG_MS = Number.isFinite(voicePairRegistrationMs) && voicePairRegistrationMs > 0 ? voicePairRegistrationMs : 10 * 60 * 1000;
   const PAIR_TTL_MS = Number.isFinite(voicePairTtlMs) && voicePairTtlMs > 0 ? voicePairTtlMs : 8 * 3600 * 1000;
   const PAIR_MAX = 256;
-  const PAIR_K_MAX = 16;   // pending registrations that carry a k: one typed-code attempt runs at most this many PBKDF2
-  const pairings = new Map();   // H (hex) -> { ref, name, scope, exp, k }   (k: optional, A152)
+  const pairings = new Map();   // H (hex) -> { ref, name, scope, exp }
   const PAIR_SCOPES = new Set(['speak', 'type', 'observe']);
   function sweepPairings(now = Date.now()) { for (const [h, p] of pairings) if (p.exp <= now) pairings.delete(h); }
-  function voicePairRegister({ h, ref, name, scope, k }, via) {
+  function voicePairRegister({ h, ref, name, scope }, via) {
     if (!CAP_SECRET) return { ok: false, code: 503, error: 'pairing needs a capability secret on this server' };
     if (typeof h !== 'string' || !/^[0-9a-f]{64}$/.test(h)) return { ok: false, code: 400, error: 'h must be a 64-hex SHA-256' };
-    if (k !== undefined && (typeof k !== 'string' || !/^[0-9a-f]{64}$/.test(k))) return { ok: false, code: 400, error: 'k must be a 64-hex PBKDF2-SHA256' };
     if (typeof ref !== 'string' || !ref.trim() || ref.length > 256) return { ok: false, code: 400, error: 'ref is required' };
     sweepPairings();
-    if (k !== undefined) {
-      // Evict the OLDEST k-registrations (Map order is insertion order) so the pending set stays at PAIR_K_MAX.
-      pairings.delete(h);
-      const withK = [...pairings].filter(([, q]) => q.k);
-      for (const [oh] of withK.slice(0, Math.max(0, withK.length - (PAIR_K_MAX - 1)))) pairings.delete(oh);
-    }
     if (pairings.size >= PAIR_MAX) return { ok: false, code: 429, error: 'too many pending pairings' };
     const sc = ['speak', ...(Array.isArray(scope) ? scope.filter((x) => PAIR_SCOPES.has(x) && x !== 'speak') : [])];
     const exp = Date.now() + PAIR_REG_MS;
-    pairings.set(h, { ref: ref.trim(), name: (typeof name === 'string' && name.trim()) ? name.trim().slice(0, 80) : null, scope: sc, exp, ...(k !== undefined ? { k } : {}) });
-    log.info('pair', 'registered', { via, ref: ref.trim(), expiresInMs: PAIR_REG_MS, code: k !== undefined });
+    pairings.set(h, { ref: ref.trim(), name: (typeof name === 'string' && name.trim()) ? name.trim().slice(0, 80) : null, scope: sc, exp });
+    log.info('pair', 'registered', { via, ref: ref.trim(), expiresInMs: PAIR_REG_MS });
     return { ok: true, expiresAt: exp };
   }
   function voicePairRedeem(c) {
@@ -3232,57 +3218,12 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     const p = pairings.get(h);
     if (!p) { log.info('pair', 'redeem-miss', {}); return { ok: false, code: 404, error: 'no such pairing' }; }
     pairings.delete(h);   // SINGLE USE — consumed before anything else can fail
-    return mintPairing(p, 'c');
-  }
-  function mintPairing(p, via) {
     const nonce = 'p-' + randomBytes(8).toString('hex');
     const exp = Math.floor((Date.now() + PAIR_TTL_MS) / 1000);
     const cap = mintCapability({ v: 1, sid: 'pair', role: 'participant', scope: p.scope, name: p.name, exp, nonce, ref: p.ref }, CAP_SECRET);
-    log.info('pair', 'redeemed', { via, ref: p.ref, nonce: nonce.slice(0, 6) });
+    log.info('pair', 'redeemed', { ref: p.ref, nonce: nonce.slice(0, 6) });
     return { ok: true, cap, ref: p.ref, nonce, exp, scope: p.scope, name: p.name };
   }
-  /* A152 — redeem by the short code. The constants are shared with the console (PAIR_CODE_ITER must match). */
-  const PAIR_CODE_ITER = 200000;
-  const PAIR_CODE_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';   // Crockford base32
-  const PAIR_CODE_LEN = 6;
-  const PAIR_CODE_RE = new RegExp(`^[${PAIR_CODE_ALPHABET}]{${PAIR_CODE_LEN}}$`);
-  const PAIR_CODE_WINDOW_MS = 60 * 1000;
-  const PAIR_CODE_PER_ADDR = 10;     // code attempts per window per client address
-  const PAIR_CODE_GLOBAL = 60;       // code attempts per window, server-wide (the real bound: an address can be claimed)
-  // ONE fixed-window counter. byAddr holds at most PAIR_CODE_GLOBAL entries, because nothing is counted past that.
-  let codeWin = { start: 0, total: 0, byAddr: new Map() };
-  const codeStats = { kdfRuns: 0, limited: 0 };
-  const pbkdf2Buf = (pw, salt) => new Promise((res, rej) => pbkdf2(pw, salt, PAIR_CODE_ITER, 32, 'sha256', (e, b) => (e ? rej(e) : res(b))));
-  /** Crockford decode of a typed code: uppercase; spaces and dashes dropped; O→0, I→1, L→1. */
-  const normPairCode = (s) => (typeof s === 'string' ? s.toUpperCase().replace(/[\s-]+/g, '').replace(/O/g, '0').replace(/[IL]/g, '1') : '');
-  function takeCodeAttempt(addr, now) {
-    if (now - codeWin.start >= PAIR_CODE_WINDOW_MS) codeWin = { start: now, total: 0, byAddr: new Map() };
-    const mine = codeWin.byAddr.get(addr) || 0;
-    if (codeWin.total >= PAIR_CODE_GLOBAL || mine >= PAIR_CODE_PER_ADDR) return false;
-    codeWin.total += 1; codeWin.byAddr.set(addr, mine + 1);
-    return true;
-  }
-  async function voicePairRedeemCode(code, addr) {
-    if (!CAP_SECRET) return { ok: false, code: 503, error: 'pairing needs a capability secret on this server' };
-    if (!takeCodeAttempt(String(addr || '?'), Date.now())) { codeStats.limited += 1; log.info('pair', 'code-limited', {}); return { ok: false, code: 429, error: 'too many attempts; wait a minute' }; }
-    const n = normPairCode(code);
-    const miss = () => { log.info('pair', 'redeem-miss', { via: 'code' }); return { ok: false, code: 404, error: 'no such pairing' }; };
-    if (!PAIR_CODE_RE.test(n)) return miss();
-    sweepPairings();
-    // The work per attempt is bounded by the pending registrations that carry a k (at most PAIR_K_MAX = 16; the oldest is evicted). One at a time,
-    // on the async pool: never the sync form on a request path, and never the whole pool for one attempt.
-    for (const [h, p] of [...pairings].filter(([, q]) => q.k)) {
-      const got = await pbkdf2Buf(n, h);
-      codeStats.kdfRuns += 1;
-      if (!timingSafeEqual(got, Buffer.from(p.k, 'hex'))) continue;
-      // Between the await and here the registration may have been redeemed by C, or have expired.
-      if (pairings.get(h) !== p || p.exp <= Date.now()) return miss();
-      pairings.delete(h);   // SINGLE USE — the same registration the C path consumes
-      return mintPairing(p, 'code');
-    }
-    return miss();
-  }
-  const voicePairCodeStats = () => ({ kdfRuns: codeStats.kdfRuns, limited: codeStats.limited });
   // The socket path: a `pair`-scoped capability registers for refs in its own world (same prefix).
   function voicePairRegisterWs(c, ws, m) {
     const ref = typeof m.ref === 'string' ? m.ref : '';
@@ -3290,7 +3231,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
     const pre = c && refPrefix(c.extRef);
     if (!c || !c.isGuest || !(c.capScope || []).includes('pair') || !pre) return answer(false, 'not permitted');
     if (!ref.startsWith(pre)) return answer(false, 'another world');
-    const r = voicePairRegister({ h: m.h, ref, name: m.name, scope: ref === c.extRef ? m.scope : ['type'], k: m.k }, 'cap');
+    const r = voicePairRegister({ h: m.h, ref, name: m.name, scope: ref === c.extRef ? m.scope : ['type'] }, 'cap');
     return answer(r.ok, r.ok ? null : r.error);
   }
   function voiceHealthAll() { return [...voiceUsers.keys()].map(voiceHealthView).filter(Boolean); }
@@ -4131,7 +4072,7 @@ export function createServer({ port = 0, controlToken = null, rolePassword = nul
       get STALE_MS() { return STALE_MS; },
       get acks() { return acks; },
       get asr() { return asr; }, set asr(v) { asr = v; },
-      voiceUsers, voiceHealthOf, voiceHealthView, voiceHealthAll, voicePairRegister, voicePairRedeem, voicePairCodeStats,
+      voiceUsers, voiceHealthOf, voiceHealthView, voiceHealthAll, voicePairRegister, voicePairRedeem,
       get beatDescriptor() { return beatDescriptor; },
       get bgAdapter() { return bgAdapter; },
       get buildSituation() { return buildSituation; },

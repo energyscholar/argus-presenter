@@ -289,7 +289,6 @@ export const API_COVERAGE = {
   isCapRevoked:        { declined: INTERNAL },
   voiceHealth:         { tool: 'presenter_health_deep' },   // Plan 0904 V1.6 — per-person voice health rides health_deep
   voicePairRegister:   { tool: 'voice_pair_register' },     // Plan 0904 R9a — the assistant as the pairing relay
-  _voicePairCodeStatsForTest: { declined: 'test-only seam (Plan 0904 A152) — counts short-code PBKDF2 runs, so a test can prove a rate-limited attempt runs none' },
   _voiceAsrPidForTest: { declined: 'test-only seam — the ASR worker pid, so a test can kill the engine and prove the failure is reported' },
 
   // --- moderation / floor
