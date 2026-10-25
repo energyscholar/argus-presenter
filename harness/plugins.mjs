@@ -114,6 +114,7 @@ function emptyRegistry() {
     selectorLabel: null,
     defaultUid: null,
     list: [],
+    places: [],
     isEmpty: () => true,
     get: () => null,
     wire: () => [],
@@ -143,14 +144,16 @@ export function buildStationRegistry(manifests = loadManifests(), { log = null }
   if (!rows.length) return emptyRegistry();
 
   const byUid = new Map();
+  const seenUids = new Set();
   const codes = new Set();
   const labels = new Set();
   const list = [];
+  const places = [];
   for (const row of rows) {
     if (!row || typeof row !== 'object') throw new Error('station registry: each station must be an object');
     const { stationUid, stationCode, stationLabel } = row;
     if (!Number.isInteger(stationUid) || stationUid < 1) throw new Error(`station registry: stationUid must be an integer >= 1 (got ${JSON.stringify(stationUid)})`);
-    if (byUid.has(stationUid)) throw new Error(`station registry: duplicate stationUid ${stationUid}`);
+    if (seenUids.has(stationUid)) throw new Error(`station registry: duplicate stationUid ${stationUid}`);
     if (typeof stationCode !== 'string' || !STATION_CODE_RE.test(stationCode)) throw new Error(`station registry: stationCode must match [a-z0-9-]+ (got ${JSON.stringify(stationCode)})`);
     if (codes.has(stationCode)) throw new Error(`station registry: duplicate stationCode ${stationCode}`);
     if (typeof stationLabel !== 'string' || !stationLabel.trim()) throw new Error(`station registry: stationLabel must be a non-empty string (uid ${stationUid})`);
@@ -168,11 +171,18 @@ export function buildStationRegistry(manifests = loadManifests(), { log = null }
       maxOccupants, sortOrder,
       stationScreen: resolveStationScreen(pluginName, row, log),
     };
-    byUid.set(stationUid, station);
     codes.add(stationCode); labels.add(stationLabel);
+    // Plan 1245: a registry of SEATS. A domain:"place" row is validated exactly like a seat (so its
+    // uid/code/label still collide-check) and is then partitioned into `places`; it never enters
+    // list/byUid, so no client can be handed one as a seat.
+    if (row.domain === 'place') { seenUids.add(stationUid); places.push(station); continue; }
+    seenUids.add(stationUid);
+    byUid.set(stationUid, station);
     list.push(station);
   }
-  list.sort((a, b) => a.sortOrder - b.sortOrder || a.stationUid - b.stationUid);
+  const bySort = (a, b) => a.sortOrder - b.sortOrder || a.stationUid - b.stationUid;
+  list.sort(bySort);
+  places.sort(bySort);
 
   const defaultUid = man.stationDefaultUid;
   if (!byUid.has(defaultUid)) {
@@ -184,6 +194,7 @@ export function buildStationRegistry(manifests = loadManifests(), { log = null }
     selectorLabel: typeof man.stationSelectorLabel === 'string' && man.stationSelectorLabel.trim() ? man.stationSelectorLabel : 'Station',
     defaultUid,
     list,
+    places,
     isEmpty: () => false,
     /**
      * The ONLY station lookup there is (0514 §5.1, Bruce S220). Provisioning matches an INTEGER
