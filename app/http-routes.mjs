@@ -202,6 +202,13 @@ export function createHttpHandler(ctx) {
         sendStatic(res, req, join(LIB, 'viewport.js'), 'text/javascript; charset=utf-8');
   });
 
+  exactRoutes.set("/lib/rec-light.mjs", ({ req, res, LIB, sendStatic }) => {
+        // Plan 1327 — the ONE derivation of the always-visible recording light (a pure table, no DOM),
+        // imported by the audience page and the control page.
+        // ⛔ NOT under the voice fence: the light exists whether or not voice is enabled.
+        sendStatic(res, req, join(LIB, 'rec-light.mjs'), 'text/javascript; charset=utf-8');
+  });
+
   exactRoutes.set("/lib/voice-stub.js", ({ req, res, LIB, sendStatic }) => {
         // Plan 0470 Tier 0: the sub-1KB always-on voice stub (dynamic-imports Tier 1 on enable()).
         sendStatic(res, req, join(LIB, 'voice-stub.js'), 'text/javascript; charset=utf-8');
