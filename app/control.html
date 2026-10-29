@@ -57,8 +57,12 @@
      P2.6: this is the ONLY connectivity LED on this page — the old header #led was removed as a duplicate. */
   #led-btn{position:fixed;top:4px;right:6px;z-index:60;background:none;border:0;padding:8px;cursor:pointer;line-height:0;border-radius:8px;}
   #led-btn:hover{background:rgba(255,255,255,.06);}
-  #led2{display:block;width:10px;height:10px;border-radius:50%;background:#cc3333;box-shadow:0 0 8px #cc3333;}
-  #led2.on{background:var(--ok);box-shadow:0 0 8px var(--ok);}
+  /* Plan 1327 — the recording light, three states keyed on #led2[data-state] and derived in ONE place
+     (lib/rec-light.mjs). /control has no mic, so it is only ever orange (down) or green (idle). Red now
+     means ONLY "recording"; it no longer means "server not connected". */
+  #led2{display:block;width:10px;height:10px;border-radius:50%;background:#f59e0b;box-shadow:0 0 8px #f59e0b;}
+  #led2[data-state="idle"]{background:#22c55e;box-shadow:0 0 8px #22c55e;}
+  #led2[data-state="rec"]{background:#e0303a;box-shadow:0 0 0 2px rgba(255,130,138,.6),0 0 8px #e0303a;}
   #ap-config{position:fixed;top:34px;right:8px;z-index:61;width:242px;background:rgba(6,10,24,.96);border:1px solid #2a3a5a;border-radius:8px;padding:10px 12px;color:var(--ink);display:none;box-shadow:0 6px 24px rgba(0,0,0,.5);}
   #ap-config.open{display:block;}
   #ap-config h4{margin:0 0 6px;font-size:11px;letter-spacing:.12em;color:#6cf;text-transform:uppercase;}
@@ -369,7 +373,7 @@
 </style>
 </head>
 <body>
-<button id="led-btn" title="Settings" aria-haspopup="true" aria-label="Connection and settings"><span id="led2"></span></button>
+<button id="led-btn" title="SERVER NOT CONNECTED" aria-haspopup="true" aria-label="SERVER NOT CONNECTED"><span id="led2" data-state="down"></span></button>
 <!-- P2.7 / 0522 P8.2: the fixed button row — pinned immediately LEFT of the preview dock. DOM
      order is [present, branding]; #tf-btnrow is row-reverse, so it paints branding-then-present. -->
 <div id="tf-btnrow">
@@ -603,6 +607,8 @@ import { resolveNext } from '/branch.mjs';   // DEL-2: SINGLE-SOURCE branch reso
 // This page PROVED that behaviour in 0522 P7.2; it is now this module's first caller rather than
 // its private copy, so the screen-share viewport of Part C cannot grow a second, disagreeing one.
 import { mount as mountViewport, openCount as viewportsOpen } from '/lib/viewport.js';
+// Plan 1327: the ONE derivation of the recording light (shared with the audience page).
+import { recState } from '/lib/rec-light.mjs';
 (function(){
   var NS='argus-presenter', TOKEN_KEY=NS+':token';
   var q = new URLSearchParams(location.search);
@@ -674,10 +680,16 @@ import { mount as mountViewport, openCount as viewportsOpen } from '/lib/viewpor
   }
 
   function control(action,args){ lastControl={action:action,args:args||{}}; if(ws&&ws.readyState===1) ws.send(JSON.stringify({t:'control',action:action,args:args||{}})); }
+  // Plan 1327: handlers set the `connected` input; the light is re-derived from the table, never painted by a
+  // handler. (/control has no mic, so micOn is always false. `.on` is kept for existing consumers: on iff not down.)
+  var recConnected=false;
+  function recRepaint(){ var st=recState({connected:recConnected,micOn:false}), l=$('led2'), b=$('led-btn');
+    l.setAttribute('data-state',st.state); l.classList.toggle('on',st.state!=='down');
+    b.setAttribute('title',st.tooltip); b.setAttribute('aria-label',st.tooltip); }
   function connect(){
     ws=new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host);
-    ws.onopen=function(){ $('led2').classList.add('on'); $('statustext').textContent='connected · '+identity.userName; ws.send(JSON.stringify(Object.assign({t:'hello'},identity))); refreshModules(); refreshSeries(); scheduleAuthReconcile(); };   // Plan 0693 T2: a restart destroys the server's session, and the ONLY thing that notices is a reconnect — so re-ask here, debounced (0696 F10).   // AUT-2b: re-scan modules on every (re)connect so the <select> never goes stale after a server restart / instance-swap / unlock reconnect. Plan 0529 P2 added refreshSeries here for the SAME reason, now that it needs a credential: the unlock path (a GM who types the password instead of arriving with ?token=) closes and reopens the socket, and boot's one refreshSeries() already ran and 403'd. Without this the series picker stays empty until a manual reload — the exact blank-panel failure P2 exists to avoid.
-    ws.onclose=function(){ $('led2').classList.remove('on'); $('statustext').textContent='disconnected'; renderConfig(); setTimeout(connect,800); };
+    ws.onopen=function(){ recConnected=true; recRepaint(); $('statustext').textContent='connected · '+identity.userName; ws.send(JSON.stringify(Object.assign({t:'hello'},identity))); refreshModules(); refreshSeries(); scheduleAuthReconcile(); };   // Plan 0693 T2: a restart destroys the server's session, and the ONLY thing that notices is a reconnect — so re-ask here, debounced (0696 F10).   // AUT-2b: re-scan modules on every (re)connect so the <select> never goes stale after a server restart / instance-swap / unlock reconnect. Plan 0529 P2 added refreshSeries here for the SAME reason, now that it needs a credential: the unlock path (a GM who types the password instead of arriving with ?token=) closes and reopens the socket, and boot's one refreshSeries() already ran and 403'd. Without this the series picker stays empty until a manual reload — the exact blank-panel failure P2 exists to avoid.
+    ws.onclose=function(){ recConnected=false; recRepaint(); $('statustext').textContent='disconnected'; renderConfig(); setTimeout(connect,800); };
     ws.onmessage=onMsg;
   }
   function onMsg(ev){ var m; try{m=JSON.parse(ev.data);}catch(e){return;}
