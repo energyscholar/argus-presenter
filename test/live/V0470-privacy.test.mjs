@@ -8,7 +8,8 @@ import { createServer } from '../../app/server.mjs';
 import { launchVoice } from '../../harness/voice-browser.mjs';
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-const hasBadge = (page) => page.evaluate(() => !!document.getElementById('ap-voice-badge'));
+// Plan 1327: the on-air pill is retired; "hot" is the always-visible light in its red `rec` state (+ #rec-toggle pressed).
+const hasBadge = (page) => page.evaluate(() => document.getElementById('led').getAttribute('data-state') === 'rec' && document.getElementById('rec-toggle').getAttribute('aria-pressed') === 'true');
 
 test('T-PRIVACY grant: badge appears only after capture starts; one-click stop halts it', async () => {
   const s = await createServer({ port: 0, voiceEnabled: true });
@@ -23,7 +24,7 @@ test('T-PRIVACY grant: badge appears only after capture starts; one-click stop h
     expect('on-air badge appears once capturing', await hasBadge(page));
     expect('APVoice reports enabled', await page.evaluate(() => window.APVoice.enabled === true));
     // one-click local stop
-    await page.evaluate(() => { const el = document.getElementById('ap-voice-stop'); if (el) el.click(); });
+    await page.evaluate(() => { const el = document.getElementById('rec-toggle'); if (el) el.click(); });
     await wait(300);
     expect('badge removed after one-click stop', !(await hasBadge(page)));
     expect('APVoice disabled after stop (frames halt)', await page.evaluate(() => window.APVoice.enabled === false));

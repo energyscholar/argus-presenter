@@ -37,7 +37,7 @@ test('T-LAZY zero voice/wasm bytes while disabled; Tier-1 loads only after enabl
     await wait(500);
     expect('voice-capture.mjs fetched AFTER enable', has(/voice-capture\.mjs/));
     expect('STILL no .wasm after enable', !has(/\.wasm/));
-    const badge = await page.evaluate(() => !!document.getElementById('ap-voice-badge'));
+    const badge = await page.evaluate(() => document.getElementById('led').getAttribute('data-state') === 'rec');   // Plan 1327: the red light replaces the retired badge
     const workletNet = has(/voice-worklet\.js/);
     expect('worklet loaded after enable (network or functional badge)', workletNet || badge, 'workletNet=' + workletNet + ' badge=' + badge);
   } finally { await b.close(); await s.close(); }

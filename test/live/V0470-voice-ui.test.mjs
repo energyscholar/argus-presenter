@@ -33,7 +33,8 @@ test('T-VOICE-UI voice toggle lives in #ap-config; grant flips it ON + shows bad
     await page.$eval('#cfg-voice-toggle', (el) => el.click());
     await wait(500);
     expect('row flips ON after grant', await q(page, '#cfg-voice-toggle', (el) => el.getAttribute('aria-pressed') === 'true' && /on/i.test(el.textContent)));
-    expect('on-air badge visible while hot', await page.evaluate(() => !!document.getElementById('ap-voice-badge')));
+    // Plan 1327: the big on-air pill is retired; the always-visible toggle + red light are the "hot" signal.
+    expect('rec toggle pressed + light red while hot', await page.evaluate(() => document.getElementById('rec-toggle').getAttribute('aria-pressed') === 'true' && document.getElementById('led').getAttribute('data-state') === 'rec'));
 
     // toggle OFF
     await page.$eval('#cfg-voice-toggle', (el) => el.click());

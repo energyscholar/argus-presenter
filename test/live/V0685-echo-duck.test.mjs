@@ -84,7 +84,7 @@ const suppressed = (page) => page.evaluate(() => (window.APVoice.capture && wind
 const micLive = (page) => page.evaluate(() => {
   const c = window.APVoice.capture;
   const tr = c && c.stream && c.stream.getAudioTracks && c.stream.getAudioTracks()[0];
-  return !!(tr && tr.readyState === 'live') && !!document.getElementById('ap-voice-badge');
+  return !!(tr && tr.readyState === 'live') && document.getElementById('rec-toggle').getAttribute('aria-pressed') === 'true';   // Plan 1327: the toggle replaces the retired badge
 });
 const nTx = (s) => s.getTranscripts(0).transcripts.length;
 
