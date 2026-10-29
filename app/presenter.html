@@ -15,7 +15,24 @@
   /* green connectivity dot is now a Settings button (larger hit target wraps the small dot) */
   #led-btn{position:fixed;top:4px;right:6px;z-index:60;background:none;border:0;padding:8px;cursor:pointer;line-height:0;border-radius:8px;}
   #led-btn:hover{background:rgba(255,255,255,.06);}
-  #led{display:block;width:10px;height:10px;border-radius:50%;background:#cc3333;box-shadow:0 0 8px #cc3333;}
+  /* Plan 1327 — THE RECORDING LIGHT: three states keyed on #led[data-state], written by exactly one
+     derivation (lib/rec-light.mjs). Default look = `down` (orange), because `connected` starts false.
+     Red now means ONLY "recording" (it used to mean "server not connected"). */
+  #led{display:block;width:10px;height:10px;border-radius:50%;background:#f59e0b;box-shadow:0 0 8px #f59e0b;}
+  #led[data-state="idle"]{background:#22c55e;box-shadow:0 0 8px #22c55e;}
+  #led[data-state="rec"]{background:#e0303a;box-shadow:0 0 0 2px rgba(255,130,138,.6),0 0 8px #e0303a;}
+  /* AP-VOICE:BEGIN */
+  /* Plan 1327 — the one-click mic toggle, immediately LEFT of #led-btn (right:6px..32px), and the
+     small status line under the row that carries the four never-silent voice notices.
+     Stripped with the rest of the voice fence when voice is off. */
+  #rec-toggle{position:fixed;top:8px;right:36px;z-index:60;width:24px;height:24px;padding:0;border:0;border-radius:6px;background:none;cursor:pointer;font-size:15px;line-height:24px;color:#cfe9ff;opacity:.9;}
+  #rec-toggle:hover{background:rgba(255,255,255,.08);opacity:1;}
+  #rec-toggle[aria-pressed="false"]{opacity:.6;}
+  #rec-toggle[aria-pressed="false"]::after{content:"";position:absolute;left:3px;right:3px;top:11px;height:2px;background:#e8eef6;transform:rotate(-45deg);}
+  #rec-toggle:disabled{cursor:default;opacity:.4;}
+  #rec-note{position:fixed;top:50px;right:8px;z-index:60;max-width:70vw;padding:2px 8px;border-radius:6px;background:rgba(6,10,24,.86);color:#ffe9a8;font:11px/1.4 system-ui,sans-serif;pointer-events:none;}
+  #rec-note:empty{display:none;}
+  /* AP-VOICE:END */
   /* P2.8: quick-switch to /control. Presenter-GRANTED only (welcome-gated, hidden otherwise).
      Top-LEFT corner, subtle; z 55 sits BELOW the config overlay (61) and control overlay (70). */
   /* Plan 0551 P3 — THE SIGN-IN AFFORDANCE. Ships DISPLAY:NONE and is revealed only when
@@ -27,7 +44,7 @@
      is a readout you glance at rather than a control you must hit while standing up. It sits
      top-right, LEFT of the settings dot (#led-btn, right:6px z60), because the one control a
      not-yet-signed-in person needs must not be three taps inside an overlay. */
-  #ap-signin{position:fixed;top:4px;right:40px;z-index:56;display:none;align-items:center;gap:6px;
+  #ap-signin{position:fixed;top:4px;right:68px;z-index:56;display:none;align-items:center;gap:6px;
     min-height:44px;padding:6px 12px;background:rgba(6,10,24,.86);color:#cfe9ff;border:1px solid #2a3a5a;
     border-radius:8px;font:13px/1.3 'Courier New',monospace;letter-spacing:.04em;cursor:pointer;text-decoration:none;}
   #ap-signin.show{display:inline-flex;}
@@ -90,7 +107,6 @@
   #ap-peek-v{flex:0 1 auto;color:#ffe9a8;font-weight:bold;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   #ap-peek-x{flex:1 1 auto;min-width:0;font-size:10px;letter-spacing:.1em;opacity:.7;
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-  #led.on{background:#22e5a0;box-shadow:0 0 8px #22e5a0;}
   /* max-height: the panel is position:fixed with no intrinsic bound — as rows accumulate it
      grew down across the echo line (#ap-echo, bottom:38px) and the input row, which it
      outranks at z-index 61 vs 41. Bound it to stop ABOVE that strip and scroll its own
@@ -239,7 +255,12 @@
 </style>
 </head>
 <body>
-<button id="led-btn" title="Settings" aria-haspopup="true" aria-label="Connection and settings"><span id="led"></span></button>
+<button id="led-btn" title="SERVER NOT CONNECTED" aria-haspopup="true" aria-label="SERVER NOT CONNECTED"><span id="led" data-state="down"></span></button>
+<!-- AP-VOICE:BEGIN -->
+<!-- Plan 1327: the one-click mic toggle (same action as the Settings row) and the notice line. -->
+<button id="rec-toggle" type="button" aria-pressed="false" title="Turn mic on" aria-label="Turn mic on">&#127897;</button>
+<span id="rec-note" role="status" aria-live="polite"></span>
+<!-- AP-VOICE:END -->
 <button id="ap-goto-control" title="Open (or refocus) the presenter control window" style="display:none">⧉ Control</button>
 <!-- Plan 0551 P3 — SIGN IN. Ships hidden; revealed ONLY when GET /api/auth-state reports
      oidcActive. Plain <a href> targets, not fetch(): the OAuth flow is a full-page redirect, and a
@@ -707,6 +728,24 @@
 
   var stage = document.getElementById('stage');
   var led = document.getElementById('led');
+  /* Plan 1327 — THE RECORDING LIGHT. A handler never paints a colour: ws.onopen/onclose set the
+     `connected` input, the mic path sets window.__apRecMic, and recRepaint() re-derives the ONE
+     state from lib/rec-light.mjs. (`.on` is kept for existing consumers, derived here: on iff not down.)
+     With the mic path stripped __apRecMic is never set and reads as false. */
+  var recConnected = false, recMod = null;
+  function recRepaint(){
+    if (!recMod) return;
+    var st;
+    try { st = recMod.recState({ connected: recConnected, micOn: window.__apRecMic === true }); }
+    catch(e){ console.error('rec-light: ' + (e && e.message || e)); return; }
+    var hb = document.getElementById('led-btn');
+    led.setAttribute('data-state', st.state);
+    led.classList.toggle('on', st.state !== 'down');
+    hb.setAttribute('title', st.tooltip); hb.setAttribute('aria-label', st.tooltip);
+  }
+  window.__apRecRepaint = recRepaint;
+  import('/lib/rec-light.mjs').then(function(m){ recMod = m; recRepaint(); })
+    .catch(function(e){ console.error('rec-light: module failed to load: ' + (e && e.message || e)); });
   var frame = null;
 
   // ---- Debug overlay (?debug=1): connection, socketId, last N ops/messages, state inspector.
@@ -762,7 +801,7 @@
     if (reconnectTimer){ clearTimeout(reconnectTimer); reconnectTimer = null; }
     if (ws){ try { ws.onopen = ws.onclose = ws.onerror = ws.onmessage = null; ws.close(); } catch(e){} }
     ws = new WebSocket(proto + '://' + location.host);
-    ws.onopen = function(){ led.classList.add('on'); dbg.open = true; dbgRender(); reconnectDelay = 300;
+    ws.onopen = function(){ recConnected = true; recRepaint(); dbg.open = true; dbgRender(); reconnectDelay = 300;
       ws.send(JSON.stringify(Object.assign({ t:'hello', lastVersion:lastVersion }, identity)));
       // Plan 0693 T2 — a restart destroys the server's session and the ONLY thing this page notices
       // is the reconnect. Re-ask, debounced (0696 F10), so the pill can never keep asserting an
@@ -791,7 +830,7 @@
          the seat's screen at the end of `hello` when the room is showing this viewer nothing.
          ⇒ nothing to do here. Kept as a comment because the empty branch is the point. */
       };
-    ws.onclose = function(){ led.classList.remove('on'); dbg.open = false; dbgRender(); scheduleReconnect(); };
+    ws.onclose = function(){ recConnected = false; recRepaint(); dbg.open = false; dbgRender(); scheduleReconnect(); };
     ws.onerror = function(){ /* onclose handles reconnect */ };
     ws.onmessage = onMessage;
   }
@@ -973,10 +1012,7 @@
       // F1 (never-silent): the server throttled/dropped some audio — flash a brief, non-intrusive
       // notice in the on-air badge so the speaker knows their words were cut, not silently lost.
       try {
-        var vb = document.getElementById('ap-voice-badge');
-        if (vb) { var lbl = vb.querySelector('span:nth-child(2)') || vb; if (!lbl.__apPrev) lbl.__apPrev = lbl.textContent;
-          lbl.textContent = '⚠ audio dropped'; clearTimeout(lbl.__apT);
-          lbl.__apT = setTimeout(function(){ lbl.textContent = lbl.__apPrev || 'Mic on-air'; lbl.__apPrev = null; }, 1500); }
+        if (window.__apRecNote) window.__apRecNote('⚠ audio dropped');
       } catch(e){}
       dbgLog(m);
     }
@@ -1000,10 +1036,7 @@
       // the stub stays a stub. 'wrap' = a gentle wrap-up nudge; 'closed' = the turn was gracefully
       // closed at the budget, so stop capturing (the captured audio is still transcribed server-side).
       try {
-        var tb = document.getElementById('ap-voice-badge');
-        if (tb) { var tl = tb.querySelector('span:nth-child(2)') || tb; if (!tl.__apPrev) tl.__apPrev = tl.textContent;
-          tl.textContent = (m.state === 'closed') ? '⏹ turn ended — your turn' : '⏳ please wrap up';
-          clearTimeout(tl.__apT); tl.__apT = setTimeout(function(){ tl.textContent = tl.__apPrev || 'Mic on-air'; tl.__apPrev = null; }, m.state === 'closed' ? 2500 : 1800); }
+        if (window.__apRecNote) window.__apRecNote((m.state === 'closed') ? '⏹ turn ended — your turn' : '⏳ please wrap up');
         if (m.state === 'closed' && window.APVoice && window.APVoice.enabled) { try { window.APVoice.disable(); if (window.__apVoicePaint) window.__apVoicePaint(); } catch(e){} }
       } catch(e){}
       dbgLog(m);
@@ -1014,12 +1047,7 @@
       // 'hold' = please hold + pause the mic (capture gated at the source); 'wrap' = please wrap up
       // soon; 'go' = clear. `gated:true` = THIS would-be speaker's segment was just refused under hold.
       try {
-        var fb = document.getElementById('ap-voice-badge');
-        if (fb) { var fl = fb.querySelector('span:nth-child(2)') || fb; if (!fl.__apPrev) fl.__apPrev = fl.textContent;
-          if (m.state === 'hold') { fl.textContent = '✋ please hold'; }
-          else if (m.state === 'wrap') { fl.textContent = '⏳ wrap up soon'; }
-          else { fl.textContent = fl.__apPrev || 'Mic on-air'; fl.__apPrev = null; }
-          clearTimeout(fl.__apT); if (m.state !== 'go') fl.__apT = setTimeout(function(){ fl.textContent = fl.__apPrev || 'Mic on-air'; fl.__apPrev = null; }, 2000); }
+        if (window.__apRecNote) window.__apRecNote(m.state === 'hold' ? '✋ please hold' : (m.state === 'wrap' ? '⏳ wrap up soon' : ''));   // 'go' clears
         // Gate capture at the source: on hold, pause the mic (the user may re-enable when it clears).
         if (m.state === 'hold' && window.APVoice && window.APVoice.enabled) { try { window.APVoice.disable(); if (window.__apVoicePaint) window.__apVoicePaint(); } catch(e){} }
       } catch(e){}
@@ -1031,10 +1059,7 @@
       // hook — the actual TTS audio duck/stop is the Plan-0469 client seam (stub here). No heavy logic;
       // the stub stays a stub.
       try {
-        var xb = document.getElementById('ap-voice-badge');
-        if (xb) { var xl = xb.querySelector('span:nth-child(2)') || xb; if (!xl.__apPrev) xl.__apPrev = xl.textContent;
-          xl.textContent = '🔇 interrupted';
-          clearTimeout(xl.__apT); xl.__apT = setTimeout(function(){ xl.textContent = xl.__apPrev || 'Mic on-air'; xl.__apPrev = null; }, 1500); }
+        if (window.__apRecNote) window.__apRecNote('🔇 interrupted');
         // DUCK/STOP seam — Plan 0469 wires real TTS ducking to this hook (a no-op stub until then).
         if (window.APVoice && typeof window.APVoice.duck === 'function') { try { window.APVoice.duck(m); } catch(e){} }
         if (typeof window.__apBargeIn === 'function') { try { window.__apBargeIn(m); } catch(e){} }
@@ -1886,21 +1911,43 @@
     (function(){
       var vbtn = document.getElementById('cfg-voice-toggle');
       var vmsg = document.getElementById('cfg-voice-msg');
+      var rtog = document.getElementById('rec-toggle');     // Plan 1327: the always-visible one-click toggle
+      var rnote = document.getElementById('rec-note');
+      var noteT = null;
       if (!vbtn) return;
-      function paint(){ var on = !!(window.APVoice && window.APVoice.enabled); vbtn.textContent = '🎙 Mic: ' + (on ? 'on' : 'off'); vbtn.setAttribute('aria-pressed', on ? 'true' : 'false'); vbtn.classList.toggle('sel', on); if (!on) vbtn.disabled = false; }
+      function micOn(){ return !!(window.APVoice && window.APVoice.enabled); }
+      function restTitle(){ return micOn() ? 'Turn mic off' : 'Turn mic on'; }
+      function paint(){
+        var on = micOn();
+        vbtn.textContent = '🎙 Mic: ' + (on ? 'on' : 'off'); vbtn.setAttribute('aria-pressed', on ? 'true' : 'false'); vbtn.classList.toggle('sel', on); if (!on) vbtn.disabled = false;
+        if (rtog) { rtog.setAttribute('aria-pressed', on ? 'true' : 'false'); rtog.setAttribute('aria-label', restTitle()); if (!noteT) rtog.setAttribute('title', restTitle()); if (!on) rtog.disabled = false; }
+        window.__apRecMic = on;                                  // Plan 1327: the light's one mic input (neutral global)
+        if (window.__apRecRepaint) window.__apRecRepaint();      // ...and it re-derives; nothing here paints a colour
+      }
       window.__apVoicePaint = paint;   // let server-initiated enable()/stop refresh this row
-      vbtn.addEventListener('click', function(e){
+      // Plan 1327: the four never-silent notices (and mic errors) live on #rec-note, with the same text on the
+      // toggle's title. They clear after 6 s unless a newer notice replaces them; '' clears at once.
+      window.__apRecNote = function(text){
+        clearTimeout(noteT); noteT = null;
+        if (rnote) rnote.textContent = text || '';
+        if (text) { if (rtog) rtog.setAttribute('title', text); noteT = setTimeout(function(){ noteT = null; if (rnote) rnote.textContent = ''; paint(); }, 6000); }
+        else paint();
+      };
+      // ONE click body, called by BOTH the Settings row and #rec-toggle (no second copy).
+      function toggleMic(e){
         e.stopPropagation(); vmsg.textContent = '';
         // Plan 0491 §2.3 trap 4: prime speechSynthesis on THIS gesture — iOS requires a user
         // gesture before the first utterance; a zero-length one unlocks the queue for later real speech.
         // Plan 0941: the prime is lib/speak.mjs's prime() (one implementation), reached through the page's wrapper.
         try { if (typeof window.__apSpeakPrime === 'function') window.__apSpeakPrime(); } catch(err){}
         if (window.APVoice && window.APVoice.enabled) { try { window.APVoice.disable(); } catch(err){} paint(); return; }
-        vbtn.disabled = true; vbtn.textContent = '🎙 Mic: requesting…';
+        vbtn.disabled = true; vbtn.textContent = '🎙 Mic: requesting…'; if (rtog) rtog.disabled = true;
         Promise.resolve().then(function(){ return window.APVoice && window.APVoice.enable(); })
-          .then(function(){ vbtn.disabled = false; paint(); })
-          .catch(function(err){ vbtn.disabled = false; paint(); vmsg.textContent = String(err && err.message || err); });
-      });
+          .then(function(){ vbtn.disabled = false; if (rtog) rtog.disabled = false; paint(); })
+          .catch(function(err){ vbtn.disabled = false; if (rtog) rtog.disabled = false; paint(); vmsg.textContent = String(err && err.message || err); window.__apRecNote(vmsg.textContent); });
+      }
+      vbtn.addEventListener('click', toggleMic);
+      if (rtog) rtog.addEventListener('click', toggleMic);
       paint();
     })();
     /* AP-VOICE:END */
