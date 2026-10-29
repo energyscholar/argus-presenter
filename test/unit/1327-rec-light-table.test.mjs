@@ -15,7 +15,7 @@ test('T1-1327 recState is the total 2x2 table', () => {
   expect('exactly three states exist', Object.keys(REC_STATES).sort().join() === 'down,idle,rec');
 });
 
-test('T1-1327 words and colours are the owner-ruled ones', () => {
+test('T1-1327 words and colours are the specified ones', () => {
   expect('rec tooltip', REC_STATES.rec.tooltip === 'RECORDING NOW');
   expect('idle tooltip', REC_STATES.idle.tooltip === 'Not recording — mic off');
   expect('down tooltip', REC_STATES.down.tooltip === 'SERVER NOT CONNECTED');
